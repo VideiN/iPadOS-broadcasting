@@ -10,6 +10,10 @@
 
 #include <obs-module.h>
 
+/* Required exports, defined by OBS_DECLARE_MODULE() in the module itself */
+MODULE_EXPORT void obs_module_set_pointer(obs_module_t *module);
+MODULE_EXPORT uint32_t obs_module_ver(void);
+
 __attribute__((weak)) void obs_module_unload(void) {}
 
 __attribute__((weak)) void obs_module_post_load(void) {}
