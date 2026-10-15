@@ -1,37 +1,9 @@
-# Exclude everything
-/*
-
-# Except for default project files
-!/.github
-!/build-aux
-!/cmake
-!/deps
-!/docs
-!/frontend
-!/libobs*
-!/plugins
-!/shared
-!/test
-!.cirrus.xml
-!.clang-format
-!.editorconfig
-!.gersemirc
-!.git-blame-ignore-devs
-!.gitmodules
-!.gitignore
-!.mailmap
-!.swift-format
-!AUTHORS
-!buildspec.json
-!CMakeLists.txt
-!CMakePresets.json
-!COC.rst
-!COMMITMENT
-!CONTRIBUTING.md
-!CODESTYLE.md
-!COPYING
-!INSTALL
-!README.rst
+# [iPadOS 포팅] 원본의 "/* 전체 제외 후 허용 목록" 방식을 제거함.
+# 그대로 두면 obs-studio/ 바로 아래에 새로 만든 파일·디렉터리가 조용히 무시된다.
+# 대신 in-tree 빌드 출력만 제외한다.
+/build/
+/build_*/
+/.deps/
 
 # Exclude lock files
 *.lock.json
