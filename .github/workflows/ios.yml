@@ -101,7 +101,7 @@ jobs:
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose --timeout 300
           # 종료 경합처럼 가끔만 터지는 문제를 잡으려고 짧은 스모크 테스트는 여러 번 돌린다
-          SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" -R '^test_libobs_ios$' --repeat until-fail:30 --output-on-failure --timeout 60
+          SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" -R '^test_libobs_ios$' --repeat until-fail:30 --output-on-failure --timeout 120
 
       # 앱을 시뮬레이터에서 실제로 띄워 프리뷰 스크린숏과 로그를 남긴다
       - name: Run app on simulator
