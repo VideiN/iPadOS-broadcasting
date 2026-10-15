@@ -20,7 +20,12 @@ if(NOT TARGET OBS::caption)
   add_subdirectory("${CMAKE_SOURCE_DIR}/deps/libcaption" "${CMAKE_BINARY_DIR}/deps/libcaption")
 endif()
 
-add_library(libobs SHARED)
+if(OS_IOS)
+  # iOS port: libobs is linked statically into the app
+  add_library(libobs STATIC)
+else()
+  add_library(libobs SHARED)
+endif()
 add_library(OBS::libobs ALIAS libobs)
 
 target_sources(
@@ -256,6 +261,8 @@ if(OS_WINDOWS)
   include(cmake/os-windows.cmake)
 elseif(OS_MACOS)
   include(cmake/os-macos.cmake)
+elseif(OS_IOS)
+  include(cmake/os-ios.cmake)
 elseif(OS_LINUX)
   include(cmake/os-linux.cmake)
 elseif(OS_FREEBSD OR OS_OPENBSD)
@@ -367,7 +374,7 @@ if(OS_WINDOWS)
     util/windows/window-helpers.h
     util/windows/WinHandle.hpp
   )
-elseif(OS_MACOS)
+elseif(OS_MACOS OR OS_IOS)
   list(APPEND public_headers util/apple/cfstring-utils.h)
 endif()
 
