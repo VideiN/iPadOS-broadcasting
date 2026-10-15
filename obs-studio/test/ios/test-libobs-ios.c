@@ -93,8 +93,10 @@ static void test_video_scaler(void)
 		.colorspace = VIDEO_CS_709,
 	};
 
+	/* VIDEO_SCALE_FAST_BILINEAR is what video-io.c uses. (VIDEO_SCALE_BILINEAR maps to
+	 * SWS_BILINEAR | SWS_AREA, which swscale rejects, but libobs never uses it.) */
 	video_scaler_t *scaler = NULL;
-	CHECK(video_scaler_create(&scaler, &dst, &src, VIDEO_SCALE_BILINEAR) == VIDEO_SCALER_SUCCESS);
+	CHECK(video_scaler_create(&scaler, &dst, &src, VIDEO_SCALE_FAST_BILINEAR) == VIDEO_SCALER_SUCCESS);
 	if (!scaler)
 		return;
 
@@ -141,6 +143,10 @@ static void test_static_module_and_scene(void)
 		CHECK(obs_scene_find_source(scene, "Sine") == item);
 	}
 
+	/* The main canvas holds a reference to its scenes; remove the scene like the
+	 * frontend does before shutting down. */
+	if (scene)
+		obs_source_remove(obs_scene_get_source(scene));
 	obs_source_release(source);
 	obs_scene_release(scene);
 }

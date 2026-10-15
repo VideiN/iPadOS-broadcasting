@@ -100,6 +100,10 @@ jobs:
           xcrun simctl bootstatus "$udid" -b
           SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose --timeout 300
 
+      - name: Show crash reports
+        if: failure() && matrix.platform == 'iphonesimulator'
+        run: python3 ios/scripts/print-crash-reports.py ~/Library/Logs/DiagnosticReports 'test_*'
+
       - name: Install
         run: cmake --install "$BUILD_DIR"
 
