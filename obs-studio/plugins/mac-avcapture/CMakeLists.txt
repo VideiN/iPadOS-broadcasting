@@ -1,5 +1,42 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
+# iOS port: only the AVFoundation based source (no legacy plugin), linked statically into the app.
+# The Xcode-only ARC/modules attributes below do not apply to the Ninja build, so pass the flags directly.
+if(OS_IOS)
+  add_library(mac-avcapture STATIC)
+  add_library(OBS::avcapture ALIAS mac-avcapture)
+
+  target_sources(
+    mac-avcapture
+    PRIVATE
+      AVCaptureDeviceFormat+OBSListable.m
+      AVCaptureDeviceFormat+OBSListable.h
+      plugin-main.m
+      plugin-main.h
+      plugin-properties.m
+      plugin-properties.h
+      OBSAVCapture.m
+      OBSAVCapture.h
+      OBSAVCapturePresetInfo.m
+      OBSAVCapturePresetInfo.h
+  )
+
+  target_include_directories(mac-avcapture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_compile_options(mac-avcapture PRIVATE -fobjc-arc -fmodules)
+  target_link_libraries(
+    mac-avcapture
+    PRIVATE
+      OBS::libobs
+      "$<LINK_LIBRARY:FRAMEWORK,AVFoundation.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,CoreMedia.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,CoreVideo.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,IOSurface.framework>"
+  )
+
+  obs_ios_static_module(mac-avcapture)
+  return()
+endif()
+
 add_library(mac-avcapture-legacy MODULE)
 add_library(OBS::avcapture-legacy ALIAS mac-avcapture-legacy)
 

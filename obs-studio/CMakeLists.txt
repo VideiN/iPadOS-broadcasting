@@ -24,6 +24,8 @@ if(OS_IOS)
   add_subdirectory(libobs)
   add_subdirectory(libobs-metal)
   add_subdirectory(plugins/image-source)
+  add_subdirectory(plugins/mac-avcapture)
+  add_subdirectory(plugins/ios-audio-input)
 
   option(ENABLE_APP "Build the iPadOS app in ../app" ON)
   if(ENABLE_APP)
