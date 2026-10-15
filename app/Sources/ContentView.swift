@@ -3,15 +3,22 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
+    @ObservedObject private var core = Core.shared
     @StateObject private var diagnostics = Diagnostics()
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
 
-            PreviewView()
-                .aspectRatio(CGFloat(Core.shared.width) / CGFloat(Core.shared.height), contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if core.isRunning {
+                PreviewView()
+                    .aspectRatio(CGFloat(core.width) / CGFloat(core.height), contentMode: .fit)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Text(core.failed ? "libobs를 시작하지 못했습니다. 로그를 확인하세요." : "libobs 시작 중…")
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
 
             DiagnosticsOverlay(diagnostics: diagnostics)
                 .padding(12)

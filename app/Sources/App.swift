@@ -25,7 +25,7 @@ struct BroadcastApp: App {
 }
 
 /// libobs 시작과 상태
-final class Core {
+final class Core: ObservableObject {
     static let shared = Core()
 
     /// 캔버스 설정 (계획: 1080p60 단일 캔버스)
@@ -33,12 +33,25 @@ final class Core {
     let height: UInt32 = 1080
     let fps: UInt32 = 60
 
-    private(set) var isRunning = false
+    @Published private(set) var isRunning = false
+    @Published private(set) var failed = false
+    private var started = false
 
+    /// libobs 초기화(Metal 셰이더 컴파일 포함)는 오래 걸릴 수 있어 메인 스레드 밖에서 한다.
+    /// 메인 스레드에서 하면 그동안 런치 스크린에 멈춰 있고, 길어지면 iOS 워치독이 앱을 죽인다.
     func start() {
-        guard !isRunning, let resourcePath = Bundle.main.resourcePath else { return }
+        guard !started, let resourcePath = Bundle.main.resourcePath else { return }
+        started = true
 
-        isRunning = core_startup(resourcePath, width, height, fps)
-        appLog(isRunning ? "core started" : "core_startup failed")
+        let (width, height, fps) = (width, height, fps)
+        DispatchQueue.global(qos: .userInitiated).async {
+            let ok = core_startup(resourcePath, width, height, fps)
+
+            DispatchQueue.main.async {
+                appLog(ok ? "core started" : "core_startup failed")
+                self.isRunning = ok
+                self.failed = !ok
+            }
+        }
     }
 }
