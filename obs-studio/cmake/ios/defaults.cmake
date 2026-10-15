@@ -6,6 +6,10 @@ include_guard(GLOBAL)
 set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL TRUE)
 # Ignore any dependent packages installed via Homebrew (they are built for macOS)
 list(APPEND CMAKE_IGNORE_PREFIX_PATH "/opt/homebrew" "/usr/local")
+# CMake re-roots find_* searches into the iOS SDK on Apple embedded platforms
+# (CMAKE_FIND_ROOT_PATH_MODE_* = ONLY). Add the dependency prefixes as roots
+# as well, so that they are searched as they are.
+list(APPEND CMAKE_FIND_ROOT_PATH ${CMAKE_PREFIX_PATH})
 
 # CMake turns every executable into an app bundle on iOS. Test executables are
 # run directly on the simulator, so app targets have to enable MACOSX_BUNDLE themselves.
