@@ -6,6 +6,8 @@
 //
 
 #import "OBSAVCapture.h"
+// iOS port: on macOS the runtime header comes in through other imports
+#import <objc/runtime.h>
 
 @implementation AVCaptureDeviceFormat (OBSListable)
 
