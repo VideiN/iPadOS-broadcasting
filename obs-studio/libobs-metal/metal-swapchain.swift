@@ -15,7 +15,11 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import Foundation
 
 /// Creates a ``OBSSwapChain`` instance for use as a pseudo swap chain implementation to be shared with `libobs`
@@ -40,7 +44,7 @@ public func device_swapchain_create(device: UnsafeMutableRawPointer, data: Unsaf
 {
     let device: MetalDevice = unretained(device)
 
-    let view = data.pointee.window.view.takeUnretainedValue() as! NSView
+    let view = data.pointee.window.view.takeUnretainedValue() as! OBSPlatformView
     let size = MTLSize(
         width: Int(data.pointee.cx),
         height: Int(data.pointee.cy),
@@ -54,6 +58,10 @@ public func device_swapchain_create(device: UnsafeMutableRawPointer, data: Unsaf
     device.swapChainQueue.sync {
         device.swapChains.append(swapChain)
     }
+
+    #if os(iOS)
+    device.startDisplayLink()
+    #endif
 
     return swapChain.getRetained()
 }

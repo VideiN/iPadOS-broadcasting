@@ -22,6 +22,7 @@ if(OS_IOS)
   option(ENABLE_UNIT_TESTS "Build unit tests (run on the iOS simulator)" OFF)
 
   add_subdirectory(libobs)
+  add_subdirectory(libobs-metal)
 
   if(ENABLE_UNIT_TESTS)
     enable_testing()

@@ -15,10 +15,20 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
 
+#if os(macOS)
 import AppKit
+#else
+import UIKit
+#endif
 import CoreVideo
 import Foundation
 import Metal
+
+#if os(macOS)
+typealias OBSPlatformView = NSView
+#else
+typealias OBSPlatformView = UIView
+#endif
 
 class OBSSwapChain {
     enum ColorRange {
@@ -28,11 +38,16 @@ class OBSSwapChain {
     }
 
     private weak var device: MetalDevice?
-    private var view: NSView?
+    private var view: OBSPlatformView?
 
     var colorRange: ColorRange
     var edrHeadroom: CGFloat = 0.0
+    #if os(macOS)
     let layer: CAMetalLayer
+    #else
+    /// iOS port: replaced by the view's own layer if the view is backed by a `CAMetalLayer`
+    private(set) var layer: CAMetalLayer
+    #endif
     var renderTarget: MetalTexture?
     var viewSize: MTLSize
     var fence: MTLFence
@@ -49,7 +64,9 @@ class OBSSwapChain {
         self.layer.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         self.layer.wantsExtendedDynamicRangeContent = false
         self.layer.edrMetadata = nil
+        #if os(macOS)
         self.layer.displaySyncEnabled = false
+        #endif
         self.colorRange = .sdr
 
         guard let fence = device.device.makeFence() else { return nil }
@@ -62,10 +79,29 @@ class OBSSwapChain {
     ///
     /// > Important: This function has to be called from the main thread
     @MainActor
-    func updateView(_ view: NSView) {
+    func updateView(_ view: OBSPlatformView) {
         self.view = view
+        #if os(macOS)
         view.layer = self.layer
         view.wantsLayer = true
+        #else
+        // iOS port: a UIView cannot swap its backing layer. Views backed by a CAMetalLayer (layerClass) are used
+        // directly so that UIKit keeps the layer sized; otherwise the layer is added as a sublayer.
+        if let metalLayer = view.layer as? CAMetalLayer {
+            metalLayer.device = self.layer.device
+            metalLayer.framebufferOnly = self.layer.framebufferOnly
+            metalLayer.drawableSize = self.layer.drawableSize
+            metalLayer.pixelFormat = self.layer.pixelFormat
+            metalLayer.colorspace = self.layer.colorspace
+            metalLayer.wantsExtendedDynamicRangeContent = self.layer.wantsExtendedDynamicRangeContent
+            metalLayer.edrMetadata = self.layer.edrMetadata
+            self.layer = metalLayer
+        } else {
+            self.layer.frame = view.bounds
+            self.layer.contentsScale = view.contentScaleFactor
+            view.layer.addSublayer(self.layer)
+        }
+        #endif
 
         updateEdrHeadroom()
     }
@@ -81,8 +117,14 @@ class OBSSwapChain {
             return
         }
 
-        if let screen = view.window?.screen {
-            self.edrHeadroom = screen.maximumPotentialExtendedDynamicRangeColorComponentValue
+        #if os(macOS)
+        let screenHeadroom = view.window?.screen?.maximumPotentialExtendedDynamicRangeColorComponentValue
+        #else
+        let screenHeadroom = view.window?.screen.potentialEDRHeadroom
+        #endif
+
+        if let screenHeadroom {
+            self.edrHeadroom = screenHeadroom
         } else {
             self.edrHeadroom = CGFloat(1.0)
         }

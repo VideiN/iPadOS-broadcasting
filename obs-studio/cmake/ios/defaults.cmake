@@ -15,21 +15,10 @@ list(APPEND CMAKE_FIND_ROOT_PATH ${CMAKE_PREFIX_PATH})
 # run directly on the simulator, so app targets have to enable MACOSX_BUNDLE themselves.
 set(CMAKE_MACOSX_BUNDLE OFF)
 
-# zlib comes from the iOS SDK
-if(IS_ABSOLUTE "${CMAKE_OSX_SYSROOT}")
-  set(_obs_ios_sdk_path "${CMAKE_OSX_SYSROOT}")
-else()
-  execute_process(
-    COMMAND xcrun --sdk "${CMAKE_OSX_SYSROOT}" --show-sdk-path
-    OUTPUT_VARIABLE _obs_ios_sdk_path
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    COMMAND_ERROR_IS_FATAL ANY
-  )
-endif()
+# zlib comes from the iOS SDK (OBS_IOS_SDK_PATH is set in compilerconfig.cmake)
 if(NOT DEFINED ZLIB_ROOT)
-  set(ZLIB_ROOT "${_obs_ios_sdk_path}/usr")
+  set(ZLIB_ROOT "${OBS_IOS_SDK_PATH}/usr")
 endif()
-unset(_obs_ios_sdk_path)
 
 set(OBS_EXECUTABLE_DESTINATION "bin")
 set(OBS_LIBRARY_DESTINATION "lib")

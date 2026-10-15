@@ -15,7 +15,9 @@
  along with this program.  If not, see <http://www.gnu.org/licenses/>.
  ******************************************************************************/
 
+#if os(macOS)
 import AppKit
+#endif
 import Foundation
 import Metal
 import simd
@@ -39,7 +41,11 @@ class MetalDevice {
     private var pipelines = [Int: MTLRenderPipelineState]()
     private var depthStencilStates = [Int: MTLDepthStencilState]()
     private var obsSignalCallbacks = [MetalSignalType: () -> Void]()
+    #if os(macOS)
     private var displayLink: CVDisplayLink?
+    #else
+    private var displayLink: OBSDisplayLink?
+    #endif
 
     let device: MTLDevice
     let commandQueue: MTLCommandQueue
@@ -61,7 +67,7 @@ class MetalDevice {
         let nopVertexSource = "[[vertex]] float4 vsNop() { return (float4)0; }"
 
         let compileOptions = MTLCompileOptions()
-        if #available(macOS 15, *) {
+        if #available(macOS 15, iOS 18, *) {
             compileOptions.mathMode = .fast
         } else {
             compileOptions.fastMathEnabled = true
@@ -73,10 +79,12 @@ class MetalDevice {
             throw MetalError.MTLDeviceError.shaderCompilationFailure("Vertex NOP shader")
         }
 
+        #if os(macOS)
         CVDisplayLinkCreateWithActiveCGDisplays(&displayLink)
         if displayLink == nil {
             throw MetalError.MTLDeviceError.displayLinkCreationFailure
         }
+        #endif
 
         self.commandQueue = commandQueue
         self.nopVertexFunction = function
@@ -108,16 +116,50 @@ class MetalDevice {
 
     /// Creates signal handlers for specific OBS signals and adds them to a collection of signal handlers using the signal name as their key
     private func setupSignalHandlers() {
+        #if os(macOS)
         let videoResetCallback = { [self] in
             guard let displayLink else { return }
 
             CVDisplayLinkStop(displayLink)
             CVDisplayLinkStart(displayLink)
         }
+        #else
+        let videoResetCallback = { [self] in
+            displayLink?.setFrameRate(MetalDevice.outputFrameRate())
+        }
+        #endif
 
         obsSignalCallbacks.updateValue(videoResetCallback, forKey: MetalSignalType.videoReset)
     }
 
+    #if os(iOS)
+    /// iOS port: The display link only runs while there are swap chains (previews), as a `CADisplayLink` needs the
+    /// app's display. It is started by `device_swapchain_create`.
+    private func setupDisplayLink() {}
+
+    /// iOS port: Starts the `CADisplayLink` that presents swap chains, pinned to the output frame rate
+    func startDisplayLink() {
+        if displayLink == nil {
+            displayLink = OBSDisplayLink { [unowned self] in
+                self.blitSwapChains()
+            }
+        }
+
+        displayLink?.setFrameRate(MetalDevice.outputFrameRate())
+        displayLink?.start()
+    }
+
+    /// iOS port: Output frame rate of `libobs`, used to pin the display link on ProMotion displays
+    private static func outputFrameRate() -> Float {
+        var videoInfo = obs_video_info()
+
+        guard obs_get_video_info(&videoInfo), videoInfo.fps_den > 0 else {
+            return 60
+        }
+
+        return Float(videoInfo.fps_num) / Float(videoInfo.fps_den)
+    }
+    #else
     /// Sets up the `CVDisplayLink` used by the ``MetalDevice`` to synchronize projector output with the operating
     /// system's screen refresh rate.
     private func setupDisplayLink() {
@@ -142,6 +184,7 @@ class MetalDevice {
 
         CVDisplayLinkSetOutputCallback(displayLink!, displayLinkCallback, opaqueSelf)
     }
+    #endif
 
     /// Iterates over all ``OBSSwapChain`` instances present on the ``MetalDevice`` instance and encodes a block
     /// transfer command on the GPU to copy the contents of the projector rendered by `libobs`'s render loop into the
@@ -774,7 +817,11 @@ class MetalDevice {
     func shutdown() {
         guard let displayLink else { return }
 
+        #if os(macOS)
         CVDisplayLinkStop(displayLink)
+        #else
+        displayLink.stop()
+        #endif
         self.displayLink = nil
     }
 

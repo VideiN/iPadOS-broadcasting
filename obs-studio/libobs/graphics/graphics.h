@@ -518,6 +518,15 @@ EXPORT uint32_t gs_get_adapter_count(void);
 EXPORT void gs_enum_adapters(bool (*callback)(void *param, const char *name, uint32_t id), void *param);
 
 EXPORT int gs_create(graphics_t **graphics, const char *module, uint32_t adapter);
+
+/**
+ * iOS port: graphics modules are linked statically into the app.  A static
+ * module is registered with a function that returns the module's export for
+ * a given symbol name, and gs_create() uses it instead of dlopen/dlsym when
+ * the module name matches.
+ */
+typedef void *(*gs_static_module_lookup_t)(const char *symbol);
+EXPORT void gs_register_static_module(const char *module, gs_static_module_lookup_t lookup);
 EXPORT void gs_destroy(graphics_t *graphics);
 
 EXPORT void gs_enter_context(graphics_t *graphics);

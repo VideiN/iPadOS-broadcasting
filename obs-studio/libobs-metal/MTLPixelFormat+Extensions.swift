@@ -202,12 +202,22 @@ extension MTLPixelFormat {
 
     /// Property to check whether the pixel format is depth stencil format
     var isStencil: Bool {
+        #if os(macOS)
         switch self {
         case .stencil8, .x24_stencil8, .x32_stencil8, .depth24Unorm_stencil8, .depth32Float_stencil8:
             return true
         default:
             return false
         }
+        #else
+        // iOS port: x24_stencil8 and depth24Unorm_stencil8 are macOS only
+        switch self {
+        case .stencil8, .x32_stencil8, .depth32Float_stencil8:
+            return true
+        default:
+            return false
+        }
+        #endif
     }
 
     /// Returns number of color components used by the pixel format
