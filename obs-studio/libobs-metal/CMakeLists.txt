@@ -44,7 +44,7 @@ if(OS_IOS)
   # Its exports named gs_* would collide with the libobs functions of the same name, so they are renamed to
   # metal_gs_* in a generated copy of the sources. A generated lookup table (libobs_metal_get_export) maps the names
   # libobs asks for to these functions; the app registers it with gs_register_static_module("libobs-metal", ...).
-  list(APPEND libobs_metal_sources OBSDisplayLink.swift)
+  list(APPEND libobs_metal_sources OBSDisplayLink.swift OBSGPUTimeStats.swift)
 
   set(generated_dir "${CMAKE_CURRENT_BINARY_DIR}/generated")
   set(generated_sources "")

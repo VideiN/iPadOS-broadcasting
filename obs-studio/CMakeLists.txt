@@ -23,6 +23,12 @@ if(OS_IOS)
 
   add_subdirectory(libobs)
   add_subdirectory(libobs-metal)
+  add_subdirectory(plugins/image-source)
+
+  option(ENABLE_APP "Build the iPadOS app in ../app" ON)
+  if(ENABLE_APP)
+    add_subdirectory("${CMAKE_SOURCE_DIR}/../app" "${CMAKE_BINARY_DIR}/app")
+  endif()
 
   if(ENABLE_UNIT_TESTS)
     enable_testing()

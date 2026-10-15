@@ -623,6 +623,9 @@ class MetalDevice {
             return
         }
 
+        #if os(iOS)
+        commandBuffer.addCompletedHandler { OBSGPUTimeStats.shared.record($0) }
+        #endif
         commandBuffer.commit()
 
         renderState.inFlightRenderTargets.forEach {
