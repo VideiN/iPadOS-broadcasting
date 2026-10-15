@@ -83,7 +83,8 @@ jobs:
             "${extra_args[@]}"
 
       - name: Build
-        run: cmake --build "$BUILD_DIR" --parallel
+        # -k 0: 첫 오류에서 멈추지 않고 모든 오류를 한 번에 보여 준다
+        run: cmake --build "$BUILD_DIR" --parallel -- -k 0
 
       - name: Test on simulator
         if: matrix.platform == 'iphonesimulator'

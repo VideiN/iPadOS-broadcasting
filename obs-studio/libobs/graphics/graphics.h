@@ -20,7 +20,13 @@
 #include "../util/bmem.h"
 #include "input.h"
 #ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
 #include <objc/objc-runtime.h>
+#else
+/* iOS port: objc-runtime.h only exists in the macOS SDK; objc.h provides `id` */
+#include <objc/objc.h>
+#endif
 #endif
 
 /*
