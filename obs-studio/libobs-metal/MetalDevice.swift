@@ -125,7 +125,9 @@ class MetalDevice {
         }
         #else
         let videoResetCallback = { [self] in
-            displayLink?.setFrameRate(MetalDevice.outputFrameRate())
+            guard let displayLink else { return }
+
+            displayLink.setFrameRate(MetalDevice.outputFrameRate())
         }
         #endif
 
