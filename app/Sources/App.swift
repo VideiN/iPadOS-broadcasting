@@ -1,8 +1,17 @@
 import SwiftUI
 
+/// 진단용 로그. 프로세스 시작 후 경과 시간을 앞에 붙인다.
+func appLog(_ message: String) {
+    let uptime = ProcessInfo.processInfo.systemUptime - processStartUptime
+    print(String(format: "[app %7.2fs] ", uptime) + message)
+}
+
+private let processStartUptime = ProcessInfo.processInfo.systemUptime
+
 @main
 struct BroadcastApp: App {
     init() {
+        appLog("init")
         Core.shared.start()
     }
 
@@ -30,6 +39,6 @@ final class Core {
         guard !isRunning, let resourcePath = Bundle.main.resourcePath else { return }
 
         isRunning = core_startup(resourcePath, width, height, fps)
-        print(isRunning ? "[app] core started" : "[app] core_startup failed")
+        appLog(isRunning ? "core started" : "core_startup failed")
     }
 }

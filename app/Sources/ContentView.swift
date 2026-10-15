@@ -17,6 +17,7 @@ struct ContentView: View {
                 .padding(12)
         }
         .onAppear {
+            appLog("content appeared")
             // 방송 중 화면 자동 잠금을 막는다 (계획 5.4)
             UIApplication.shared.isIdleTimerDisabled = true
         }
@@ -77,7 +78,7 @@ final class Diagnostics: ObservableObject {
         // 같은 값을 5초마다 로그로도 남긴다
         if Date().timeIntervalSince(lastLog) >= 5 {
             lastLog = Date()
-            print(
+            appLog(
                 String(
                     format: "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,

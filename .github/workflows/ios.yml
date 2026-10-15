@@ -111,8 +111,11 @@ jobs:
 
           xcrun simctl install "$SIM_UDID" "$app"
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" > app-run/app.log 2>&1 &
-          sleep 20
-          xcrun simctl io "$SIM_UDID" screenshot app-run/simulator.png
+          # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
+          for t in 10 40 80; do
+            sleep $((t - ${prev:-0})); prev=$t
+            xcrun simctl io "$SIM_UDID" screenshot "app-run/simulator-${t}s.png"
+          done
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -124,7 +127,7 @@ jobs:
           sleep 2
 
           cat app-run/app.log
-          grep -q '\[app\] core started' app-run/app.log
+          grep -q 'core started' app-run/app.log
           grep -q '\[stats\]' app-run/app.log
 
       - uses: actions/upload-artifact@v7

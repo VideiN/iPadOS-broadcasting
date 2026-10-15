@@ -36,6 +36,7 @@ final class MetalPreviewView: UIView {
             core_display_resize(display, width, height)
         } else if window != nil, Core.shared.isRunning, bounds.width > 0, bounds.height > 0 {
             display = core_display_create(Unmanaged.passUnretained(self).toOpaque(), width, height)
+            appLog("display created \(width)x\(height): \(display != nil)")
         }
     }
 
