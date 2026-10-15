@@ -4,19 +4,103 @@
  * active input route of its AVAudioSession, so this source picks the preferred input port (built-in microphone, USB
  * audio interface, ...) and forwards one or two channels of AVAudioEngine's input node to libobs.
  *
- * Engine (re)configuration runs on a private serial queue. The tap block runs on AVAudioEngine's own thread. */
+ * Audio is received through an AVAudioSinkNode, which is called on the realtime IO thread once per IO buffer (a few
+ * milliseconds), like the AUHAL callback of mac-capture. An input node tap is the fallback: it only delivers about
+ * 100 ms per buffer on iOS, which libobs has to absorb with extra audio buffering.
+ *
+ * Engine (re)configuration runs on a private serial queue. */
 
 @import AVFoundation;
+
+#import <objc/runtime.h>
 
 #include <obs-module.h>
 #include <util/platform.h>
 
 #include <math.h>
+#include <stdatomic.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
 
 #define LOG(level, format, ...) blog(level, "[ios-audio-input] " format, ##__VA_ARGS__)
+
+/* State shared with the audio callbacks of one engine. The callback blocks keep it alive for as long as they can run. */
+@interface IOSAudioInputState : NSObject {
+@public
+    obs_source_t *source;
+    uint32_t firstChannel;
+    uint32_t channels;
+    atomic_bool received;
+
+    /* Delivery statistics, logged every 10 seconds so problems can be told apart on the device (no buffers, silent
+     * buffers, late buffers). Only touched by the callback, which runs serially. */
+    uint64_t statsStart;
+    uint64_t statsBuffers;
+    uint64_t statsFrames;
+    uint64_t statsMaxDelay;
+    float statsPeak;
+}
+@end
+
+@implementation IOSAudioInputState
+@end
+
+/* planes holds every channel of the input; the selected one or two go to libobs */
+static void output_audio(__unsafe_unretained IOSAudioInputState *state, float *const *planes, uint32_t planeCount,
+                         uint32_t frames, uint32_t sampleRate, uint64_t timestamp)
+{
+    if (frames == 0 || state->firstChannel + state->channels > planeCount) {
+        return;
+    }
+
+    uint64_t now = os_gettime_ns();
+
+    struct obs_source_audio audio = {
+        .frames = frames,
+        .speakers = state->channels == 1 ? SPEAKERS_MONO : SPEAKERS_STEREO,
+        .format = AUDIO_FORMAT_FLOAT_PLANAR,
+        .samples_per_sec = sampleRate,
+        .timestamp = timestamp,
+    };
+
+    for (uint32_t i = 0; i < state->channels; i++) {
+        const float *samples = planes[state->firstChannel + i];
+        audio.data[i] = (const uint8_t *) samples;
+
+        for (uint32_t j = 0; j < frames; j++) {
+            state->statsPeak = fmaxf(state->statsPeak, fabsf(samples[j]));
+        }
+    }
+
+    obs_source_output_audio(state->source, &audio);
+    atomic_store(&state->received, true);
+
+    uint64_t delay = now > timestamp ? now - timestamp : 0;
+    state->statsBuffers++;
+    state->statsFrames += frames;
+    state->statsMaxDelay = MAX(state->statsMaxDelay, delay);
+
+    if (state->statsStart == 0) {
+        state->statsStart = now;
+        LOG(LOG_INFO, "first buffer: %u frames, %.1f ms after capture", frames, delay / 1000000.0);
+    } else if (now - state->statsStart >= 10000000000ULL) {
+        LOG(LOG_INFO, "%llu buffers (%llu frames each on average), peak %.1f dBFS, max delay %.1f ms",
+            state->statsBuffers, state->statsFrames / state->statsBuffers,
+            state->statsPeak > 0.0f ? 20.0f * log10f(state->statsPeak) : -INFINITY, state->statsMaxDelay / 1000000.0);
+        state->statsStart = now;
+        state->statsBuffers = 0;
+        state->statsFrames = 0;
+        state->statsMaxDelay = 0;
+        state->statsPeak = 0.0f;
+    }
+}
+
+/* AVAudioTime host time and os_gettime_ns() both count mach absolute time */
+static uint64_t host_time_to_ns(uint64_t hostTime)
+{
+    return (uint64_t) ([AVAudioTime secondsForHostTime:hostTime] * 1000000000.0);
+}
 
 @interface IOSAudioInput : NSObject
 - (instancetype)initWithSource:(obs_source_t *)source;
@@ -35,6 +119,8 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
     BOOL _measurementMode;
 
     AVAudioEngine *_engine;
+    BOOL _engineUsesTap;
+    BOOL _preferTap; /* set when the sink node delivered nothing */
     uint64_t _restartGeneration;
     BOOL _shutDown;
 }
@@ -171,19 +257,51 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
 
 - (void)startEngine
 {
+    BOOL useTap = _preferTap;
+    AVAudioEngine *engine = useTap ? nil : [self createEngineUsingTap:NO];
+
+    if (!engine) {
+        useTap = YES;
+        engine = [self createEngineUsingTap:YES];
+    }
+
+    if (!engine) {
+        return;
+    }
+
+    _engine = engine;
+    _engineUsesTap = useTap;
+
+    /* The sink node can start without ever being called; fall back to the tap if nothing arrives */
+    if (!useTap) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), _queue, ^{
+            IOSAudioInputState *state = objc_getAssociatedObject(engine, @selector(startEngine));
+
+            if (self->_engine == engine && state && !atomic_load(&state->received)) {
+                LOG(LOG_WARNING, "no audio from the sink node, falling back to an input tap");
+                self->_preferTap = YES;
+                [self restart];
+            }
+        });
+    }
+}
+
+/* Returns a running engine, or nil */
+- (AVAudioEngine *)createEngineUsingTap:(BOOL)useTap
+{
     AVAudioEngine *engine = [[AVAudioEngine alloc] init];
     AVAudioInputNode *inputNode = engine.inputNode;
     AVAudioFormat *format = [inputNode outputFormatForBus:0];
 
     if (format.channelCount == 0 || format.sampleRate <= 0) {
         LOG(LOG_WARNING, "no audio input available");
-        return;
+        return nil;
     }
 
     if (format.commonFormat != AVAudioPCMFormatFloat32 || format.interleaved) {
         LOG(LOG_WARNING, "unexpected input format (common format %ld, interleaved %d)", (long) format.commonFormat,
             format.interleaved);
-        return;
+        return nil;
     }
 
     NSInteger first = _firstChannel - 1;
@@ -197,78 +315,51 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
         count = format.channelCount - first;
     }
 
-    obs_source_t *source = _source;
-    const uint32_t firstChannel = (uint32_t) first;
-    const uint32_t channels = (uint32_t) count;
+    IOSAudioInputState *state = [[IOSAudioInputState alloc] init];
+    state->source = _source;
+    state->firstChannel = (uint32_t) first;
+    state->channels = (uint32_t) count;
+    atomic_init(&state->received, false);
 
-    /* Delivery statistics, logged every 10 seconds so problems can be told apart on the device (no buffers, silent
-     * buffers, late buffers). Only touched by the tap block, which AVAudioEngine calls serially. */
-    __block uint64_t statsStart = 0;
-    __block uint64_t statsBuffers = 0;
-    __block uint64_t statsFrames = 0;
-    __block uint64_t statsMaxDelay = 0;
-    __block float statsPeak = 0.0f;
+    const uint32_t sampleRate = (uint32_t) format.sampleRate;
 
     @try {
-        [inputNode installTapOnBus:0 bufferSize:(AVAudioFrameCount) (format.sampleRate / 100) format:format
-                             block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
-                                 float *const *data = buffer.floatChannelData;
+        if (useTap) {
+            [inputNode installTapOnBus:0 bufferSize:(AVAudioFrameCount) (format.sampleRate / 100) format:format
+                                 block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
+                                     float *const *planes = buffer.floatChannelData;
 
-                                 if (!data || buffer.frameLength == 0) {
-                                     return;
-                                 }
-
-                                 /* AVAudioTime host time and os_gettime_ns() both count mach absolute time */
-                                 uint64_t now = os_gettime_ns();
-                                 uint64_t timestamp =
-                                     when.hostTimeValid
-                                         ? (uint64_t) ([AVAudioTime secondsForHostTime:when.hostTime] * 1000000000.0)
-                                         : now;
-
-                                 struct obs_source_audio audio = {
-                                     .frames = buffer.frameLength,
-                                     .speakers = channels == 1 ? SPEAKERS_MONO : SPEAKERS_STEREO,
-                                     .format = AUDIO_FORMAT_FLOAT_PLANAR,
-                                     .samples_per_sec = (uint32_t) buffer.format.sampleRate,
-                                     .timestamp = timestamp,
-                                 };
-
-                                 for (uint32_t i = 0; i < channels; i++) {
-                                     audio.data[i] = (const uint8_t *) data[firstChannel + i];
-
-                                     for (AVAudioFrameCount j = 0; j < buffer.frameLength; j++) {
-                                         statsPeak = fmaxf(statsPeak, fabsf(data[firstChannel + i][j]));
+                                     if (planes) {
+                                         uint64_t timestamp = when.hostTimeValid ? host_time_to_ns(when.hostTime)
+                                                                                 : os_gettime_ns();
+                                         output_audio(state, planes, buffer.format.channelCount,
+                                                      buffer.frameLength, sampleRate, timestamp);
                                      }
-                                 }
+                                 }];
+        } else {
+            AVAudioSinkNode *sink = [[AVAudioSinkNode alloc]
+                initWithReceiverBlock:^OSStatus(const AudioTimeStamp *time, AVAudioFrameCount frameCount,
+                                                const AudioBufferList *bufferList) {
+                    float *planes[64];
+                    uint32_t planeCount = MIN(bufferList->mNumberBuffers, 64);
 
-                                 obs_source_output_audio(source, &audio);
+                    for (uint32_t i = 0; i < planeCount; i++) {
+                        planes[i] = bufferList->mBuffers[i].mData;
+                    }
 
-                                 uint64_t delay = now > timestamp ? now - timestamp : 0;
-                                 statsBuffers++;
-                                 statsFrames += buffer.frameLength;
-                                 statsMaxDelay = MAX(statsMaxDelay, delay);
+                    uint64_t timestamp = (time->mFlags & kAudioTimeStampHostTimeValid)
+                                             ? host_time_to_ns(time->mHostTime)
+                                             : os_gettime_ns();
+                    output_audio(state, planes, planeCount, frameCount, sampleRate, timestamp);
+                    return noErr;
+                }];
 
-                                 if (statsStart == 0) {
-                                     statsStart = now;
-                                     LOG(LOG_INFO, "first buffer: %u frames, %.1f ms after capture",
-                                         buffer.frameLength, delay / 1000000.0);
-                                 } else if (now - statsStart >= 10000000000ULL) {
-                                     LOG(LOG_INFO,
-                                         "%llu buffers (%llu frames each on average), peak %.1f dBFS, "
-                                         "max delay %.1f ms",
-                                         statsBuffers, statsFrames / statsBuffers,
-                                         statsPeak > 0.0f ? 20.0f * log10f(statsPeak) : -INFINITY,
-                                         statsMaxDelay / 1000000.0);
-                                     statsStart = now;
-                                     statsBuffers = 0;
-                                     statsFrames = 0;
-                                     statsMaxDelay = 0;
-                                     statsPeak = 0.0f;
-                                 }
-                             }];
+            [engine attachNode:sink];
+            [engine connect:inputNode to:sink format:format];
+        }
     } @catch (NSException *exception) {
-        LOG(LOG_ERROR, "installTap failed: %s", exception.reason.UTF8String);
-        return;
+        LOG(LOG_ERROR, "%s setup failed: %s", useTap ? "tap" : "sink node", exception.reason.UTF8String);
+        return nil;
     }
 
     [engine prepare];
@@ -276,16 +367,22 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
     NSError *error = nil;
 
     if (![engine startAndReturnError:&error]) {
-        LOG(LOG_ERROR, "engine start failed: %s", error.localizedDescription.UTF8String);
-        [inputNode removeTapOnBus:0];
-        return;
+        LOG(LOG_ERROR, "engine start failed (%s): %s", useTap ? "tap" : "sink node",
+            error.localizedDescription.UTF8String);
+        if (useTap) {
+            [inputNode removeTapOnBus:0];
+        }
+        return nil;
     }
 
-    _engine = engine;
+    /* Kept with the engine for the sink node watchdog */
+    objc_setAssociatedObject(engine, @selector(startEngine), state, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
-    LOG(LOG_INFO, "capturing input channel %u%s of %u at %.0f Hz", firstChannel + 1,
-        channels == 2 ? [NSString stringWithFormat:@"-%u", firstChannel + 2].UTF8String : "",
-        (unsigned) format.channelCount, format.sampleRate);
+    LOG(LOG_INFO, "capturing input channel %u%s of %u at %u Hz (%s)", state->firstChannel + 1,
+        state->channels == 2 ? [NSString stringWithFormat:@"-%u", state->firstChannel + 2].UTF8String : "",
+        (unsigned) format.channelCount, sampleRate, useTap ? "input tap" : "sink node");
+
+    return engine;
 }
 
 - (void)stopEngine
@@ -294,7 +391,10 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
         return;
     }
 
-    [_engine.inputNode removeTapOnBus:0];
+    if (_engineUsesTap) {
+        [_engine.inputNode removeTapOnBus:0];
+    }
+
     [_engine stop];
     _engine = nil;
 }
