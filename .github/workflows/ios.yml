@@ -98,11 +98,69 @@ jobs:
           ')
           xcrun simctl list devices | grep "$udid"
           xcrun simctl bootstatus "$udid" -b
+          echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose --timeout 300
+
+      # 앱을 시뮬레이터에서 실제로 띄워 프리뷰 스크린숏과 로그를 남긴다
+      - name: Run app on simulator
+        if: matrix.platform == 'iphonesimulator'
+        run: |
+          app=$(ls -d "$BUILD_DIR"/app/*.app)
+          bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          mkdir -p app-run
+
+          xcrun simctl install "$SIM_UDID" "$app"
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" > app-run/app.log 2>&1 &
+          # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
+          for t in 10 40 80; do
+            sleep $((t - ${prev:-0})); prev=$t
+            xcrun simctl io "$SIM_UDID" screenshot "app-run/simulator-${t}s.png"
+          done
+
+          # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
+          pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
+          if [ -n "$pid" ]; then sample "$pid" 2 -file app-run/sample.txt > /dev/null 2>&1 || true; fi
+          xcrun simctl spawn "$SIM_UDID" log show --last 1m --style compact \
+            --predicate "process == \"$(basename "$app" .app)\"" > app-run/system.log 2>&1 || true
+
+          xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
+          sleep 2
+
+          cat app-run/app.log
+          grep -q 'core started' app-run/app.log
+          grep -q '\[stats\]' app-run/app.log
+
+      - uses: actions/upload-artifact@v7
+        if: always() && matrix.platform == 'iphonesimulator'
+        with:
+          name: app-simulator-run
+          path: app-run
+          if-no-files-found: ignore
+
+      # fake-signed IPA (계획 8.3). 설치는 LiveContainer로 한다.
+      - name: Package IPA
+        if: matrix.platform == 'iphoneos'
+        run: |
+          app=$(ls -d "$BUILD_DIR"/app/*.app)
+          name=$(basename "$app" .app)
+          mkdir -p dist/ipa/Payload
+          cp -R "$app" dist/ipa/Payload/
+          (cd dist/ipa && zip -qry "../$name.ipa" Payload)
+          dsymutil "$app/$name" -o "dist/$name.app.dSYM"
+          codesign -dv "$app" 2>&1 | grep -E 'Identifier|Signature'
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.platform == 'iphoneos'
+        with:
+          name: app-ipa
+          path: |
+            dist/*.ipa
+            dist/*.dSYM
 
       - name: Show crash reports
         if: failure() && matrix.platform == 'iphonesimulator'
-        run: python3 ios/scripts/print-crash-reports.py ~/Library/Logs/DiagnosticReports 'test_*'
+        run: python3 ios/scripts/print-crash-reports.py ~/Library/Logs/DiagnosticReports '*'
 
       - name: Install
         run: cmake --install "$BUILD_DIR"
