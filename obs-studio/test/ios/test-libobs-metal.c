@@ -71,7 +71,8 @@ static void solid_render(void *data, gs_effect_t *effect)
 static struct obs_source_info solid_source = {
 	.id = "solid_test",
 	.type = OBS_SOURCE_TYPE_INPUT,
-	.output_flags = OBS_SOURCE_VIDEO,
+	/* CUSTOM_DRAW: the source uses its own effect instead of the default one */
+	.output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW,
 	.get_name = solid_get_name,
 	.create = solid_create,
 	.destroy = solid_destroy,
