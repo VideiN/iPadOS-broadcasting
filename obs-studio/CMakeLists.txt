@@ -15,6 +15,27 @@ include(compilerconfig)
 include(defaults)
 include(helpers)
 
+# iOS port: build libobs and the modules that get linked statically into the
+# app. Graphics backends, plugins and the frontend are added step by step.
+if(OS_IOS)
+  option(ENABLE_HEVC "Enable HEVC encoders" ON)
+  option(ENABLE_UNIT_TESTS "Build unit tests (run on the iOS simulator)" OFF)
+
+  add_subdirectory(libobs)
+  add_subdirectory(libobs-metal)
+
+  if(ENABLE_UNIT_TESTS)
+    enable_testing()
+    set(ENABLE_TEST_INPUT ON)
+    add_subdirectory(test/test-input)
+    add_subdirectory(test/cmocka)
+    add_subdirectory(test/ios)
+  endif()
+
+  message_configuration()
+  return()
+endif()
+
 option(ENABLE_FRONTEND "Enable building with UI (requires Qt)" ON)
 option(ENABLE_SCRIPTING "Enable scripting support" ON)
 option(ENABLE_HEVC "Enable HEVC encoders" ON)

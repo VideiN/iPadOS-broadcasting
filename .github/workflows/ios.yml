@@ -1,0 +1,113 @@
+name: iOS
+
+on:
+  push:
+    paths-ignore:
+      - '**.md'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # 의존성은 ios/deps/build-deps.sh나 ios/config.env가 바뀔 때만 다시 빌드하고 캐시에 둔다.
+  deps:
+    name: deps (${{ matrix.platform }})
+    runs-on: macos-26
+    strategy:
+      matrix:
+        platform: [iphoneos, iphonesimulator]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios
+
+      - name: Restore cached deps
+        id: cache
+        uses: actions/cache@v6
+        with:
+          path: .deps/ios-${{ matrix.platform }}
+          key: ios-deps-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
+
+      - name: Build deps
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: bash ios/deps/build-deps.sh ${{ matrix.platform }}
+
+  libobs:
+    name: libobs (${{ matrix.platform }})
+    needs: deps
+    runs-on: macos-26
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [iphoneos, iphonesimulator]
+    env:
+      BUILD_DIR: build_ios-${{ matrix.platform }}
+      DEPS_DIR: ${{ github.workspace }}/.deps/ios-${{ matrix.platform }}
+      DIST_DIR: ${{ github.workspace }}/dist/libobs-ios-${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Load config
+        run: cat ios/config.env >> "$GITHUB_ENV"
+
+      - name: Restore cached deps
+        uses: actions/cache/restore@v6
+        with:
+          path: .deps/ios-${{ matrix.platform }}
+          key: ios-deps-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
+          fail-on-cache-miss: true
+
+      - name: Configure
+        run: |
+          extra_args=()
+          if [ "${{ matrix.platform }}" = iphonesimulator ]; then
+            extra_args+=(-DENABLE_UNIT_TESTS=ON "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/bash;$PWD/ios/scripts/sim-run.sh")
+          fi
+
+          export PKG_CONFIG_LIBDIR="$DEPS_DIR/lib/pkgconfig"
+          cmake -S obs-studio -B "$BUILD_DIR" -G Ninja \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT="$(xcrun --sdk ${{ matrix.platform }} --show-sdk-path)" \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET="$IOS_DEPLOYMENT_TARGET" \
+            -DCMAKE_PREFIX_PATH="$DEPS_DIR" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_INSTALL_PREFIX="$DIST_DIR" \
+            -DOBS_VERSION_OVERRIDE="$OBS_VERSION" \
+            "${extra_args[@]}"
+
+      - name: Build
+        # -k 0: 첫 오류에서 멈추지 않고 모든 오류를 한 번에 보여 준다
+        run: cmake --build "$BUILD_DIR" --parallel -- -k 0
+
+      - name: Test on simulator
+        if: matrix.platform == 'iphonesimulator'
+        run: |
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          ios = sorted(((runtime, d) for runtime, ds in devices.items() if ".iOS-" in runtime for d in ds), key=lambda t: t[0])
+          ipads = [d for _, d in ios if d["name"].startswith("iPad")] or [d for _, d in ios]
+          print(ipads[-1]["udid"])
+          ')
+          xcrun simctl list devices | grep "$udid"
+          xcrun simctl bootstatus "$udid" -b
+          SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose --timeout 300
+
+      - name: Show crash reports
+        if: failure() && matrix.platform == 'iphonesimulator'
+        run: python3 ios/scripts/print-crash-reports.py ~/Library/Logs/DiagnosticReports 'test_*'
+
+      - name: Install
+        run: cmake --install "$BUILD_DIR"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: libobs-ios-${{ matrix.platform }}
+          path: dist/libobs-ios-${{ matrix.platform }}

@@ -20,9 +20,11 @@
 #include "../util/platform.h"
 #include "graphics-internal.h"
 
+/* iOS port: symbols are resolved through `resolve`, which is os_dlsym for
+ * dynamically loaded modules and a lookup table for static modules. */
 #define GRAPHICS_IMPORT(func)                                     \
 	do {                                                      \
-		exports->func = os_dlsym(module, #func);          \
+		exports->func = resolve(module, #func);           \
 		if (!exports->func) {                             \
 			success = false;                          \
 			blog(LOG_ERROR,                           \
@@ -32,12 +34,13 @@
 		}                                                 \
 	} while (false)
 
-#define GRAPHICS_IMPORT_OPTIONAL(func)                   \
-	do {                                             \
-		exports->func = os_dlsym(module, #func); \
+#define GRAPHICS_IMPORT_OPTIONAL(func)                    \
+	do {                                              \
+		exports->func = resolve(module, #func);   \
 	} while (false)
 
-bool load_graphics_imports(struct gs_exports *exports, void *module, const char *module_name)
+static bool load_imports(struct gs_exports *exports, void *(*resolve)(void *, const char *), void *module,
+			 const char *module_name)
 {
 	bool success = true;
 
@@ -256,4 +259,31 @@ bool load_graphics_imports(struct gs_exports *exports, void *module, const char 
 #endif
 
 	return success;
+}
+
+static void *resolve_dlsym(void *module, const char *symbol)
+{
+	return os_dlsym(module, symbol);
+}
+
+bool load_graphics_imports(struct gs_exports *exports, void *module, const char *module_name)
+{
+	return load_imports(exports, resolve_dlsym, module, module_name);
+}
+
+struct static_lookup {
+	gs_static_module_lookup_t lookup;
+};
+
+static void *resolve_static(void *module, const char *symbol)
+{
+	struct static_lookup *static_lookup = module;
+	return static_lookup->lookup(symbol);
+}
+
+bool load_graphics_imports_static(struct gs_exports *exports, gs_static_module_lookup_t lookup,
+				  const char *module_name)
+{
+	struct static_lookup static_lookup = {lookup};
+	return load_imports(exports, resolve_static, &static_lookup, module_name);
 }

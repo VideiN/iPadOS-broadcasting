@@ -91,6 +91,38 @@ extern void gs_init_image_deps(void);
 extern void gs_free_image_deps(void);
 
 bool load_graphics_imports(struct gs_exports *exports, void *module, const char *module_name);
+bool load_graphics_imports_static(struct gs_exports *exports, gs_static_module_lookup_t lookup,
+				  const char *module_name);
+
+#define MAX_STATIC_GRAPHICS_MODULES 4
+
+static struct {
+	const char *name;
+	gs_static_module_lookup_t lookup;
+} static_graphics_modules[MAX_STATIC_GRAPHICS_MODULES];
+
+void gs_register_static_module(const char *module, gs_static_module_lookup_t lookup)
+{
+	for (size_t i = 0; i < MAX_STATIC_GRAPHICS_MODULES; i++) {
+		if (!static_graphics_modules[i].name || strcmp(static_graphics_modules[i].name, module) == 0) {
+			static_graphics_modules[i].name = module;
+			static_graphics_modules[i].lookup = lookup;
+			return;
+		}
+	}
+
+	blog(LOG_ERROR, "gs_register_static_module: too many static graphics modules");
+}
+
+static gs_static_module_lookup_t find_static_graphics_module(const char *module)
+{
+	for (size_t i = 0; i < MAX_STATIC_GRAPHICS_MODULES; i++) {
+		if (static_graphics_modules[i].name && strcmp(static_graphics_modules[i].name, module) == 0)
+			return static_graphics_modules[i].lookup;
+	}
+
+	return NULL;
+}
 
 static bool graphics_init_immediate_vb(struct graphics_subsystem *graphics)
 {
@@ -203,14 +235,20 @@ int gs_create(graphics_t **pgraphics, const char *module, uint32_t adapter)
 	pthread_mutex_init_value(&graphics->mutex);
 	pthread_mutex_init_value(&graphics->effect_mutex);
 
-	graphics->module = os_dlopen(module);
-	if (!graphics->module) {
-		errcode = GS_ERROR_MODULE_NOT_FOUND;
-		goto error;
-	}
+	gs_static_module_lookup_t static_lookup = find_static_graphics_module(module);
+	if (static_lookup) {
+		if (!load_graphics_imports_static(&graphics->exports, static_lookup, module))
+			goto error;
+	} else {
+		graphics->module = os_dlopen(module);
+		if (!graphics->module) {
+			errcode = GS_ERROR_MODULE_NOT_FOUND;
+			goto error;
+		}
 
-	if (!load_graphics_imports(&graphics->exports, graphics->module, module))
-		goto error;
+		if (!load_graphics_imports(&graphics->exports, graphics->module, module))
+			goto error;
+	}
 
 	errcode = graphics->exports.device_create(&graphics->device, adapter);
 	if (errcode != GS_SUCCESS)

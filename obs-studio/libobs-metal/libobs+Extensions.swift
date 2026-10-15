@@ -399,7 +399,12 @@ extension gs_zstencil_format {
         case GS_Z16:
             return .depth16Unorm
         case GS_Z24_S8:
+            #if os(macOS)
             return .depth24Unorm_stencil8
+            #else
+            // iOS port: 24-bit depth formats do not exist on iOS GPUs
+            return .depth32Float_stencil8
+            #endif
         case GS_Z32F:
             return .depth32Float
         case GS_Z32F_S8X24:

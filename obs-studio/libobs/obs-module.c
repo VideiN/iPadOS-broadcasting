@@ -204,6 +204,69 @@ int obs_open_module(obs_module_t **module, const char *path, const char *data_pa
 	return MODULE_SUCCESS;
 }
 
+int obs_open_static_module(obs_module_t **module, const struct obs_static_module *info, const char *data_path)
+{
+	struct obs_module mod = {0};
+
+	if (!module || !info || !info->name || !obs)
+		return MODULE_ERROR;
+
+	if (!info->load)
+		return req_func_not_found("obs_module_load", info->name);
+	if (!info->set_pointer)
+		return req_func_not_found("obs_module_set_pointer", info->name);
+	if (!info->ver)
+		return req_func_not_found("obs_module_ver", info->name);
+
+	uint32_t ver = info->ver() & 0xFFFF0000;
+	if (ver > LIBOBS_API_VER) {
+		blog(LOG_WARNING, "Module '%s' compiled with newer libobs %d.%d", info->name, (ver >> 24) & 0xFF,
+		     (ver >> 16) & 0xFF);
+		return MODULE_INCOMPATIBLE_VER;
+	}
+
+	blog(LOG_DEBUG, "---------------------------------");
+
+	/* free_module() only calls unload/free_locale when this is set */
+	mod.module = (void *)info;
+	mod.load = info->load;
+	mod.unload = info->unload;
+	mod.post_load = info->post_load;
+	mod.set_locale = info->set_locale;
+	mod.free_locale = info->free_locale;
+	mod.get_string = info->get_string;
+	mod.ver = info->ver;
+	mod.set_pointer = info->set_pointer;
+	mod.name = info->display_name;
+	mod.description = info->description;
+	mod.author = info->author;
+
+	mod.bin_path = bstrdup(info->name);
+	mod.file = mod.bin_path;
+	mod.mod_name = bstrdup(info->name);
+	mod.data_path = bstrdup(data_path);
+	mod.next = obs->first_module;
+	mod.load_state = OBS_MODULE_ENABLED;
+
+	da_init(mod.sources);
+	da_init(mod.outputs);
+	da_init(mod.encoders);
+	da_init(mod.services);
+
+	blog(LOG_DEBUG, "Loading static module: %s", mod.file);
+
+	obs_module_load_metadata(&mod);
+
+	*module = bmemdup(&mod, sizeof(mod));
+	obs->first_module = (*module);
+	mod.set_pointer(*module);
+
+	if (mod.set_locale)
+		mod.set_locale(obs->locale);
+
+	return MODULE_SUCCESS;
+}
+
 bool obs_create_disabled_module(obs_module_t **module, const char *path, const char *data_path,
 				enum obs_module_load_state state)
 {

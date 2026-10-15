@@ -493,6 +493,41 @@ EXPORT bool obs_create_disabled_module(obs_module_t **module, const char *path, 
 				       enum obs_module_load_state state);
 
 /**
+ * iOS port: exports of a module that is linked statically into the app
+ * instead of being loaded with dlopen.  The build system generates one of
+ * these per static module (see cmake/ios/helpers.cmake).
+ */
+struct obs_static_module {
+	const char *name;
+	bool (*load)(void);
+	void (*unload)(void);
+	void (*post_load)(void);
+	void (*set_locale)(const char *locale);
+	void (*free_locale)(void);
+	bool (*get_string)(const char *lookup_string, const char **translated_string);
+	uint32_t (*ver)(void);
+	void (*set_pointer)(obs_module_t *module);
+	const char *(*display_name)(void);
+	const char *(*description)(void);
+	const char *(*author)(void);
+};
+
+/**
+ * iOS port: registers a statically linked module.  Works like
+ * obs_open_module, so call obs_init_module afterwards.
+ *
+ * @param  module     The pointer to the created module.
+ * @param  info       Exports of the static module.
+ * @param  data_path  Directory with the module's data files (may be NULL).
+ * @returns           MODULE_SUCCESS if successful
+ *                    MODULE_ERROR if a generic error occurred
+ *                    MODULE_MISSING_EXPORTS if required exports are missing
+ *                    MODULE_INCOMPATIBLE_VER if incompatible version
+ */
+EXPORT int obs_open_static_module(obs_module_t **module, const struct obs_static_module *info,
+				  const char *data_path);
+
+/**
  * Initializes the module, which calls its obs_module_load export.  If the
  * module is already loaded, then this function does nothing and returns
  * successful.

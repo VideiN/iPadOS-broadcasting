@@ -27,14 +27,22 @@
 #include <sys/param.h>
 #include <sys/sysctl.h>
 
+#include <TargetConditionals.h>
+
+#if TARGET_OS_OSX
 #include <CoreServices/CoreServices.h>
+#endif
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <mach-o/dyld.h>
 
+#if TARGET_OS_OSX
 #include <IOKit/pwr_mgt/IOPMLib.h>
 
 #import <Cocoa/Cocoa.h>
+#else
+#import <Foundation/Foundation.h>
+#endif
 
 #include "apple/cfstring-utils.h"
 
@@ -46,6 +54,10 @@ uint64_t os_gettime_ns(void)
 /* gets the location [domain mask]/Library/Application Support/[name] */
 static int os_get_path_internal(char *dst, size_t size, const char *name, NSSearchPathDomainMask domainMask)
 {
+#if !TARGET_OS_OSX
+    /* iOS port: only the app container's user domain exists */
+    domainMask = NSUserDomainMask;
+#endif
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, domainMask, YES);
 
     if ([paths count] == 0)
@@ -62,6 +74,10 @@ static int os_get_path_internal(char *dst, size_t size, const char *name, NSSear
 
 static char *os_get_path_ptr_internal(const char *name, NSSearchPathDomainMask domainMask)
 {
+#if !TARGET_OS_OSX
+    /* iOS port: only the app container's user domain exists */
+    domainMask = NSUserDomainMask;
+#endif
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, domainMask, YES);
 
     if ([paths count] == 0)
@@ -238,6 +254,7 @@ void os_end_high_performance(os_performance_token_t *token)
     }
 }
 
+#if TARGET_OS_OSX
 struct os_inhibit_info {
     CFStringRef reason;
     IOPMAssertionID sleep_id;
@@ -290,6 +307,36 @@ void os_inhibit_sleep_destroy(os_inhibit_t *info)
         bfree(info);
     }
 }
+#else
+/* iOS port: IOKit power assertions are not available. The app keeps the
+ * screen awake with UIApplication.isIdleTimerDisabled instead, so this only
+ * tracks the requested state. */
+struct os_inhibit_info {
+    bool active;
+};
+
+os_inhibit_t *os_inhibit_sleep_create(const char *reason)
+{
+    UNUSED_PARAMETER(reason);
+    return bzalloc(sizeof(struct os_inhibit_info));
+}
+
+bool os_inhibit_sleep_set_active(os_inhibit_t *info, bool active)
+{
+    if (!info)
+        return false;
+    if (info->active == active)
+        return false;
+
+    info->active = active;
+    return true;
+}
+
+void os_inhibit_sleep_destroy(os_inhibit_t *info)
+{
+    bfree(info);
+}
+#endif
 
 static int physical_cores = 0;
 static int logical_cores = 0;
@@ -319,12 +366,23 @@ static void os_get_cores_internal(void)
     size_t size;
     int ret;
 
+#if TARGET_OS_OSX
     size = sizeof(physical_cores);
     ret = sysctlbyname("machdep.cpu.core_count", &physical_cores, &size, NULL, 0);
     if (ret != 0)
         return;
 
     ret = sysctlbyname("machdep.cpu.thread_count", &logical_cores, &size, NULL, 0);
+#else
+    /* iOS port: machdep.cpu.* does not exist on iOS devices */
+    size = sizeof(physical_cores);
+    ret = sysctlbyname("hw.physicalcpu", &physical_cores, &size, NULL, 0);
+    if (ret != 0)
+        return;
+
+    size = sizeof(logical_cores);
+    ret = sysctlbyname("hw.logicalcpu", &logical_cores, &size, NULL, 0);
+#endif
 }
 
 int os_get_physical_cores(void)

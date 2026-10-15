@@ -187,6 +187,15 @@ class MetalTexture {
             return
         }
 
+        #if targetEnvironment(simulator)
+        // iOS port: the simulator GPU has no r8/rg8/bgra10_xr sRGB formats (iPad GPUs do)
+        let sRGBFormat: MTLPixelFormat? =
+            switch texture.pixelFormat {
+            case .bgra8Unorm: .bgra8Unorm_srgb
+            case .rgba8Unorm: .rgba8Unorm_srgb
+            default: nil
+            }
+        #else
         let sRGBFormat: MTLPixelFormat? =
             switch texture.pixelFormat {
             case .bgra8Unorm: .bgra8Unorm_srgb
@@ -196,6 +205,7 @@ class MetalTexture {
             case .bgra10_xr: .bgra10_xr_srgb
             default: nil
             }
+        #endif
 
         if let sRGBFormat {
             self.sRGBtexture = texture.makeTextureView(pixelFormat: sRGBFormat)

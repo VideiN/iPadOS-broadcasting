@@ -7,7 +7,12 @@ if(NOT ENABLE_TEST_INPUT)
   return()
 endif()
 
-add_library(test-input MODULE)
+if(OS_IOS)
+  # iOS port: modules are linked statically
+  add_library(test-input STATIC)
+else()
+  add_library(test-input MODULE)
+endif()
 add_library(OBS::test-input ALIAS test-input)
 
 target_sources(
@@ -24,5 +29,9 @@ target_sources(
 )
 
 target_link_libraries(test-input PRIVATE OBS::libobs)
+
+if(OS_IOS)
+  obs_ios_static_module(test-input)
+endif()
 
 set_target_properties_obs(test-input PROPERTIES FOLDER "Tests and Examples" PREFIX "")
