@@ -139,6 +139,8 @@ jobs:
           grep -q 'core started' app-run/app.log
           grep -q '\[stats\]' app-run/app.log
           grep -q 'capture started (camera: yes, audio input: yes)' app-run/app.log
+          # 시뮬레이터 마이크(CI에서는 무음)로도 버퍼가 libobs까지 오는지 본다
+          grep -q 'ios-audio-input\] first buffer' app-run/app.log
           if grep -q 'failed to load' app-run/app.log; then exit 1; fi
           grep -q 'capture started' app-run/broadcast.log
 

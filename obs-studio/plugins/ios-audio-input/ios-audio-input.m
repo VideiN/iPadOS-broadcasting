@@ -11,6 +11,8 @@
 #include <obs-module.h>
 #include <util/platform.h>
 
+#include <math.h>
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
 
@@ -199,6 +201,14 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
     const uint32_t firstChannel = (uint32_t) first;
     const uint32_t channels = (uint32_t) count;
 
+    /* Delivery statistics, logged every 10 seconds so problems can be told apart on the device (no buffers, silent
+     * buffers, late buffers). Only touched by the tap block, which AVAudioEngine calls serially. */
+    __block uint64_t statsStart = 0;
+    __block uint64_t statsBuffers = 0;
+    __block uint64_t statsFrames = 0;
+    __block uint64_t statsMaxDelay = 0;
+    __block float statsPeak = 0.0f;
+
     @try {
         [inputNode installTapOnBus:0 bufferSize:(AVAudioFrameCount) (format.sampleRate / 100) format:format
                              block:^(AVAudioPCMBuffer *buffer, AVAudioTime *when) {
@@ -209,10 +219,11 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
                                  }
 
                                  /* AVAudioTime host time and os_gettime_ns() both count mach absolute time */
+                                 uint64_t now = os_gettime_ns();
                                  uint64_t timestamp =
                                      when.hostTimeValid
                                          ? (uint64_t) ([AVAudioTime secondsForHostTime:when.hostTime] * 1000000000.0)
-                                         : os_gettime_ns();
+                                         : now;
 
                                  struct obs_source_audio audio = {
                                      .frames = buffer.frameLength,
@@ -224,9 +235,36 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
 
                                  for (uint32_t i = 0; i < channels; i++) {
                                      audio.data[i] = (const uint8_t *) data[firstChannel + i];
+
+                                     for (AVAudioFrameCount j = 0; j < buffer.frameLength; j++) {
+                                         statsPeak = fmaxf(statsPeak, fabsf(data[firstChannel + i][j]));
+                                     }
                                  }
 
                                  obs_source_output_audio(source, &audio);
+
+                                 uint64_t delay = now > timestamp ? now - timestamp : 0;
+                                 statsBuffers++;
+                                 statsFrames += buffer.frameLength;
+                                 statsMaxDelay = MAX(statsMaxDelay, delay);
+
+                                 if (statsStart == 0) {
+                                     statsStart = now;
+                                     LOG(LOG_INFO, "first buffer: %u frames, %.1f ms after capture",
+                                         buffer.frameLength, delay / 1000000.0);
+                                 } else if (now - statsStart >= 10000000000ULL) {
+                                     LOG(LOG_INFO,
+                                         "%llu buffers (%llu frames each on average), peak %.1f dBFS, "
+                                         "max delay %.1f ms",
+                                         statsBuffers, statsFrames / statsBuffers,
+                                         statsPeak > 0.0f ? 20.0f * log10f(statsPeak) : -INFINITY,
+                                         statsMaxDelay / 1000000.0);
+                                     statsStart = now;
+                                     statsBuffers = 0;
+                                     statsFrames = 0;
+                                     statsMaxDelay = 0;
+                                     statsPeak = 0.0f;
+                                 }
                              }];
     } @catch (NSException *exception) {
         LOG(LOG_ERROR, "installTap failed: %s", exception.reason.UTF8String);

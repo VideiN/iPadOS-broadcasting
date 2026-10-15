@@ -423,7 +423,8 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 - (void)sessionRuntimeError:(NSNotification *)notification
 {
     NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
-    [self AVCaptureLog:LOG_ERROR withFormat:@"Capture session runtime error: %@", error.localizedDescription];
+    [self AVCaptureLog:LOG_ERROR withFormat:@"Capture session runtime error: %@ (%@ %ld)", error.localizedDescription,
+                                            error.domain, (long) error.code];
 
     if (error.code == AVErrorMediaServicesWereReset) {
         __weak OBSAVCapture *weakSelf = self;
