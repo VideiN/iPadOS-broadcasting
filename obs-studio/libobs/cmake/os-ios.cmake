@@ -22,6 +22,9 @@ target_compile_options(libobs PUBLIC "$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-Wno-st
 
 set_property(SOURCE obs-ios.m util/platform-cocoa.m PROPERTY COMPILE_OPTIONS -fobjc-arc)
 
+# libobs.a instead of liblibobs.a
+set_property(TARGET libobs PROPERTY OUTPUT_NAME obs)
+
 # The app links the installed archives directly, so install the static
 # dependencies and the generated header that obs-config.h includes.
 install(TARGETS caption ARCHIVE DESTINATION "${OBS_LIBRARY_DESTINATION}")

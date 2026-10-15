@@ -6,7 +6,7 @@ OBS Studio의 libobs 코어를 이용한 iPadOS용 방송/녹화 앱. 개인 사
 
 ## 상태
 
-P0 진행 중: libobs를 iOS용 정적 라이브러리로 빌드하고 시뮬레이터에서 테스트합니다.
+P0 완료: CI에서 libobs를 iOS용 정적 라이브러리(`libobs.a`)로 빌드하고, iPad 시뮬레이터에서 단위 테스트를 돌립니다. 빌드 결과는 Actions 실행의 `libobs-ios-iphoneos` 아티팩트로 받을 수 있습니다.
 
 ## 구성
 
