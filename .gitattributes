@@ -1,0 +1,23 @@
+# 빌드는 macOS 러너에서 하므로 텍스트 파일은 모두 LF로 고정한다.
+# (Windows에서 CRLF로 체크아웃되면 셸 스크립트 shebang이 깨짐)
+* text=auto eol=lf
+
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# 바이너리
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.icns     binary
+*.pdf      binary
+*.zip      binary
+*.ipa      binary
+*.a        binary
+*.dylib    binary
+*.metallib binary
+*.mp4      binary
+*.mov      binary
+*.wav      binary

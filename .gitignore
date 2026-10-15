@@ -1,0 +1,42 @@
+# --- 빌드 출력 ---
+/build/
+/build_*/
+/out/
+/.deps/
+CMakeUserPresets.json
+CMakeCache.txt
+CMakeFiles/
+
+# --- Xcode / Swift ---
+DerivedData/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+.build/
+.swiftpm/
+
+# --- 패키징 결과물 (Release 에셋으로만 배포) ---
+*.ipa
+Payload/
+*.dSYM/
+*.dSYM.zip
+
+# --- 서명 자료: 저장소와 CI에 두지 않음 (계획 8.4) ---
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.cer
+*.certSigningRequest
+
+# --- OS / 에디터 ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# --- Claude Code 로컬 설정 ---
+.claude/settings.local.json
+
+# --- 계획 문서 ---
+ipados-broadcast-port-plan.md
