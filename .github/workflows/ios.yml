@@ -113,6 +113,13 @@ jobs:
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" > app-run/app.log 2>&1 &
           sleep 20
           xcrun simctl io "$SIM_UDID" screenshot app-run/simulator.png
+
+          # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
+          pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
+          if [ -n "$pid" ]; then sample "$pid" 2 -file app-run/sample.txt > /dev/null 2>&1 || true; fi
+          xcrun simctl spawn "$SIM_UDID" log show --last 1m --style compact \
+            --predicate "process == \"$(basename "$app" .app)\"" > app-run/system.log 2>&1 || true
+
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
 
