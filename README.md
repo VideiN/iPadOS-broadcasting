@@ -6,7 +6,27 @@ OBS Studio의 libobs 코어를 이용한 iPadOS용 방송/녹화 앱. 개인 사
 
 ## 상태
 
-P0 완료: CI에서 libobs를 iOS용 정적 라이브러리(`libobs.a`)로 빌드하고, iPad 시뮬레이터에서 단위 테스트를 돌립니다. 빌드 결과는 Actions 실행의 `libobs-ios-iphoneos` 아티팩트로 받을 수 있습니다.
+- P0 완료: CI에서 libobs를 iOS용 정적 라이브러리(`libobs.a`)로 빌드하고, iPad 시뮬레이터에서 단위 테스트를 돌립니다.
+- P1 진행 중: Metal 렌더러(libobs-metal)를 iOS로 이식했고, 시뮬레이터에서 렌더링 결과를 확인합니다. 남은 일은 최소 앱과 실기기 확인입니다.
+
+빌드 결과(`libobs.a`, `libobs-metal.a` 등과 헤더)는 Actions 실행의 `libobs-ios-iphoneos` 아티팩트로 받을 수 있습니다.
+
+### 앱에서 쓰는 방법
+
+플러그인과 그래픽 모듈은 정적으로 링크하고, 시작할 때 직접 등록합니다.
+
+```c
+extern void *libobs_metal_get_export(const char *symbol);
+
+gs_register_static_module("libobs-metal", libobs_metal_get_export);  // obs_reset_video 전에
+ovi.graphics_module = "libobs-metal";
+
+obs_module_t *module;
+obs_open_static_module(&module, &obs_static_module_<모듈 이름>, data_path);
+obs_init_module(module);
+```
+
+종료 전에는 씬을 `obs_source_remove`로 캔버스에서 빼야 `obs_shutdown`이 안전하게 끝납니다.
 
 ## 구성
 
@@ -15,7 +35,7 @@ P0 완료: CI에서 libobs를 iOS용 정적 라이브러리(`libobs.a`)로 빌�
 | `obs-studio/` | [OBS Studio](https://github.com/obsproject/obs-studio) 32.2.2 (`ba2f32b`) 소스. iPadOS용 수정은 여기서 직접 함. 원본과의 차이는 `git diff 12b487e -- obs-studio`로 확인 |
 | `ios/deps/` | 의존성(FFmpeg, jansson 등) iOS arm64 크로스컴파일 스크립트 |
 | `ios/scripts/` | 시뮬레이터 테스트 실행 스크립트 |
-| `.github/workflows/ios.yml` | CI: 의존성 빌드 → libobs 정적 빌드 → 시뮬레이터 테스트 |
+| `.github/workflows/ios.yml` | CI: 의존성 빌드 → libobs·libobs-metal 정적 빌드 → 시뮬레이터 테스트 |
 
 ## 빌드 (macOS)
 
