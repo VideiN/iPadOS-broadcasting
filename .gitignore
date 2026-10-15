@@ -38,5 +38,6 @@ desktop.ini
 # --- Claude Code 로컬 설정 ---
 .claude/settings.local.json
 
-# --- 계획 문서 ---
+# --- 계획 문서와 단계별 작업 기록 (비공개) ---
 ipados-broadcast-port-plan.md
+/worklog/

@@ -3357,8 +3357,13 @@ bool obs_wait_for_destroy_queue(void)
 {
 	struct task_wait_info info = {0};
 
-	if (!obs->video.thread_initialized || !obs->audio.audio)
+	/* iOS port: without video/audio threads (headless, tests) still drain
+	 * the destroy queue, otherwise obs_shutdown's stop_hotkeys() races with
+	 * obs_source_destroy_defer() unregistering hotkeys */
+	if (!obs->video.thread_initialized || !obs->audio.audio) {
+		os_task_queue_wait(obs->destruction_task_thread);
 		return false;
+	}
 
 	/* allow video and audio threads time to release objects */
 	os_event_init(&info.event, OS_EVENT_TYPE_AUTO);
