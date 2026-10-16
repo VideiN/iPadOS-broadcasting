@@ -17,7 +17,8 @@ struct core_stats {
 	uint64_t memory_available;     // 남은 메모리 한도 (os_proc_available_memory, 바이트)
 	uint32_t camera_width;         // 카메라 소스의 현재 프레임 크기 (프레임이 없으면 0)
 	uint32_t camera_height;
-	float audio_peak_db;           // 오디오 입력의 최근 피크 (dBFS, 무음이면 -inf)
+	float audio_peak_left_db;      // 오디오 입력의 최근 피크, 왼쪽·오른쪽 (dBFS, 무음이면 -inf)
+	float audio_peak_right_db;
 };
 
 enum core_device_kind {

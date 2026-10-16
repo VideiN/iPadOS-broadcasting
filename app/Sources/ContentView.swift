@@ -118,9 +118,12 @@ struct DiagnosticsOverlay: View {
             Text("메모리 \(megabytes(stats.memory_footprint)) MB (여유 \(megabytes(stats.memory_available)) MB)")
             Text("발열  \(diagnostics.thermalState)")
             Text("카메라 \(cameraSize(stats))")
-            HStack(spacing: 6) {
-                Text("오디오 \(peakText(stats.audio_peak_db))")
-                AudioMeter(peak: stats.audio_peak_db)
+            HStack(alignment: .top, spacing: 6) {
+                Text("오디오")
+                VStack(alignment: .leading, spacing: 2) {
+                    channelMeter("L", stats.audio_peak_left_db)
+                    channelMeter("R", stats.audio_peak_right_db)
+                }
             }
             OutputStatusLines(outputs: outputs)
         }
@@ -136,6 +139,13 @@ struct DiagnosticsOverlay: View {
 
     private func cameraSize(_ stats: core_stats) -> String {
         stats.camera_width > 0 ? "\(stats.camera_width)x\(stats.camera_height)" : "프레임 없음"
+    }
+
+    private func channelMeter(_ channel: String, _ db: Float) -> some View {
+        HStack(spacing: 6) {
+            Text("\(channel) \(peakText(db))")
+            AudioMeter(peak: db)
+        }
     }
 
     private func peakText(_ db: Float) -> String {
@@ -192,10 +202,11 @@ final class Diagnostics: ObservableObject {
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1fdB rec=%d stream=%d stream_kbps=%.0f dropped=%d/%d enc_skipped=%u",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d stream=%d stream_kbps=%.0f dropped=%d/%d enc_skipped=%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
-                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_db,
+                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_left_db,
+                    stats.audio_peak_right_db,
                     output.recording ? 1 : 0, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
                     output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames))
         }

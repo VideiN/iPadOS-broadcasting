@@ -40,9 +40,10 @@ static struct {
 	obs_source_t *camera;
 	obs_source_t *audio_input;
 	obs_volmeter_t *volmeter;
-	_Atomic float audio_peak_db;
+	_Atomic float audio_peak_left_db;
+	_Atomic float audio_peak_right_db;
 	_Atomic uint64_t audio_peak_time; // os_gettime_ns
-} core = {.audio_peak_db = -INFINITY};
+} core = {.audio_peak_left_db = -INFINITY, .audio_peak_right_db = -INFINITY};
 
 #pragma mark - 로그
 
@@ -310,12 +311,12 @@ static void volmeter_updated(void *param, const float magnitude[MAX_AUDIO_CHANNE
 	UNUSED_PARAMETER(magnitude);
 	UNUSED_PARAMETER(input_peak);
 
-	float max_peak = -INFINITY;
-	for (size_t i = 0; i < MAX_AUDIO_CHANNELS; i++) {
-		if (peak[i] > max_peak)
-			max_peak = peak[i];
-	}
-	atomic_store(&core.audio_peak_db, max_peak);
+	// 출력 오디오가 스테레오라 볼륨미터는 소스를 L/R로 올려서 잰다 (모노 입력이면 두 값이 같다)
+	audio_t *audio = obs_get_audio();
+	const bool stereo = audio && audio_output_get_channels(audio) > 1;
+
+	atomic_store(&core.audio_peak_left_db, peak[0]);
+	atomic_store(&core.audio_peak_right_db, stereo ? peak[1] : peak[0]);
 	atomic_store(&core.audio_peak_time, os_gettime_ns());
 }
 
@@ -509,5 +510,6 @@ void core_get_stats(struct core_stats *stats)
 	stats->camera_height = core.camera ? obs_source_get_height(core.camera) : 0;
 	// 오디오가 1초 넘게 안 들어오면 무음으로 표시한다
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
-	stats->audio_peak_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_db);
+	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
+	stats->audio_peak_right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
 }
