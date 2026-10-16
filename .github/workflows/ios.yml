@@ -124,7 +124,8 @@ jobs:
           ffmpeg_pid=$!
 
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
-          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
+          # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
             -autotest-output 20 rtmp://127.0.0.1:1935/live > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
@@ -148,6 +149,17 @@ jobs:
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
 
+          # 씬 구성 저장·불러오기: 다시 띄우면 기본 씬과 "시험 장면", 2개를 불러와야 한다
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
+            > app-run/app-relaunch.log 2>&1 &
+          for _ in $(seq 1 60); do
+            grep -q 'capture started' app-run/app-relaunch.log && break
+            sleep 2
+          done
+          xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-relaunch.png || true
+          xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
+          sleep 2
+
           # 송출이 끝나면 ffmpeg도 끝난다. 연결조차 안 됐으면 기다리지 않고 끝낸다
           (sleep 5; kill "$ffmpeg_pid" 2> /dev/null) &
           wait "$ffmpeg_pid" || true
@@ -161,6 +173,12 @@ jobs:
           grep -q 'ios-audio-input\] first buffer' app-run/app.log
           if grep -q 'failed to load' app-run/app.log; then exit 1; fi
           grep -q 'capture started' app-run/broadcast.log
+
+          # 씬·소스 (P4)
+          grep -q 'created the default scene' app-run/app.log
+          grep -q 'scenes autotest: ok' app-run/app.log
+          cat app-run/app-relaunch.log
+          grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
 
           # 녹화 파일(Hybrid MP4)과 받은 송출(FLV)을 ffprobe로 확인: 비디오·오디오 코덱과 길이 10초 이상
           check_media() {

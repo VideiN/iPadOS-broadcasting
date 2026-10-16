@@ -96,11 +96,13 @@ final class Core: ObservableObject {
 
         ready.notify(queue: .global(qos: .userInitiated)) {
             guard ok else { return }
-            core_start_capture()
+            core_start_capture(Self.collectionPath())
 
             DispatchQueue.main.async {
                 self.refreshDevices()
                 self.observeDeviceChanges()
+                SceneModel.shared.refresh()
+                SceneModel.shared.runAutotestIfRequested()
                 Outputs.shared.runAutotestIfRequested()
             }
         }
@@ -133,6 +135,13 @@ final class Core: ObservableObject {
                 self?.refreshDevices()
             }
         }
+    }
+
+    /// 씬 구성 파일. 파일 앱에 보이지 않게 Application Support에 둔다
+    private static func collectionPath() -> String {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        return support.appendingPathComponent("scenes.json").path
     }
 
     private static func requestPermissions(_ done: @escaping () -> Void) {

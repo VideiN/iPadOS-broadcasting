@@ -31,12 +31,61 @@ void core_log_open(const char *path);
 // 앱(Swift) 로그를 같은 곳에 남긴다
 void core_log(const char *message);
 
-// libobs를 시작하고 테스트 씬(색상 소스 + 이미지 소스 + 움직이는 막대)을 출력에 건다.
+// libobs를 시작한다 (모듈, 오디오, 비디오). 씬은 core_start_capture가 불러오거나 만든다.
 // resource_path는 앱 번들의 리소스 경로.
 bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps);
 
-// 카메라 소스와 오디오 입력 소스를 만든다. 권한 요청이 끝난 뒤에 부른다.
-void core_start_capture(void);
+// 씬 구성(collection_path, JSON)을 불러오고 전역 오디오 입력을 건다. 구성이 없으면 기본 씬(배경 + 카메라)을 만든다.
+// 권한 요청이 끝난 뒤에 부른다.
+void core_start_capture(const char *collection_path);
+// 지금 씬 구성을 core_start_capture에 준 파일에 저장한다
+bool core_save_collection(void);
+// 전역 오디오 입력 소스의 이름 (믹서·속성에서 쓴다)
+const char *core_audio_input_name(void);
+
+// --- 씬·소스 (scenes.c) ---
+// 씬은 이름, 씬 항목은 id(obs_sceneitem_get_id), 소스는 이름으로 가리킨다. JSON은 core_free로 해제한다.
+
+// {"current": "…", "scenes": [{"name": "…"}]}
+char *core_scenes_json(void);
+bool core_scene_add(const char *name);           // 만들고 그 씬으로 전환
+bool core_scene_remove(const char *name);        // 씬은 하나 이상 남긴다
+bool core_scene_rename(const char *name, const char *new_name);
+void core_scene_set_current(const char *name);
+void core_scene_move(const char *name, int offset); // 목록 안에서 위(-1)·아래(+1)로
+
+// 현재 씬의 항목, 위에 있는 것부터: {"items": [{"id", "name", "type", "visible", "locked", "video", "audio"}]}
+char *core_scene_items_json(void);
+// 항목의 네 모서리(캔버스 좌표, 왼쪽 위부터 시계 방향 x,y 4쌍)
+bool core_scene_item_box(int64_t id, float corners[8]);
+// 캔버스의 한 점에 있는 맨 위 항목 (보이고 잠기지 않은 것). 없으면 -1
+int64_t core_scene_item_at(float x, float y);
+void core_scene_item_translate(int64_t id, float dx, float dy);
+void core_scene_item_scale(int64_t id, float factor, float cx, float cy);
+void core_scene_item_fit(int64_t id);   // 캔버스에 맞추기
+void core_scene_item_reset(int64_t id); // 원래 크기, 왼쪽 위
+void core_scene_item_set_visible(int64_t id, bool visible);
+void core_scene_item_set_locked(int64_t id, bool locked);
+void core_scene_item_order(int64_t id, int movement); // 0 위로, 1 아래로, 2 맨 위, 3 맨 아래 (enum obs_order_movement)
+void core_scene_item_remove(int64_t id);
+
+// 추가할 수 있는 소스 종류: {"types": [{"id", "name"}]}
+char *core_source_types_json(void);
+// 현재 씬에 소스를 새로 넣는다 (영상 소스는 캔버스에 맞춤). 항목 id, 실패하면 -1
+int64_t core_scene_add_source(const char *type_id, const char *name);
+
+// 소스 속성: {"type", "properties": [...], "settings": {...기본값 포함}}
+char *core_source_properties_json(const char *source_name);
+// 바뀐 설정만 담은 JSON을 덮어쓴다 (카메라 장치를 바꾸면 형식도 다시 고름)
+void core_source_update(const char *source_name, const char *changes_json);
+void core_source_press_button(const char *source_name, const char *property_name);
+bool core_source_rename(const char *source_name, const char *new_name);
+void core_source_set_volume(const char *source_name, float multiplier);
+void core_source_set_muted(const char *source_name, bool muted);
+float core_source_volume(const char *source_name);
+bool core_source_muted(const char *source_name);
+
+bool core_collection_save(const char *path, const char *audio_input_name);
 
 // 장치 목록을 "id\t이름\t연결(1/0)\n" 줄로 돌려준다. 연결 0은 고른 장치가 빠져 있는 경우다.
 // 오디오 입력의 id ""는 시스템 기본 경로. core_free로 해제한다.

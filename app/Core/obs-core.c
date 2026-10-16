@@ -1,9 +1,9 @@
 #include "obs-core.h"
 #include "capture-format.h"
 #include "crash-log.h"
+#include "scenes.h"
 
 #include <obs.h>
-#include <graphics/vec2.h>
 #include <util/dstr.h>
 #include <util/platform.h>
 
@@ -33,12 +33,9 @@ static struct {
 	uint32_t width;
 	uint32_t height;
 	double fps;
-	obs_scene_t *scene;
-	obs_sceneitem_t *moving_bar;
-	float elapsed;
 
-	obs_source_t *camera;
-	obs_source_t *audio_input;
+	obs_source_t *audio_input; // 전역 오디오 입력 (출력 채널 1)
+	char *collection_path;
 	obs_volmeter_t *volmeter;
 	_Atomic float audio_peak_left_db;
 	_Atomic float audio_peak_right_db;
@@ -116,63 +113,6 @@ void core_log(const char *message)
 	blog(LOG_INFO, "%s", message);
 }
 
-#pragma mark - 씬
-
-static obs_source_t *create_color_source(const char *name, uint32_t abgr, uint32_t width, uint32_t height)
-{
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_int(settings, "color", abgr);
-	obs_data_set_int(settings, "width", width);
-	obs_data_set_int(settings, "height", height);
-
-	obs_source_t *source = obs_source_create("color_source_v3", name, settings, NULL);
-	obs_data_release(settings);
-	return source;
-}
-
-static void add_to_scene(obs_source_t *source, obs_sceneitem_t **item)
-{
-	if (!source)
-		return;
-
-	obs_sceneitem_t *added = obs_scene_add(core.scene, source);
-	if (item)
-		*item = added;
-	obs_source_release(source);
-}
-
-// 소스를 캔버스 안에 화면비를 유지해 맞춘다
-static void fit_item(obs_sceneitem_t *item, float scale)
-{
-	struct vec2 bounds = {core.width * scale, core.height * scale};
-	struct vec2 pos = {core.width * 0.5f, core.height * 0.5f};
-	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_SCALE_INNER);
-	obs_sceneitem_set_bounds(item, &bounds);
-	obs_sceneitem_set_bounds_alignment(item, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
-	obs_sceneitem_set_pos(item, &pos);
-}
-
-// 프레임마다 막대를 좌우로 움직인다. 프리뷰가 실제로 갱신되는지, ProMotion에서 프레임 간격이 고른지 눈으로 확인하는 용도.
-// 카메라를 가리지 않게 화면 아래쪽에 짧게 둔다.
-static const float bar_width = 40.0f;
-static const float bar_height = 60.0f;
-
-static void move_bar(void *param, float seconds)
-{
-	UNUSED_PARAMETER(param);
-
-	if (!core.moving_bar)
-		return;
-
-	core.elapsed += seconds;
-
-	struct vec2 pos;
-	pos.x = (sinf(core.elapsed * 2.0f) * 0.5f + 0.5f) * ((float)core.width - bar_width);
-	pos.y = (float)core.height - bar_height;
-	obs_sceneitem_set_pos(core.moving_bar, &pos);
-}
-
 static bool load_module(const char *resource_path, const char *name, const struct obs_static_module *static_module)
 {
 	struct dstr data_path = {0};
@@ -240,36 +180,6 @@ static bool reset_video(uint32_t width, uint32_t height, uint32_t fps)
 	return true;
 }
 
-static void create_test_scene(const char *resource_path)
-{
-	core.scene = obs_scene_create("Scene");
-
-	add_to_scene(create_color_source("Background", 0xFF3A2414, core.width, core.height), NULL);
-
-	struct dstr file = {0};
-	dstr_printf(&file, "%s/test-pattern.png", resource_path);
-	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "file", file.array);
-	obs_source_t *image = obs_source_create("image_source", "Test Pattern", settings, NULL);
-	obs_data_release(settings);
-	dstr_free(&file);
-
-	// 캔버스 가운데에 80% 크기로 맞춘다. 카메라가 없을 때 보인다.
-	obs_sceneitem_t *image_item = NULL;
-	add_to_scene(image, &image_item);
-	if (image_item)
-		fit_item(image_item, 0.8f);
-
-	obs_set_output_source(0, obs_scene_get_source(core.scene));
-}
-
-static void add_moving_bar(void)
-{
-	add_to_scene(create_color_source("Moving Bar", 0xFFFFFFFF, (uint32_t)bar_width, (uint32_t)bar_height),
-		     &core.moving_bar);
-	obs_add_tick_callback(move_bar, NULL);
-}
-
 bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps)
 {
 	core.width = width;
@@ -295,9 +205,6 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 	if (!reset_video(width, height, fps))
 		return false;
 
-	create_test_scene(resource_path);
-	add_moving_bar();
-
 	blog(LOG_INFO, "[app] core started (%ux%u @ %u fps)", width, height, fps);
 	return true;
 }
@@ -320,29 +227,24 @@ static void volmeter_updated(void *param, const float magnitude[MAX_AUDIO_CHANNE
 	atomic_store(&core.audio_peak_time, os_gettime_ns());
 }
 
-void core_start_capture(void)
+void core_start_capture(const char *collection_path)
 {
-	if (core.camera || core.audio_input)
+	if (core.audio_input)
 		return;
 
-	// 카메라: 캔버스 전체에 맞추고 움직이는 막대 아래에 둔다
-	char *camera_id = capture_default_camera_id();
-	obs_data_t *settings = obs_data_create();
-	capture_configure_camera(settings, camera_id, core.width, core.height, (uint32_t)core.fps);
-	core.camera = obs_source_create("macos-avcapture", "Camera", settings, NULL);
-	obs_data_release(settings);
+	bfree(core.collection_path);
+	core.collection_path = bstrdup(collection_path);
 
-	if (core.camera) {
-		obs_sceneitem_t *item = obs_scene_add(core.scene, core.camera);
-		if (item) {
-			fit_item(item, 1.0f);
-			if (core.moving_bar)
-				obs_sceneitem_set_order(core.moving_bar, OBS_ORDER_MOVE_TOP);
-		}
+	// 저장한 씬 구성을 불러오고, 없으면 처음 실행용 기본 씬(배경 + 카메라)을 만든다
+	core.audio_input = scenes_load(collection_path);
+	if (scenes_empty()) {
+		scenes_create_default();
+		core_save_collection();
 	}
 
-	// 오디오 입력: 출력 채널 1에 걸어 믹서에 들어가게 한다
-	core.audio_input = obs_source_create("ios_audio_input", "Audio Input", NULL, NULL);
+	// 전역 오디오 입력: 출력 채널 1에 걸어 믹서에 들어가게 한다
+	if (!core.audio_input)
+		core.audio_input = obs_source_create("ios_audio_input", "오디오 입력", NULL, NULL);
 	if (core.audio_input) {
 		obs_set_output_source(1, core.audio_input);
 
@@ -351,21 +253,38 @@ void core_start_capture(void)
 		obs_volmeter_attach_source(core.volmeter, core.audio_input);
 	}
 
-	blog(LOG_INFO, "[app] capture started (camera: %s, audio input: %s)", core.camera ? "yes" : "no",
+	obs_source_t *camera = scenes_primary_camera();
+	blog(LOG_INFO, "[app] capture started (camera: %s, audio input: %s)", camera ? "yes" : "no",
 	     core.audio_input ? "yes" : "no");
-	bfree(camera_id);
+	obs_source_release(camera);
 }
 
+bool core_save_collection(void)
+{
+	if (!core.collection_path)
+		return false;
+	return core_collection_save(core.collection_path,
+				    core.audio_input ? obs_source_get_name(core.audio_input) : NULL);
+}
+
+const char *core_audio_input_name(void)
+{
+	return core.audio_input ? obs_source_get_name(core.audio_input) : "";
+}
+
+// 카메라는 현재 씬의 맨 위 카메라 소스. 참조를 더해 돌려준다.
 static obs_source_t *device_source(enum core_device_kind kind)
 {
-	return kind == CORE_DEVICE_CAMERA ? core.camera : core.audio_input;
+	if (kind == CORE_DEVICE_CAMERA)
+		return scenes_primary_camera();
+	return core.audio_input ? obs_source_get_ref(core.audio_input) : NULL;
 }
 
 char *core_list_devices(enum core_device_kind kind)
 {
 	obs_source_t *source = device_source(kind);
 	if (!source)
-		return NULL;
+		return kind == CORE_DEVICE_CAMERA ? capture_camera_list() : NULL;
 
 	obs_properties_t *props = obs_source_properties(source);
 	obs_property_t *list = obs_properties_get(props, "device");
@@ -388,6 +307,7 @@ char *core_list_devices(enum core_device_kind kind)
 	}
 
 	obs_properties_destroy(props);
+	obs_source_release(source);
 	return out.array;
 }
 
@@ -400,6 +320,7 @@ char *core_current_device(enum core_device_kind kind)
 	obs_data_t *settings = obs_source_get_settings(source);
 	char *id = bstrdup(obs_data_get_string(settings, "device"));
 	obs_data_release(settings);
+	obs_source_release(source);
 	return id;
 }
 
@@ -418,6 +339,7 @@ void core_select_device(enum core_device_kind kind, const char *device_id)
 
 	obs_source_update(source, settings);
 	obs_data_release(settings);
+	obs_source_release(source);
 
 	blog(LOG_INFO, "[app] selected %s device '%s'", kind == CORE_DEVICE_CAMERA ? "camera" : "audio input",
 	     device_id ? device_id : "");
@@ -506,8 +428,10 @@ void core_get_stats(struct core_stats *stats)
 
 	stats->memory_available = os_proc_available_memory();
 
-	stats->camera_width = core.camera ? obs_source_get_width(core.camera) : 0;
-	stats->camera_height = core.camera ? obs_source_get_height(core.camera) : 0;
+	obs_source_t *camera = scenes_primary_camera();
+	stats->camera_width = camera ? obs_source_get_width(camera) : 0;
+	stats->camera_height = camera ? obs_source_get_height(camera) : 0;
+	obs_source_release(camera);
 	// 오디오가 1초 넘게 안 들어오면 무음으로 표시한다
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
 	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
