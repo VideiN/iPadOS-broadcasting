@@ -54,6 +54,40 @@ char *capture_default_camera_id(void)
 	return pick ? bstrdup(pick.uniqueID.UTF8String) : NULL;
 }
 
+// 다른 소스가 쓰지 않는 카메라: 외부(UVC) → 후면 광각 → 전면 광각 → 나머지 순.
+// 모두 쓰는 중이면 capture_default_camera_id와 같다.
+char *capture_unused_camera_id(const char *const *used, size_t used_count)
+{
+	NSMutableSet<NSString *> *busy = [NSMutableSet set];
+	for (size_t i = 0; i < used_count; i++) {
+		if (used[i] && *used[i])
+			[busy addObject:@(used[i])];
+	}
+
+	AVCaptureDeviceDiscoverySession *discovery =
+		[AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:camera_device_types()
+								       mediaType:AVMediaTypeVideo
+									position:AVCaptureDevicePositionUnspecified];
+
+	for (int pass = 0; pass < 4; pass++) {
+		for (AVCaptureDevice *device in discovery.devices) {
+			if ([busy containsObject:device.uniqueID])
+				continue;
+
+			bool external = [device.deviceType isEqualToString:AVCaptureDeviceTypeExternal];
+			bool wide = [device.deviceType isEqualToString:AVCaptureDeviceTypeBuiltInWideAngleCamera];
+			bool match = pass == 0   ? external
+				     : pass == 1 ? wide && device.position == AVCaptureDevicePositionBack
+				     : pass == 2 ? wide && device.position == AVCaptureDevicePositionFront
+						 : true;
+			if (match)
+				return bstrdup(device.uniqueID.UTF8String);
+		}
+	}
+
+	return capture_default_camera_id();
+}
+
 char *capture_camera_list(void)
 {
 	AVCaptureDeviceDiscoverySession *discovery =

@@ -327,6 +327,10 @@ typedef struct av_capture_info {
 ///   - format: [NSString:stringWithFormat:](https://developer.apple.com/documentation/foundation/nsstring/1497275-stringwithformat?language=objc)-compatible format string]
 + (void)AVCaptureLog:(int)logLevel withFormat:(NSString *)format, ...;
 
+/// iOS port: held (with `@synchronized`) around every change of a capture session. All camera sources share one
+/// session on iOS, and AVCaptureSession throws if one source starts or stops it while another is configuring it.
++ (id)configurationLock;
+
 #pragma mark - Instance Properties
 /// Internal reference to ``OBSAVCaptureInfo`` struct created by ``libobs`` module code.
 @property (nonatomic) OBSAVCaptureInfo *captureInfo;
@@ -390,6 +394,9 @@ typedef struct av_capture_info {
 
 /// iOS port: `YES` once this source's device could not join the shared session; it then keeps its own session
 @property BOOL sharedSessionRejected;
+
+/// iOS port: the device in the shared session this source takes its frames from (an `OBSSharedCaptureDevice`)
+@property (strong) id sharedDevice;
 
 /// iOS port: frames per second the device actually delivered, measured over each second
 @property (atomic) double deliveredFrameRate;

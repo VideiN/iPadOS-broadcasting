@@ -9,6 +9,10 @@
 // 처음 쓸 카메라: 외부(UVC) 장치 → 후면 광각 → 처음 찾은 장치. 없으면 NULL. bfree로 해제한다.
 char *capture_default_camera_id(void);
 
+// 새 카메라 소스에 쓸 카메라: used(장치 id used_count개)에 없는 것 중 외부 → 후면 → 전면 → 나머지.
+// 모두 쓰는 중이면 capture_default_camera_id. bfree로 해제한다.
+char *capture_unused_camera_id(const char *const *used, size_t used_count);
+
 // 연결된 카메라 목록을 core_list_devices와 같은 "id\t이름\t1\n" 줄로 (씬에 카메라 소스가 없을 때 쓴다). bfree로 해제한다.
 char *capture_camera_list(void);
 

@@ -488,6 +488,34 @@ char *core_source_types_json(void)
 	return json_from(root);
 }
 
+static bool collect_camera_device(void *param, obs_source_t *source)
+{
+	DARRAY(char *) *ids = param;
+
+	if (strcmp(obs_source_get_id(source), CAMERA_SOURCE_ID) == 0) {
+		obs_data_t *settings = obs_source_get_settings(source);
+		char *device = bstrdup(obs_data_get_string(settings, "device"));
+		da_push_back(*ids, &device);
+		obs_data_release(settings);
+	}
+	return true;
+}
+
+// 다른 카메라 소스가 쓰지 않는 카메라를 고른다 (같은 장치를 두 소스가 쓰는 일은 사용자가 고를 때만)
+static char *unused_camera_id(void)
+{
+	DARRAY(char *) ids;
+	da_init(ids);
+	obs_enum_sources(collect_camera_device, &ids);
+
+	char *camera_id = capture_unused_camera_id((const char *const *)ids.array, ids.num);
+
+	for (size_t i = 0; i < ids.num; i++)
+		bfree(ids.array[i]);
+	da_free(ids);
+	return camera_id;
+}
+
 // 현재 씬에 새 소스를 넣는다. 영상 소스는 캔버스에 맞춘다. 돌려주는 값은 항목 id (실패하면 -1).
 int64_t core_scene_add_source(const char *type_id, const char *name)
 {
@@ -499,7 +527,7 @@ int64_t core_scene_add_source(const char *type_id, const char *name)
 		obs_data_set_int(settings, "width", width);
 		obs_data_set_int(settings, "height", height);
 	} else if (strcmp(type_id, CAMERA_SOURCE_ID) == 0) {
-		char *camera_id = capture_default_camera_id();
+		char *camera_id = unused_camera_id();
 		struct obs_video_info ovi;
 		const uint32_t fps = obs_get_video_info(&ovi) && ovi.fps_den ? ovi.fps_num / ovi.fps_den : 60;
 		capture_configure_camera(settings, camera_id, width, height, fps);
