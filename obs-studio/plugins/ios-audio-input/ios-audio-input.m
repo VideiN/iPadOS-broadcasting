@@ -19,6 +19,7 @@
 
 #include <math.h>
 #include <stdatomic.h>
+#include <string.h>
 
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE("ios-audio-input", "en-US")
@@ -106,6 +107,7 @@ static uint64_t host_time_to_ns(uint64_t hostTime)
 - (instancetype)initWithSource:(obs_source_t *)source;
 - (void)updateWithSettings:(obs_data_t *)settings;
 - (void)shutdown;
+@property (readonly) obs_source_t *source;
 @end
 
 @implementation IOSAudioInput {
@@ -228,6 +230,13 @@ static uint64_t host_time_to_ns(uint64_t hostTime)
                 preferred = port;
                 break;
             }
+        }
+
+        /* Remember the name, so the device can still be shown by name while it is unplugged */
+        if (preferred) {
+            obs_data_t *settings = obs_source_get_settings(_source);
+            obs_data_set_string(settings, "device_name", preferred.portName.UTF8String);
+            obs_data_release(settings);
         }
 
         if (!preferred) {
@@ -497,17 +506,30 @@ static void audio_input_defaults(obs_data_t *settings)
 
 static obs_properties_t *audio_input_properties(void *data)
 {
-    UNUSED_PARAMETER(data);
-
     obs_properties_t *props = obs_properties_create();
 
     obs_property_t *devices = obs_properties_add_list(props, "device", obs_module_text("Device"), OBS_COMBO_TYPE_LIST,
                                                       OBS_COMBO_FORMAT_STRING);
     obs_property_list_add_string(devices, obs_module_text("Device.Default"), "");
 
+    obs_data_t *settings = data ? obs_source_get_settings(((__bridge IOSAudioInput *) data).source) : NULL;
+    const char *current = settings ? obs_data_get_string(settings, "device") : "";
+    bool currentFound = !*current;
+
     for (AVAudioSessionPortDescription *port in [AVAudioSession sharedInstance].availableInputs) {
         obs_property_list_add_string(devices, port.portName.UTF8String, port.UID.UTF8String);
+        currentFound = currentFound || strcmp(port.UID.UTF8String, current) == 0;
     }
+
+    /* Like mac-avcapture: keep an unplugged device in the list, disabled, under its last known name. The source
+     * records from the system route meanwhile and switches back when the device returns. */
+    if (!currentFound) {
+        const char *name = obs_data_get_string(settings, "device_name");
+        size_t index = obs_property_list_add_string(devices, *name ? name : current, current);
+        obs_property_list_item_disable(devices, index, true);
+    }
+
+    obs_data_release(settings);
 
     obs_property_t *channels = obs_properties_add_list(props, "channels", obs_module_text("Channels"),
                                                        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_INT);

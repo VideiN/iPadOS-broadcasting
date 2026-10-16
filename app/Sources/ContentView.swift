@@ -50,10 +50,14 @@ struct InputPicker: View {
                         get: { core.currentCamera },
                         set: { core.select(CORE_DEVICE_CAMERA, $0) })
                 ) {
-                    ForEach(core.cameras) { Text($0.name).tag($0.id) }
+                    ForEach(core.cameras) { device in
+                        Text(itemName(device)).tag(device.id).selectionDisabled(!device.available)
+                    }
                 }
             } label: {
-                Label(name(of: core.currentCamera, in: core.cameras, empty: "카메라 없음"), systemImage: "video")
+                Label(
+                    label(of: core.currentCamera, in: core.cameras, empty: "카메라 없음", disconnected: "연결 끊김"),
+                    systemImage: "video")
             }
 
             Menu {
@@ -63,10 +67,18 @@ struct InputPicker: View {
                         get: { core.currentAudioInput },
                         set: { core.select(CORE_DEVICE_AUDIO_INPUT, $0) })
                 ) {
-                    ForEach(core.audioInputs) { Text($0.id.isEmpty ? "시스템 기본" : $0.name).tag($0.id) }
+                    ForEach(core.audioInputs) { device in
+                        Text(device.id.isEmpty ? "시스템 기본" : itemName(device)).tag(device.id)
+                            .selectionDisabled(!device.available)
+                    }
                 }
             } label: {
-                Label(name(of: core.currentAudioInput, in: core.audioInputs, empty: "시스템 기본"), systemImage: "mic")
+                // 고른 장치가 빠지면 오디오는 시스템 기본 경로로 녹음하다가, 다시 꽂으면 돌아간다 (ios-audio-input)
+                Label(
+                    label(
+                        of: core.currentAudioInput, in: core.audioInputs, empty: "시스템 기본",
+                        disconnected: "연결 끊김, 시스템 기본 사용 중"),
+                    systemImage: "mic")
             }
         }
         .font(.system(size: 14, weight: .medium))
@@ -75,9 +87,14 @@ struct InputPicker: View {
         .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func name(of id: String, in devices: [Device], empty: String) -> String {
+    private func itemName(_ device: Device) -> String {
+        device.available ? device.name : "\(device.name) (연결 끊김)"
+    }
+
+    private func label(of id: String, in devices: [Device], empty: String, disconnected: String) -> String {
         if id.isEmpty { return empty }
-        return devices.first { $0.id == id }?.name ?? id
+        guard let device = devices.first(where: { $0.id == id }) else { return id }
+        return device.available ? device.name : "\(device.name) (\(disconnected))"
     }
 }
 

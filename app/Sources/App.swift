@@ -29,10 +29,11 @@ struct BroadcastApp: App {
     }
 }
 
-/// 카메라·오디오 입력 장치
+/// 카메라·오디오 입력 장치. available이 false면 고른 장치가 빠져 있는 것(마지막으로 알던 이름)
 struct Device: Identifiable, Hashable {
     let id: String
     let name: String
+    let available: Bool
 }
 
 /// libobs 시작과 상태
@@ -133,9 +134,9 @@ final class Core: ObservableObject {
         defer { core_free(list) }
 
         return String(cString: list).split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: "\t", maxSplits: 1, omittingEmptySubsequences: false)
-            guard parts.count == 2 else { return nil }
-            return Device(id: String(parts[0]), name: String(parts[1]))
+            let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3 else { return nil }
+            return Device(id: String(parts[0]), name: String(parts[1]), available: parts[2] != "0")
         }
     }
 

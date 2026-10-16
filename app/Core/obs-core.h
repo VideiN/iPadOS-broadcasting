@@ -37,7 +37,8 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 // 카메라 소스와 오디오 입력 소스를 만든다. 권한 요청이 끝난 뒤에 부른다.
 void core_start_capture(void);
 
-// 장치 목록을 "id\t이름\n" 줄로 돌려준다 (오디오 입력의 id ""는 시스템 기본 경로). core_free로 해제한다.
+// 장치 목록을 "id\t이름\t연결(1/0)\n" 줄로 돌려준다. 연결 0은 고른 장치가 빠져 있는 경우다.
+// 오디오 입력의 id ""는 시스템 기본 경로. core_free로 해제한다.
 char *core_list_devices(enum core_device_kind kind);
 // 지금 고른 장치 id. core_free로 해제한다.
 char *core_current_device(enum core_device_kind kind);

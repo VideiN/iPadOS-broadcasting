@@ -357,11 +357,13 @@ char *core_list_devices(enum core_device_kind kind)
 		const char *id = obs_property_list_item_string(list, i);
 		const char *name = obs_property_list_item_name(list, i);
 
-		// 카메라의 빈 항목("선택 안 함")과 연결이 끊긴 장치는 빼고, 오디오의 빈 id는 시스템 기본 경로라 남긴다
-		if (!id || (kind == CORE_DEVICE_CAMERA && !*id) || obs_property_list_item_disabled(list, i))
+		// 카메라의 빈 항목("선택 안 함")은 빼고, 오디오의 빈 id는 시스템 기본 경로라 남긴다.
+		// 비활성 항목은 지금 고른 장치가 빠져 있는 경우다. 마지막으로 알던 이름으로 남겨 0을 붙인다.
+		if (!id || (kind == CORE_DEVICE_CAMERA && !*id))
 			continue;
 
-		dstr_catf(&out, "%s\t%s\n", id, name ? name : id);
+		const bool available = !obs_property_list_item_disabled(list, i);
+		dstr_catf(&out, "%s\t%s\t%d\n", id, name ? name : id, available ? 1 : 0);
 	}
 
 	obs_properties_destroy(props);
