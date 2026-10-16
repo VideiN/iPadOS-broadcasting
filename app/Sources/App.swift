@@ -40,10 +40,24 @@ struct Device: Identifiable, Hashable {
 final class Core: ObservableObject {
     static let shared = Core()
 
-    /// 캔버스 설정 (계획: 1080p60 단일 캔버스)
-    let width: UInt32 = 1920
-    let height: UInt32 = 1080
-    let fps: UInt32 = 60
+    /// 캔버스 설정 (계획: 1080p60 단일 캔버스).
+    /// CI 시뮬레이터는 소프트웨어 인코더라 1080p60을 따라가지 못해 `-canvas 640x360@30`으로 줄여 띄운다.
+    let width: UInt32
+    let height: UInt32
+    let fps: UInt32
+
+    private init() {
+        (width, height, fps) = Self.canvasFromArguments() ?? (1920, 1080, 60)
+    }
+
+    private static func canvasFromArguments() -> (UInt32, UInt32, UInt32)? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-canvas"), index + 1 < args.count else { return nil }
+
+        let parts = args[index + 1].split(whereSeparator: { $0 == "x" || $0 == "@" }).compactMap { UInt32($0) }
+        guard parts.count == 3, parts.allSatisfy({ $0 > 0 }) else { return nil }
+        return (parts[0], parts[1], parts[2])
+    }
 
     @Published private(set) var isRunning = false
     @Published private(set) var failed = false
@@ -87,6 +101,7 @@ final class Core: ObservableObject {
             DispatchQueue.main.async {
                 self.refreshDevices()
                 self.observeDeviceChanges()
+                Outputs.shared.runAutotestIfRequested()
             }
         }
     }

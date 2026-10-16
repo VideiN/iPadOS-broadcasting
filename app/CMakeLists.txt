@@ -18,13 +18,31 @@ else()
 endif()
 
 # libobs 호출을 모은 C 브리지
-add_library(app-core STATIC Core/obs-core.c Core/obs-core.h Core/capture-format.m Core/capture-format.h)
+add_library(
+  app-core
+  STATIC
+  Core/obs-core.c
+  Core/obs-core.h
+  Core/outputs.c
+  Core/capture-format.m
+  Core/capture-format.h
+  Core/crash-log.m
+  Core/crash-log.h
+)
 target_include_directories(app-core PUBLIC Core)
 target_link_libraries(
   app-core
-  PUBLIC OBS::libobs OBS::libobs-metal OBS::image-source OBS::avcapture OBS::ios-audio-input
+  PUBLIC
+    OBS::libobs
+    OBS::libobs-metal
+    OBS::image-source
+    OBS::avcapture
+    OBS::ios-audio-input
+    OBS::mac-videotoolbox
+    OBS::coreaudio-encoder
+    OBS::outputs
 )
-set_source_files_properties(Core/capture-format.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
+set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
 configure_file(Info.plist.in "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -34,6 +52,7 @@ add_executable(
   Sources/App.swift
   Sources/ContentView.swift
   Sources/PreviewView.swift
+  Sources/Outputs.swift
 )
 target_link_libraries(app PRIVATE app-core)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
@@ -75,7 +94,22 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-audio-input/data"
     "${bundle_dir}/obs-plugins/ios-audio-input"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-videotoolbox/data"
+    "${bundle_dir}/obs-plugins/mac-videotoolbox"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/coreaudio-encoder/data"
+    "${bundle_dir}/obs-plugins/coreaudio-encoder"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/data"
+    "${bundle_dir}/obs-plugins/obs-outputs"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
+  # swiftc는 디버그 정보(dSYM)를 실행 파일 옆, 즉 번들 안에 만든다. 번들 안에 있으면 LiveContainer가 설치할 때
+  # 서명하려다 "Failed to Sign …/Broadcast.dSYM/…" 경고를 낸다. 서명 전에 번들 밖으로 옮긴다.
+  COMMAND
+    sh -c
+    "if [ -d \"$1/${APP_EXECUTABLE}.dSYM\" ]; then rm -rf \"$2\"; mv \"$1/${APP_EXECUTABLE}.dSYM\" \"$2\"; fi" sh
+    "$<TARGET_BUNDLE_DIR:app>" "${CMAKE_CURRENT_BINARY_DIR}/${APP_EXECUTABLE}.app.dSYM"
   COMMAND codesign --force --sign - --timestamp=none ${codesign_entitlements} "$<TARGET_BUNDLE_DIR:app>"
   VERBATIM
 )

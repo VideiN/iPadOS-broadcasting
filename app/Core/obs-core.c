@@ -1,5 +1,6 @@
 #include "obs-core.h"
 #include "capture-format.h"
+#include "crash-log.h"
 
 #include <obs.h>
 #include <graphics/vec2.h>
@@ -19,6 +20,12 @@
 extern const struct obs_static_module obs_static_module_image_source;
 extern const struct obs_static_module obs_static_module_mac_avcapture;
 extern const struct obs_static_module obs_static_module_ios_audio_input;
+extern const struct obs_static_module obs_static_module_mac_videotoolbox;
+extern const struct obs_static_module obs_static_module_coreaudio_encoder;
+extern const struct obs_static_module obs_static_module_obs_outputs;
+
+// outputs.c
+extern void core_outputs_register(void);
 extern void *libobs_metal_get_export(const char *symbol);
 extern double libobs_metal_gpu_busy_ms_per_second(void);
 
@@ -33,9 +40,10 @@ static struct {
 	obs_source_t *camera;
 	obs_source_t *audio_input;
 	obs_volmeter_t *volmeter;
-	_Atomic float audio_peak_db;
+	_Atomic float audio_peak_left_db;
+	_Atomic float audio_peak_right_db;
 	_Atomic uint64_t audio_peak_time; // os_gettime_ns
-} core = {.audio_peak_db = -INFINITY};
+} core = {.audio_peak_left_db = -INFINITY, .audio_peak_right_db = -INFINITY};
 
 #pragma mark - 로그
 
@@ -95,6 +103,9 @@ void core_log_open(const char *path)
 	pthread_mutex_lock(&log_file.mutex);
 	log_file.file = fopen(path, "w");
 	pthread_mutex_unlock(&log_file.mutex);
+
+	// 크래시가 나면 스택을 같은 파일에 남긴다 (기기에서 원인을 찾을 수 있게)
+	crash_log_install(log_file.file ? fileno(log_file.file) : -1);
 
 	base_set_log_handler(log_handler, NULL);
 	blog(LOG_INFO, "[app] log file: %s", log_file.file ? path : "(failed to open)");
@@ -184,11 +195,21 @@ static bool load_modules(const char *resource_path)
 	if (!load_module(resource_path, "image-source", &obs_static_module_image_source))
 		return false;
 
-	// 입력 모듈은 실패해도 테스트 씬은 띄운다
+	// 입력·출력 모듈은 실패해도 테스트 씬은 띄운다
 	load_module(resource_path, "mac-avcapture", &obs_static_module_mac_avcapture);
 	load_module(resource_path, "ios-audio-input", &obs_static_module_ios_audio_input);
+	load_module(resource_path, "mac-videotoolbox", &obs_static_module_mac_videotoolbox);
+	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
+	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);
 
+	// VideoToolbox 인코더는 post_load에서 등록된다
 	obs_post_load_modules();
+	core_outputs_register();
+
+	const char *id;
+	for (size_t i = 0; obs_enum_encoder_types(i, &id); i++)
+		blog(LOG_INFO, "[app] encoder: %s (%s)", id, obs_get_encoder_codec(id));
+
 	return true;
 }
 
@@ -290,12 +311,12 @@ static void volmeter_updated(void *param, const float magnitude[MAX_AUDIO_CHANNE
 	UNUSED_PARAMETER(magnitude);
 	UNUSED_PARAMETER(input_peak);
 
-	float max_peak = -INFINITY;
-	for (size_t i = 0; i < MAX_AUDIO_CHANNELS; i++) {
-		if (peak[i] > max_peak)
-			max_peak = peak[i];
-	}
-	atomic_store(&core.audio_peak_db, max_peak);
+	// 출력 오디오가 스테레오라 볼륨미터는 소스를 L/R로 올려서 잰다 (모노 입력이면 두 값이 같다)
+	audio_t *audio = obs_get_audio();
+	const bool stereo = audio && audio_output_get_channels(audio) > 1;
+
+	atomic_store(&core.audio_peak_left_db, peak[0]);
+	atomic_store(&core.audio_peak_right_db, stereo ? peak[1] : peak[0]);
 	atomic_store(&core.audio_peak_time, os_gettime_ns());
 }
 
@@ -489,5 +510,6 @@ void core_get_stats(struct core_stats *stats)
 	stats->camera_height = core.camera ? obs_source_get_height(core.camera) : 0;
 	// 오디오가 1초 넘게 안 들어오면 무음으로 표시한다
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
-	stats->audio_peak_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_db);
+	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
+	stats->audio_peak_right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
 }

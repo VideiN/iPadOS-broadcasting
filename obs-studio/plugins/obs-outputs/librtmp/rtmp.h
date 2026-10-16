@@ -89,6 +89,25 @@ typedef struct tls_ctx
 
 typedef tls_ctx *TLS_CTX;
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && TARGET_OS_IOS
+/* iOS port: iOS cannot list the system root certificates for mbedtls
+ * (SecTrustCopyAnchorCertificates is macOS only). mbedtls only runs the
+ * handshake here (TLS 1.2, where an optional peer check is well defined) and
+ * RTMP_Connect1 then checks the server chain against the system trust store
+ * with the Security framework, see RTMP_TLS_CheckSystemTrust. */
+#define TLS_client(ctx,s)	\
+  s = malloc(sizeof(mbedtls_ssl_context));\
+  mbedtls_ssl_init(s);\
+  mbedtls_ssl_config_defaults(&ctx->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);\
+  mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);\
+  mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);\
+  mbedtls_ssl_conf_max_tls_version(&ctx->conf, MBEDTLS_SSL_VERSION_TLS1_2);\
+  mbedtls_ssl_setup(s, &ctx->conf)
+#else
 #define TLS_client(ctx,s)	\
   s = malloc(sizeof(mbedtls_ssl_context));\
   mbedtls_ssl_init(s);\
@@ -96,6 +115,7 @@ typedef tls_ctx *TLS_CTX;
   mbedtls_ssl_conf_rng(&ctx->conf, mbedtls_ctr_drbg_random, &ctx->ctr_drbg);\
   mbedtls_ssl_conf_authmode(&ctx->conf, MBEDTLS_SSL_VERIFY_REQUIRED);\
   mbedtls_ssl_setup(s, &ctx->conf)
+#endif
 
 #define TLS_setfd(s,fd)	mbedtls_ssl_set_bio(s, fd, mbedtls_net_send, mbedtls_net_recv, NULL)
 #define TLS_connect(s)	mbedtls_ssl_handshake(s)

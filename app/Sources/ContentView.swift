@@ -4,6 +4,7 @@ import UIKit
 
 struct ContentView: View {
     @ObservedObject private var core = Core.shared
+    @ObservedObject private var outputs = Outputs.shared
     @StateObject private var diagnostics = Diagnostics()
 
     var body: some View {
@@ -20,13 +21,16 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
 
-            DiagnosticsOverlay(diagnostics: diagnostics)
+            DiagnosticsOverlay(diagnostics: diagnostics, outputs: outputs)
                 .padding(12)
 
             if core.isRunning {
-                InputPicker(core: core)
-                    .padding(12)
-                    .frame(maxWidth: .infinity, alignment: .topTrailing)
+                VStack(alignment: .trailing, spacing: 8) {
+                    InputPicker(core: core)
+                    OutputControls(outputs: outputs)
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .topTrailing)
             }
         }
         .onAppear {
@@ -101,6 +105,7 @@ struct InputPicker: View {
 /// 계측 오버레이 (계획 11장): 렌더 fps, 프레임 시간, GPU 시간, 지연 프레임, 메모리, 발열, 입력 상태
 struct DiagnosticsOverlay: View {
     @ObservedObject var diagnostics: Diagnostics
+    let outputs: Outputs
 
     var body: some View {
         let stats = diagnostics.stats
@@ -113,10 +118,14 @@ struct DiagnosticsOverlay: View {
             Text("메모리 \(megabytes(stats.memory_footprint)) MB (여유 \(megabytes(stats.memory_available)) MB)")
             Text("발열  \(diagnostics.thermalState)")
             Text("카메라 \(cameraSize(stats))")
-            HStack(spacing: 6) {
-                Text("오디오 \(peakText(stats.audio_peak_db))")
-                AudioMeter(peak: stats.audio_peak_db)
+            HStack(alignment: .top, spacing: 6) {
+                Text("오디오")
+                VStack(alignment: .leading, spacing: 2) {
+                    channelMeter("L", stats.audio_peak_left_db)
+                    channelMeter("R", stats.audio_peak_right_db)
+                }
             }
+            OutputStatusLines(outputs: outputs)
         }
         .font(.system(size: 13, weight: .medium, design: .monospaced))
         .foregroundStyle(.white)
@@ -130,6 +139,13 @@ struct DiagnosticsOverlay: View {
 
     private func cameraSize(_ stats: core_stats) -> String {
         stats.camera_width > 0 ? "\(stats.camera_width)x\(stats.camera_height)" : "프레임 없음"
+    }
+
+    private func channelMeter(_ channel: String, _ db: Float) -> some View {
+        HStack(spacing: 6) {
+            Text("\(channel) \(peakText(db))")
+            AudioMeter(peak: db)
+        }
     }
 
     private func peakText(_ db: Float) -> String {
@@ -182,13 +198,17 @@ final class Diagnostics: ObservableObject {
         // 같은 값을 5초마다 로그로도 남긴다
         if Date().timeIntervalSince(lastLog) >= 5 {
             lastLog = Date()
+            let output = Outputs.shared.stats
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1fdB",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d stream=%d stream_kbps=%.0f dropped=%d/%d enc_skipped=%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
-                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_db))
+                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_left_db,
+                    stats.audio_peak_right_db,
+                    output.recording ? 1 : 0, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
+                    output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames))
         }
     }
 

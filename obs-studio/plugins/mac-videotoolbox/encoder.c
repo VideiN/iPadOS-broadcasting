@@ -141,7 +141,7 @@ static CFStringRef obs_to_vt_profile(CMVideoCodecType codec_type, const char *pr
 		}
 		if (strcmp(profile, "main10") == 0)
 			return kVTProfileLevel_HEVC_Main10_AutoLevel;
-		if (__builtin_available(macOS 12.3, *)) {
+		if (__builtin_available(macOS 12.3, iOS 15.4, *)) {
 			if (strcmp(profile, "main42210") == 0)
 				return kVTProfileLevel_HEVC_Main42210_AutoLevel;
 		}
@@ -284,8 +284,22 @@ static OSStatus session_set_bitrate(VTCompressionSessionRef session, const char 
 		compressionPropertyKey = kVTCompressionPropertyKey_AverageBitRate;
 		can_limit_bitrate = true;
 
-		if (__builtin_available(macOS 13.0, *)) {
-			if (is_apple_silicon) {
+		if (__builtin_available(macOS 13.0, iOS 16.0, *)) {
+#if TARGET_OS_IOS
+			/* iOS port: not every encoder/OS combination supports CBR (O2), ask the session */
+			CFDictionaryRef supported = NULL;
+			bool cbr_supported = false;
+			if (VTSessionCopySupportedPropertyDictionary(session, &supported) == noErr && supported) {
+				cbr_supported = CFDictionaryContainsKey(supported, kVTCompressionPropertyKey_ConstantBitRate);
+				CFRelease(supported);
+			}
+			VT_LOG(LOG_INFO, "ConstantBitRate supported by the session: %s", cbr_supported ? "yes" : "no");
+
+			if (!cbr_supported) {
+				VT_LOG(LOG_WARNING, "CBR is not supported by this encoder. Will use ABR instead.");
+			} else
+#endif
+				if (is_apple_silicon) {
 				compressionPropertyKey = kVTCompressionPropertyKey_ConstantBitRate;
 				can_limit_bitrate = false;
 			} else {
@@ -382,8 +396,13 @@ static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum vid
 		values[4] = contentLightLevel;
 	}
 
-	CFDictionaryRef session_properties = CFDictionaryCreate(
-		kCFAllocatorDefault, keys, values, 5, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	/* iOS port: only pass the entries that are set. The HDR entries are NULL for
+	 * SDR, and NULL keys must not reach the CFType retain/hash callbacks
+	 * (suspected cause of an encoder crash on iPadOS 27). */
+	const CFIndex count = keys[3] ? 5 : 3;
+	CFDictionaryRef session_properties = CFDictionaryCreate(kCFAllocatorDefault, keys, values, count,
+								&kCFTypeDictionaryKeyCallBacks,
+								&kCFTypeDictionaryValueCallBacks);
 
 	code = VTSessionSetProperties(session, session_properties);
 
@@ -507,15 +526,22 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	code = VTCompressionSessionCreate(kCFAllocatorDefault, enc->width, enc->height, enc->codec_type, encoder_spec,
 					  pixbuf_spec, NULL, &sample_encoded_callback, enc->queue, &s);
 
-	if (code != noErr) {
-		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
-	}
-
 	CFRelease(encoder_spec);
 	CFRelease(pixbuf_spec);
 
+	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionCreate", code);
+		/* iOS port: stop here, s is not valid (it was used below before) */
+		return code;
+	}
+
 	CFBooleanRef b = NULL;
-	code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL, &b);
+	/* iOS port: the key exists on iOS 17.4 and later */
+	if (__builtin_available(macOS 10.9, iOS 17.4, *))
+		code = VTSessionCopyProperty(s, kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, NULL,
+					     &b);
+	else
+		code = kVTPropertyNotSupportedErr;
 
 	if (code == noErr && (enc->hw_enc = CFBooleanGetValue(b)))
 		VT_BLOG(LOG_INFO, "session created with hardware encoding");
@@ -559,24 +585,31 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			CFDictionaryCreate(kCFAllocatorDefault, session_keys, session_values, 4,
 					   &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
+		VT_BLOG(LOG_INFO, "iOS port: setting keyframe, frame rate and profile properties");
 		code = VTSessionSetProperties(s, session_properties);
 
+		/* iOS port: AllowFrameReordering (kCFBoolean*) and ProfileLevel
+		 * (kVTProfileLevel_*) are constants this function does not own, so
+		 * they are not released */
 		CFRelease(MaxKeyFrameInterval);
 		CFRelease(ExpectedFrameRate);
-		CFRelease(AllowFrameReordering);
-		CFRelease(ProfileLevel);
 		CFRelease(session_properties);
 
 		if (code != noErr) {
+			log_osstatus(LOG_ERROR, enc, "setting keyframe, frame rate and profile properties", code);
 			return code;
 		}
 
+		VT_BLOG(LOG_INFO, "iOS port: setting rate control");
 		code = session_set_bitrate(s, enc->rate_control, enc->bitrate, enc->quality, enc->limit_bitrate,
 					   enc->rc_max_bitrate, enc->rc_max_bitrate_window);
 		if (code != noErr) {
+			log_osstatus(LOG_ERROR, enc, "setting rate control", code);
 			return code;
 		}
 
+#if TARGET_OS_OSX
+		/* iOS port: kVTCompressionPropertyKey_SpatialAdaptiveQPLevel is macOS only */
 		if (__builtin_available(macOS 15.0, *)) {
 			int spatial_aq = enc->spatial_aq ? kVTQPModulationLevel_Default : kVTQPModulationLevel_Disable;
 			CFNumberRef spatialAQ = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &spatial_aq);
@@ -590,8 +623,10 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 			CFRelease(spatialAQ);
 		}
+#endif
 	}
 
+	VT_BLOG(LOG_INFO, "iOS port: setting real-time, color space and preparing");
 	// This can fail depending on hardware configuration
 	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, kCFBooleanFalse);
 	if (code != noErr)
@@ -602,11 +637,13 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 	code = session_set_colorspace(s, enc->colorspace);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "setting the color space", code);
 		return code;
 	}
 
 	code = VTCompressionSessionPrepareToEncodeFrames(s);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionPrepareToEncodeFrames", code);
 		return code;
 	}
 
@@ -1243,7 +1280,7 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 	p = obs_properties_add_list(props, "rate_control", obs_module_text("RateControl"), OBS_COMBO_TYPE_LIST,
 				    OBS_COMBO_FORMAT_STRING);
 
-	if (__builtin_available(macOS 13.0, *)) {
+	if (__builtin_available(macOS 13.0, iOS 16.0, *)) {
 		if (encoder_type_data->hardware_accelerated && is_apple_silicon) {
 			obs_property_list_add_string(p, "CBR", "CBR");
 		}
@@ -1285,7 +1322,7 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 	} else if (encoder_type_data->codec_type == kCMVideoCodecType_HEVC) {
 		obs_property_list_add_string(p, "main", "main");
 		obs_property_list_add_string(p, "main10", "main10");
-		if (__builtin_available(macOS 12.3, *)) {
+		if (__builtin_available(macOS 12.3, iOS 15.4, *)) {
 			obs_property_list_add_string(p, "main 4:2:2 10", "main42210");
 		}
 #endif
@@ -1293,6 +1330,7 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 
 	obs_properties_add_bool(props, "bframes", obs_module_text("UseBFrames"));
 
+#if TARGET_OS_OSX
 	if (__builtin_available(macOS 15.0, *)) {
 		p = obs_properties_add_list(props, "spatial_aq_mode", obs_module_text("SpatialAQ"), OBS_COMBO_TYPE_LIST,
 					    OBS_COMBO_FORMAT_INT);
@@ -1300,6 +1338,7 @@ static obs_properties_t *vt_properties_h26x(void *data __unused, void *type_data
 		obs_property_list_add_int(p, obs_module_text("SpatialAQ.Disabled"), AQ_DISABLED);
 		obs_property_list_add_int(p, obs_module_text("SpatialAQ.Enabled"), AQ_ENABLED);
 	}
+#endif
 
 	return props;
 }
@@ -1371,7 +1410,7 @@ static void vt_defaults(obs_data_t *settings, void *data)
 	struct vt_encoder_type_data *type_data = data;
 
 	obs_data_set_default_string(settings, "rate_control", "ABR");
-	if (__builtin_available(macOS 13.0, *)) {
+	if (__builtin_available(macOS 13.0, iOS 16.0, *)) {
 		if (type_data->hardware_accelerated && is_apple_silicon) {
 			obs_data_set_default_string(settings, "rate_control", "CBR");
 		}

@@ -314,6 +314,13 @@ RTMP_TLS_LoadCerts(RTMP *r) {
 
     CertFreeCertificateContext(pCertContext);
     CertCloseStore(hCertStore, 0);
+#elif defined(__APPLE__) && TARGET_OS_IOS
+    /* iOS port: no CA chain for mbedtls, the server chain is checked by
+     * RTMP_TLS_CheckSystemTrust after the handshake */
+    mbedtls_x509_crt_free(chain);
+    free(chain);
+    r->RTMP_TLS_ctx->cacert = NULL;
+    return;
 #elif defined(__APPLE__)
     CFArrayRef anchors;
     OSStatus code = SecTrustCopyAnchorCertificates(&anchors);
@@ -367,6 +374,65 @@ error:
 	UNUSED_PARAMETER(r);
 #endif /* USE_MBEDTLS */
 }
+
+#if defined(CRYPTO) && defined(USE_MBEDTLS) && defined(__APPLE__) && TARGET_OS_IOS
+/* iOS port: check the certificate chain the server presented against the
+ * system trust store (and the host name), since mbedtls has no CA chain on
+ * iOS. Returns TRUE if the chain is trusted. */
+static int
+RTMP_TLS_CheckSystemTrust(mbedtls_ssl_context *ssl, const char *hostname)
+{
+    const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(ssl);
+    if (!peer)
+    {
+        RTMP_Log(RTMP_LOGERROR, "%s, server sent no certificate", __FUNCTION__);
+        return FALSE;
+    }
+
+    CFMutableArrayRef certs = CFArrayCreateMutable(kCFAllocatorDefault, 0, &kCFTypeArrayCallBacks);
+    for (const mbedtls_x509_crt *crt = peer; crt != NULL; crt = crt->next)
+    {
+        CFDataRef der = CFDataCreate(kCFAllocatorDefault, crt->raw.p, (CFIndex)crt->raw.len);
+        SecCertificateRef cert = SecCertificateCreateWithData(kCFAllocatorDefault, der);
+        CFRelease(der);
+        if (cert)
+        {
+            CFArrayAppendValue(certs, cert);
+            CFRelease(cert);
+        }
+    }
+
+    CFStringRef host = CFStringCreateWithCString(kCFAllocatorDefault, hostname, kCFStringEncodingUTF8);
+    SecPolicyRef policy = SecPolicyCreateSSL(true, host);
+    SecTrustRef trust = NULL;
+    int trusted = FALSE;
+
+    if (CFArrayGetCount(certs) > 0 && SecTrustCreateWithCertificates(certs, policy, &trust) == errSecSuccess)
+    {
+        CFErrorRef error = NULL;
+        trusted = SecTrustEvaluateWithError(trust, &error) ? TRUE : FALSE;
+        if (!trusted && error)
+        {
+            CFStringRef description = CFErrorCopyDescription(error);
+            char text[512] = "unknown error";
+            if (description)
+            {
+                CFStringGetCString(description, text, sizeof(text), kCFStringEncodingUTF8);
+                CFRelease(description);
+            }
+            RTMP_Log(RTMP_LOGERROR, "%s, server certificate is not trusted: %s", __FUNCTION__, text);
+        }
+        if (error)
+            CFRelease(error);
+        CFRelease(trust);
+    }
+
+    CFRelease(policy);
+    CFRelease(host);
+    CFRelease(certs);
+    return trusted;
+}
+#endif
 
 void
 RTMP_TLS_Init(RTMP *r)
@@ -994,6 +1060,15 @@ RTMP_Connect1(RTMP *r, RTMPPacket *cp)
             RTMP_Close(r);
             return FALSE;
         }
+
+#if defined(USE_MBEDTLS) && defined(__APPLE__) && TARGET_OS_IOS
+        if (!RTMP_TLS_CheckSystemTrust(r->m_sb.sb_ssl, hostname))
+        {
+            r->last_error_code = MBEDTLS_ERR_X509_CERT_VERIFY_FAILED;
+            RTMP_Close(r);
+            return FALSE;
+        }
+#endif
 #else
         RTMP_Log(RTMP_LOGERROR, "%s, no SSL/TLS support", __FUNCTION__);
         RTMP_Close(r);
