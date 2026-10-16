@@ -628,10 +628,9 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 	VT_BLOG(LOG_INFO, "iOS port: setting real-time, color space and preparing");
 #if TARGET_OS_IOS
-	/* iOS port: live capture must keep up with the canvas. A non-real-time
-	 * session may run at lower priority on iPadOS; with recording and
-	 * streaming sessions together the stream reached YouTube at 30 fps from
-	 * a 60 fps canvas. */
+	/* iOS port: live capture must keep up with the canvas, and a
+	 * non-real-time session may run at lower priority. On the CI simulator
+	 * the encoder skipped most frames (93%) until this was set (0%). */
 	CFBooleanRef real_time = kCFBooleanTrue;
 #else
 	CFBooleanRef real_time = kCFBooleanFalse;
