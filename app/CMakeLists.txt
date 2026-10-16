@@ -18,11 +18,27 @@ else()
 endif()
 
 # libobs 호출을 모은 C 브리지
-add_library(app-core STATIC Core/obs-core.c Core/obs-core.h Core/capture-format.m Core/capture-format.h)
+add_library(
+  app-core
+  STATIC
+  Core/obs-core.c
+  Core/obs-core.h
+  Core/outputs.c
+  Core/capture-format.m
+  Core/capture-format.h
+)
 target_include_directories(app-core PUBLIC Core)
 target_link_libraries(
   app-core
-  PUBLIC OBS::libobs OBS::libobs-metal OBS::image-source OBS::avcapture OBS::ios-audio-input
+  PUBLIC
+    OBS::libobs
+    OBS::libobs-metal
+    OBS::image-source
+    OBS::avcapture
+    OBS::ios-audio-input
+    OBS::mac-videotoolbox
+    OBS::coreaudio-encoder
+    OBS::outputs
 )
 set_source_files_properties(Core/capture-format.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
@@ -34,6 +50,7 @@ add_executable(
   Sources/App.swift
   Sources/ContentView.swift
   Sources/PreviewView.swift
+  Sources/Outputs.swift
 )
 target_link_libraries(app PRIVATE app-core)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
@@ -75,6 +92,15 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-audio-input/data"
     "${bundle_dir}/obs-plugins/ios-audio-input"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-videotoolbox/data"
+    "${bundle_dir}/obs-plugins/mac-videotoolbox"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/coreaudio-encoder/data"
+    "${bundle_dir}/obs-plugins/coreaudio-encoder"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/data"
+    "${bundle_dir}/obs-plugins/obs-outputs"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
   COMMAND codesign --force --sign - --timestamp=none ${codesign_entitlements} "$<TARGET_BUNDLE_DIR:app>"
   VERBATIM

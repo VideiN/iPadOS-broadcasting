@@ -87,6 +87,7 @@ final class Core: ObservableObject {
             DispatchQueue.main.async {
                 self.refreshDevices()
                 self.observeDeviceChanges()
+                Outputs.shared.runAutotestIfRequested()
             }
         }
     }

@@ -18,7 +18,12 @@ if(NOT TARGET OBS::bpm)
   add_subdirectory("${CMAKE_SOURCE_DIR}/shared/bpm" bpm)
 endif()
 
-add_library(obs-outputs MODULE)
+if(OS_IOS)
+  # iOS port: linked statically into the app
+  add_library(obs-outputs STATIC)
+else()
+  add_library(obs-outputs MODULE)
+endif()
 add_library(OBS::outputs ALIAS obs-outputs)
 
 target_sources(
@@ -89,6 +94,9 @@ target_link_libraries(
     $<$<PLATFORM_ID:Windows>:ws2_32>
     "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Foundation.framework>>"
     "$<$<PLATFORM_ID:Darwin>:$<LINK_LIBRARY:FRAMEWORK,Security.framework>>"
+    # iOS port: RTMPS checks the server certificate with the Security framework (librtmp/rtmp.c)
+    "$<$<PLATFORM_ID:iOS>:$<LINK_LIBRARY:FRAMEWORK,CoreFoundation.framework>>"
+    "$<$<PLATFORM_ID:iOS>:$<LINK_LIBRARY:FRAMEWORK,Security.framework>>"
 )
 
 # Remove once jansson has been fixed on obs-deps
@@ -103,3 +111,7 @@ if(OS_WINDOWS)
 endif()
 
 set_target_properties_obs(obs-outputs PROPERTIES FOLDER plugins/obs-outputs PREFIX "")
+
+if(OS_IOS)
+  obs_ios_static_module(obs-outputs)
+endif()

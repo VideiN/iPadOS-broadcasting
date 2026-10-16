@@ -1,5 +1,25 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
+# iOS port: same encoder, linked statically into the app (no Cocoa/AVFoundation needed)
+if(OS_IOS)
+  add_library(mac-videotoolbox STATIC)
+  add_library(OBS::mac-videotoolbox ALIAS mac-videotoolbox)
+
+  target_sources(mac-videotoolbox PRIVATE encoder.c)
+  target_link_libraries(
+    mac-videotoolbox
+    PRIVATE
+      OBS::libobs
+      "$<LINK_LIBRARY:FRAMEWORK,CoreFoundation.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,CoreMedia.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,CoreVideo.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,VideoToolbox.framework>"
+  )
+
+  obs_ios_static_module(mac-videotoolbox)
+  return()
+endif()
+
 add_library(mac-videotoolbox MODULE)
 add_library(OBS::mac-videotoolbox ALIAS mac-videotoolbox)
 

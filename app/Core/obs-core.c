@@ -19,6 +19,12 @@
 extern const struct obs_static_module obs_static_module_image_source;
 extern const struct obs_static_module obs_static_module_mac_avcapture;
 extern const struct obs_static_module obs_static_module_ios_audio_input;
+extern const struct obs_static_module obs_static_module_mac_videotoolbox;
+extern const struct obs_static_module obs_static_module_coreaudio_encoder;
+extern const struct obs_static_module obs_static_module_obs_outputs;
+
+// outputs.c
+extern void core_outputs_register(void);
 extern void *libobs_metal_get_export(const char *symbol);
 extern double libobs_metal_gpu_busy_ms_per_second(void);
 
@@ -184,11 +190,21 @@ static bool load_modules(const char *resource_path)
 	if (!load_module(resource_path, "image-source", &obs_static_module_image_source))
 		return false;
 
-	// 입력 모듈은 실패해도 테스트 씬은 띄운다
+	// 입력·출력 모듈은 실패해도 테스트 씬은 띄운다
 	load_module(resource_path, "mac-avcapture", &obs_static_module_mac_avcapture);
 	load_module(resource_path, "ios-audio-input", &obs_static_module_ios_audio_input);
+	load_module(resource_path, "mac-videotoolbox", &obs_static_module_mac_videotoolbox);
+	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
+	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);
 
+	// VideoToolbox 인코더는 post_load에서 등록된다
 	obs_post_load_modules();
+	core_outputs_register();
+
+	const char *id;
+	for (size_t i = 0; obs_enum_encoder_types(i, &id); i++)
+		blog(LOG_INFO, "[app] encoder: %s (%s)", id, obs_get_encoder_codec(id));
+
 	return true;
 }
 

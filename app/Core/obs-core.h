@@ -46,6 +46,39 @@ char *core_current_device(enum core_device_kind kind);
 void core_select_device(enum core_device_kind kind, const char *device_id);
 void core_free(void *ptr);
 
+// --- 녹화·송출 (outputs.c) ---
+
+struct core_output_stats {
+	bool recording;
+	double recording_seconds;
+	uint64_t recording_bytes;
+	int record_stop_code;           // 마지막으로 멈춘 이유 (OBS_OUTPUT_*, 0이면 정상)
+
+	bool streaming;
+	bool stream_reconnecting;
+	double streaming_seconds;
+	uint64_t stream_bytes;
+	int stream_dropped_frames;      // 네트워크가 못 따라가 버린 프레임
+	int stream_total_frames;
+	float stream_congestion;        // 0~1
+	int stream_stop_code;
+
+	uint32_t encoder_skipped_frames; // 인코더가 못 따라가 건너뛴 프레임 (전체 출력 기준)
+	uint32_t video_total_frames;
+};
+
+// 녹화(HEVC, Hybrid MP4). path의 폴더는 미리 만들어 둔다. HEVC가 안 되면 H.264로 녹화한다.
+bool core_recording_start(const char *path);
+void core_recording_stop(void);
+
+// RTMP/RTMPS 송출 (H.264 CBR + AAC 160kbps). 연결은 비동기로 하고 결과는 상태와 마지막 오류로 본다.
+bool core_streaming_start(const char *server, const char *key, int video_kbps);
+void core_streaming_stop(void);
+
+void core_get_output_stats(struct core_output_stats *stats);
+// 녹화(false)나 송출(true)의 마지막 오류 문장. 없으면 "". core_free로 해제한다.
+char *core_output_last_error(bool stream);
+
 // CAMetalLayer 기반 UIView에 프리뷰를 붙인다. 메인 스레드에서 호출해야 한다.
 void *core_display_create(void *view, uint32_t width, uint32_t height);
 void core_display_resize(void *display, uint32_t width, uint32_t height);

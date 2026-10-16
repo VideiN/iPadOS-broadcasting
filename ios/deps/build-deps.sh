@@ -26,6 +26,9 @@ UTHASH_VERSION=2.3.0
 UTHASH_SHA256=e10382ab75518bad8319eb922ad04f907cb20cccb451a3aa980c9d005e661acc
 CMOCKA_VERSION=1.1.8
 CMOCKA_SHA256=58435b558766d7f4c729ba163bdf3aec38bed3bc766dab684e3526ed0aa7c780
+# RTMPS (obs-outputs). 릴리스 tarball에는 생성 파일과 framework가 들어 있어 GEN_FILES=OFF로 빌드된다.
+MBEDTLS_VERSION=3.6.4
+MBEDTLS_SHA256=ec35b18a6c593cf98c3e30db8b98ff93e8940a8c4e690e66b41dfc011d678110
 
 platform=${1:?usage: build-deps.sh <iphoneos|iphonesimulator> [prefix]}
 case "$platform" in
@@ -108,6 +111,26 @@ cmake_ios "$work_dir/jansson" "$work_dir/jansson/build" \
   -DJANSSON_WITHOUT_TESTS=ON
 echo "::endgroup::"
 
+echo "::group::mbedtls $MBEDTLS_VERSION"
+fetch "mbedtls-$MBEDTLS_VERSION.tar.bz2" \
+  "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-$MBEDTLS_VERSION/mbedtls-$MBEDTLS_VERSION.tar.bz2" \
+  "$MBEDTLS_SHA256"
+unpack "$src_dir/mbedtls-$MBEDTLS_VERSION.tar.bz2" "$work_dir/mbedtls"
+# obs-deps와 같이 pthread 뮤텍스를 켠다 (obs-deps patches/mbedtls/0001-enable-posix-threading-support.patch)
+sed -i '' \
+  -e 's|^//#define MBEDTLS_THREADING_PTHREAD$|#define MBEDTLS_THREADING_PTHREAD|' \
+  -e 's|^//#define MBEDTLS_THREADING_C$|#define MBEDTLS_THREADING_C|' \
+  "$work_dir/mbedtls/include/mbedtls/mbedtls_config.h"
+grep -q '^#define MBEDTLS_THREADING_C$' "$work_dir/mbedtls/include/mbedtls/mbedtls_config.h"
+grep -q '^#define MBEDTLS_THREADING_PTHREAD$' "$work_dir/mbedtls/include/mbedtls/mbedtls_config.h"
+cmake_ios "$work_dir/mbedtls" "$work_dir/mbedtls/build" \
+  -DUSE_SHARED_MBEDTLS_LIBRARY=OFF \
+  -DUSE_STATIC_MBEDTLS_LIBRARY=ON \
+  -DENABLE_PROGRAMS=OFF \
+  -DENABLE_TESTING=OFF \
+  -DGEN_FILES=OFF
+echo "::endgroup::"
+
 echo "::group::cmocka $CMOCKA_VERSION (unit tests)"
 fetch "cmocka-$CMOCKA_VERSION.tar.xz" \
   "https://cmocka.org/files/1.1/cmocka-$CMOCKA_VERSION.tar.xz" "$CMOCKA_SHA256"
@@ -157,6 +180,7 @@ echo "::endgroup::"
 cat > "$prefix/VERSIONS" <<EOF
 ffmpeg $FFMPEG_VERSION
 jansson $JANSSON_VERSION
+mbedtls $MBEDTLS_VERSION
 simde $SIMDE_VERSION
 uthash $UTHASH_VERSION
 cmocka $CMOCKA_VERSION
