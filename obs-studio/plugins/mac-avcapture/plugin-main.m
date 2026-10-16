@@ -261,16 +261,18 @@ static void av_capture_destroy(void *av_capture)
     dispatch_sync(capture.sessionQueue, ^{
         OBSAVCaptureInfo *capture_info = capture.captureInfo;
 
-        [capture stopCaptureSession];
-        [capture.deviceInput.device unlockForConfiguration];
+        @synchronized([OBSAVCapture configurationLock]) {
+            [capture stopCaptureSession];
+            [capture.deviceInput.device unlockForConfiguration];
 
 #if TARGET_OS_IOS
-        // iOS port: no orientation or notification callbacks after capture_info is freed, and leave the shared
-        // multi-camera session to the other cameras
-        [capture setUpRotationForDevice:nil];
-        [[NSNotificationCenter defaultCenter] removeObserver:capture];
-        [capture detachFromSharedSession];
+            // iOS port: no orientation or notification callbacks after capture_info is freed, and leave the shared
+            // multi-camera session to the other cameras
+            [capture setUpRotationForDevice:nil];
+            [[NSNotificationCenter defaultCenter] removeObserver:capture];
+            [capture detachFromSharedSession];
 #endif
+        }
 
         if (capture_info->isFastPath) {
             pthread_mutex_destroy(&capture_info->mutex);
