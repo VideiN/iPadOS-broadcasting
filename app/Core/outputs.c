@@ -407,7 +407,10 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 	}
 
 	// 서버 주소는 남기되 스트림 키는 로그에 남기지 않는다
-	blog(LOG_INFO, "[app] streaming to %s (%s %d kbps, AAC %d kbps)", server, codec, video_kbps, audio_kbps);
+	video_t *video = obs_encoder_video(out.stream_video);
+	blog(LOG_INFO, "[app] streaming to %s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)", server, codec, video_kbps,
+	     video ? video_output_get_frame_rate(video) : 0.0, obs_encoder_get_width(out.stream_video),
+	     obs_encoder_get_height(out.stream_video), audio_kbps);
 	return true;
 }
 
@@ -437,6 +440,7 @@ void core_get_output_stats(struct core_output_stats *stats)
 		stats->recording = obs_output_active(out.recording);
 		stats->recording_seconds = obs_output_get_total_frames(out.recording) / fps;
 		stats->recording_bytes = obs_output_get_total_bytes(out.recording);
+		stats->record_total_frames = obs_output_get_total_frames(out.recording);
 	}
 
 	if (out.streaming) {

@@ -123,6 +123,12 @@ typedef struct av_capture_info {
 #if TARGET_OS_IOS
 /// iOS port: starts following the device orientation for built-in cameras. Passing `nil` stops it.
 - (void)setUpRotationForDevice:(AVCaptureDevice *)device;
+
+/// iOS port: shared multi-camera session handling (see OBSSharedCaptureSession in OBSAVCapture.m)
+- (BOOL)joinSharedSession;
+- (BOOL)connectSharedInput:(AVCaptureDeviceInput *)deviceInput;
+- (void)leaveSharedSession;
+- (void)detachFromSharedSession;
 #endif
 
 /// Configures the current [AVCaptureSession](https://developer.apple.com/documentation/avfoundation/avcapturesession?language=objc) to use the [AVCaptureSessionPreset](https://developer.apple.com/documentation/avfoundation/avcapturesessionpreset?language=objc) value selected in the source's property window.
@@ -373,6 +379,12 @@ typedef struct av_capture_info {
 #if TARGET_OS_IOS
 /// iOS port: tracks the device orientation so frames of built-in cameras stay level with the horizon
 @property AVCaptureDeviceRotationCoordinator *rotationCoordinator;
+
+/// iOS port: `YES` if this source uses the shared multi-camera session (see OBSSharedCaptureSession)
+@property BOOL usesSharedSession;
+
+/// iOS port: `YES` once this source's device could not join the shared session; it then keeps its own session
+@property BOOL sharedSessionRejected;
 #endif
 
 @end

@@ -102,13 +102,15 @@ final class Diagnostics: ObservableObject {
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d stream=%d stream_kbps=%.0f dropped=%d/%d enc_skipped=%u",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
                     thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_left_db,
                     stats.audio_peak_right_db,
-                    output.recording ? 1 : 0, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
-                    output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames))
+                    output.recording ? 1 : 0, Outputs.shared.recordFPS, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
+                    Outputs.shared.streamFPS,
+                    output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames,
+                    output.video_total_frames))
         }
     }
 

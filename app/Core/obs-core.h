@@ -102,6 +102,7 @@ struct core_output_stats {
 	bool recording;
 	double recording_seconds;
 	uint64_t recording_bytes;
+	int record_total_frames;        // 녹화 파일에 들어간 비디오 프레임 (초당 증가량 = 실제 fps)
 	int record_stop_code;           // 마지막으로 멈춘 이유 (OBS_OUTPUT_*, 0이면 정상)
 
 	bool streaming;

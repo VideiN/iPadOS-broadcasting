@@ -11,6 +11,133 @@
 /// The maximum number of frame rate ranges to show complete information for before providing a more generic description of the supported frame rates inside of a device format description.
 static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
+#if TARGET_OS_IOS
+/// iOS port: a camera used by one AVCaptureSession is taken away from any other running session
+/// (AVCaptureSessionInterruptionReasonVideoDeviceInUseByAnotherClient), so on iOS every camera source shares one
+/// AVCaptureMultiCamSession. Each source adds its input without connections and connects it to its own video data
+/// output. Returns nil where multi-camera capture is not supported; sources then use their own sessions as on macOS.
+static AVCaptureSession *OBSSharedCaptureSession(void)
+{
+    static AVCaptureSession *session = nil;
+    static dispatch_once_t once;
+
+    dispatch_once(&once, ^{
+        if (!AVCaptureMultiCamSession.multiCamSupported) {
+            blog(LOG_INFO, "[mac-avcapture] multi-camera capture is not supported, using one session per source");
+            return;
+        }
+
+        // Before iOS 26 a multi-camera session limits even a single camera to multi-camera formats
+        if (@available(iOS 26.0, *)) {
+        } else {
+            blog(LOG_INFO, "[mac-avcapture] shared multi-camera session needs iOS 26, using one session per source");
+            return;
+        }
+
+        session = [[AVCaptureMultiCamSession alloc] init];
+        if (session.multitaskingCameraAccessSupported) {
+            session.multitaskingCameraAccessEnabled = YES;
+        }
+        session.automaticallyConfiguresApplicationAudioSession = NO;
+        blog(LOG_INFO, "[mac-avcapture] using a shared multi-camera capture session");
+    });
+
+    return session;
+}
+
+/// With two or more cameras in a multi-camera session every active format must be multi-camera capable. Switch the
+/// built-in cameras that are not to the closest such format (same size if possible, otherwise the largest smaller one,
+/// keeping the frame rate if the format allows it).
+static void OBSAdaptFormatsForMultiCam(AVCaptureSession *session)
+{
+    NSMutableArray<AVCaptureDevice *> *devices = [NSMutableArray array];
+    for (AVCaptureInput *input in session.inputs) {
+        if ([input isKindOfClass:[AVCaptureDeviceInput class]] &&
+            [((AVCaptureDeviceInput *) input).device hasMediaType:AVMediaTypeVideo]) {
+            [devices addObject:((AVCaptureDeviceInput *) input).device];
+        }
+    }
+
+    if (devices.count < 2 || ![session isKindOfClass:[AVCaptureMultiCamSession class]]) {
+        return;
+    }
+
+    for (AVCaptureDevice *device in devices) {
+        if (device.activeFormat.multiCamSupported) {
+            continue;
+        }
+
+        CMVideoDimensions current = CMVideoFormatDescriptionGetDimensions(device.activeFormat.formatDescription);
+        FourCharCode currentSubtype = CMFormatDescriptionGetMediaSubType(device.activeFormat.formatDescription);
+        AVCaptureDeviceFormat *best = nil;
+        int64_t bestScore = -1;
+
+        for (AVCaptureDeviceFormat *format in device.formats) {
+            if (!format.multiCamSupported) {
+                continue;
+            }
+
+            CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
+            if (size.width > current.width || size.height > current.height) {
+                continue;
+            }
+
+            // Prefer the same size, then larger area, then the same pixel format
+            int64_t score = (int64_t) size.width * size.height;
+            if (size.width == current.width && size.height == current.height) {
+                score += 1LL << 40;
+            }
+            if (CMFormatDescriptionGetMediaSubType(format.formatDescription) == currentSubtype) {
+                score += 1;
+            }
+            if (score > bestScore) {
+                best = format;
+                bestScore = score;
+            }
+        }
+
+        if (!best) {
+            blog(LOG_WARNING, "[mac-avcapture] '%s' has no multi-camera format smaller than %dx%d",
+                 device.localizedName.UTF8String, current.width, current.height);
+            continue;
+        }
+
+        CMTime frameDuration = device.activeVideoMinFrameDuration;
+        if ([device lockForConfiguration:nil]) {
+            device.activeFormat = best;
+
+            // Keep the frame rate if the new format supports it
+            for (AVFrameRateRange *range in best.videoSupportedFrameRateRanges) {
+                if (CMTimeCompare(frameDuration, range.minFrameDuration) >= 0 &&
+                    CMTimeCompare(frameDuration, range.maxFrameDuration) <= 0) {
+                    device.activeVideoMinFrameDuration = frameDuration;
+                    device.activeVideoMaxFrameDuration = frameDuration;
+                    break;
+                }
+            }
+            [device unlockForConfiguration];
+
+            CMVideoDimensions size = CMVideoFormatDescriptionGetDimensions(best.formatDescription);
+            blog(LOG_INFO, "[mac-avcapture] '%s' switched to multi-camera format %dx%d @ %.0f fps",
+                 device.localizedName.UTF8String, size.width, size.height,
+                 1.0 / CMTimeGetSeconds(device.activeVideoMinFrameDuration));
+        }
+    }
+}
+
+static void OBSLogMultiCamCost(AVCaptureSession *session)
+{
+    if ([session isKindOfClass:[AVCaptureMultiCamSession class]]) {
+        AVCaptureMultiCamSession *multiCam = (AVCaptureMultiCamSession *) session;
+        blog(LOG_INFO, "[mac-avcapture] shared session: %lu input(s), hardware cost %.2f, system pressure cost %.2f",
+             (unsigned long) session.inputs.count, multiCam.hardwareCost, multiCam.systemPressureCost);
+        if (multiCam.hardwareCost > 1.0f) {
+            blog(LOG_WARNING, "[mac-avcapture] hardware cost is over 1.0, the cameras cannot run together like this");
+        }
+    }
+}
+#endif
+
 @implementation OBSAVCapture
 
 - (instancetype)init
@@ -125,6 +252,12 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
 - (BOOL)createSession:(NSError *__autoreleasing *)error
 {
+#if TARGET_OS_IOS
+    if ([self joinSharedSession]) {
+        return YES;
+    }
+#endif
+
     AVCaptureSession *session = [[AVCaptureSession alloc] init];
 
     [session beginConfiguration];
@@ -272,22 +405,44 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
     [self.session beginConfiguration];
 
-    if ([self.session canAddInput:deviceInput]) {
-        [self.session addInput:deviceInput];
-        self.deviceInput = deviceInput;
-    } else {
-        if (error) {
-            NSDictionary *userInfo = @{
-                NSLocalizedDescriptionKey: [NSString
-                    stringWithFormat:@"Unable to add device '%@' as deviceInput to capture session", self.deviceUUID]
-            };
+    BOOL isInputAdded = NO;
 
-            *error = [NSError errorWithDomain:self.errorDomain code:-107 userInfo:userInfo];
+#if TARGET_OS_IOS
+    if (self.usesSharedSession) {
+        isInputAdded = [self connectSharedInput:deviceInput];
+
+        if (!isInputAdded) {
+            // The device cannot run together with the other cameras (not part of a supported multi-camera device set,
+            // e.g. an external camera): give this source its own session as before
+            [self.session commitConfiguration];
+            [self AVCaptureLog:LOG_WARNING withFormat:@"'%@' cannot join the shared multi-camera session, using a "
+                                                       @"separate session (other cameras may stop)",
+                                                      device.localizedName];
+            [self leaveSharedSession];
+            [self.session beginConfiguration];
         }
-
-        [self.session commitConfiguration];
-        return NO;
     }
+#endif
+
+    if (!isInputAdded) {
+        if ([self.session canAddInput:deviceInput]) {
+            [self.session addInput:deviceInput];
+        } else {
+            if (error) {
+                NSDictionary *userInfo = @{
+                    NSLocalizedDescriptionKey: [NSString stringWithFormat:@"Unable to add device '%@' as deviceInput to capture session",
+                                                                          self.deviceUUID]
+                };
+
+                *error = [NSError errorWithDomain:self.errorDomain code:-107 userInfo:userInfo];
+            }
+
+            [self.session commitConfiguration];
+            return NO;
+        }
+    }
+
+    self.deviceInput = deviceInput;
 
     AVCaptureDeviceFormat *deviceFormat = device.activeFormat;
 
@@ -409,6 +564,132 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
     }
 }
 
+/// Uses the shared multi-camera session with this source's own video data output (see OBSSharedCaptureSession)
+- (BOOL)joinSharedSession
+{
+    AVCaptureSession *shared = self.sharedSessionRejected ? nil : OBSSharedCaptureSession();
+    if (!shared) {
+        return NO;
+    }
+
+    AVCaptureVideoDataOutput *videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+    dispatch_queue_t videoQueue = dispatch_queue_create(nil, nil);
+
+    @synchronized(shared) {
+        [shared beginConfiguration];
+        BOOL added = [shared canAddOutput:videoOutput];
+        if (added) {
+            [shared addOutputWithNoConnections:videoOutput];
+        }
+        [shared commitConfiguration];
+
+        if (!added) {
+            [self AVCaptureLog:LOG_WARNING withFormat:@"Cannot add an output to the shared multi-camera session"];
+            return NO;
+        }
+    }
+
+    [videoOutput setSampleBufferDelegate:self queue:videoQueue];
+
+    self.session = shared;
+    self.videoOutput = videoOutput;
+    self.videoQueue = videoQueue;
+    self.usesSharedSession = YES;
+
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionWasInterrupted:)
+                                                 name:AVCaptureSessionWasInterruptedNotification
+                                               object:shared];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionInterruptionEnded:)
+                                                 name:AVCaptureSessionInterruptionEndedNotification
+                                               object:shared];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionRuntimeError:)
+                                                 name:AVCaptureSessionRuntimeErrorNotification
+                                               object:shared];
+    return YES;
+}
+
+/// Adds the input without automatic connections and connects its video port to this source's output.
+/// Must be called between beginConfiguration and commitConfiguration of the shared session.
+- (BOOL)connectSharedInput:(AVCaptureDeviceInput *)deviceInput
+{
+    AVCaptureSession *session = self.session;
+
+    @synchronized(session) {
+        if (![session canAddInput:deviceInput]) {
+            return NO;
+        }
+        [session addInputWithNoConnections:deviceInput];
+
+        AVCaptureDevice *device = deviceInput.device;
+        NSArray<AVCaptureInputPort *> *ports = [deviceInput portsWithMediaType:AVMediaTypeVideo
+                                                              sourceDeviceType:device.deviceType
+                                                          sourceDevicePosition:device.position];
+        if (ports.count == 0) {
+            NSMutableArray<AVCaptureInputPort *> *videoPorts = [NSMutableArray array];
+            for (AVCaptureInputPort *port in deviceInput.ports) {
+                if ([port.mediaType isEqualToString:AVMediaTypeVideo]) {
+                    [videoPorts addObject:port];
+                }
+            }
+            ports = videoPorts;
+        }
+
+        AVCaptureConnection *connection = ports.count ? [AVCaptureConnection connectionWithInputPorts:ports
+                                                                                               output:self.videoOutput]
+                                                      : nil;
+        if (!connection || ![session canAddConnection:connection]) {
+            [session removeInput:deviceInput];
+            return NO;
+        }
+        [session addConnection:connection];
+    }
+
+    return YES;
+}
+
+/// Gives this source its own capture session (the device could not join the shared one)
+- (void)leaveSharedSession
+{
+    AVCaptureSession *shared = self.session;
+
+    @synchronized(shared) {
+        [shared beginConfiguration];
+        [shared removeOutput:self.videoOutput];
+        [shared commitConfiguration];
+    }
+
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:nil object:shared];
+
+    self.usesSharedSession = NO;
+    self.sharedSessionRejected = YES;
+    [self createSession:nil];
+}
+
+/// Removes this source's input and output from the shared session (on destroy)
+- (void)detachFromSharedSession
+{
+    if (!self.usesSharedSession) {
+        return;
+    }
+
+    AVCaptureSession *shared = self.session;
+
+    @synchronized(shared) {
+        [shared beginConfiguration];
+        if (self.deviceInput) {
+            [shared removeInput:self.deviceInput];
+        }
+        [shared removeOutput:self.videoOutput];
+        [shared commitConfiguration];
+
+        if (shared.inputs.count == 0 && shared.running) {
+            [shared stopRunning];
+        }
+    }
+
+    self.deviceInput = nil;
+}
+
 - (void)sessionWasInterrupted:(NSNotification *)notification
 {
     NSNumber *reason = notification.userInfo[AVCaptureSessionInterruptionReasonKey];
@@ -437,6 +718,17 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
 - (void)startCaptureSession
 {
+#if TARGET_OS_IOS
+    if (self.usesSharedSession) {
+        @synchronized(self.session) {
+            [self.session beginConfiguration];
+            OBSAdaptFormatsForMultiCam(self.session);
+            [self.session commitConfiguration];
+            OBSLogMultiCamCost(self.session);
+        }
+    }
+#endif
+
     if (!self.session.running) {
         [self.session startRunning];
     }
@@ -444,9 +736,13 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
 - (void)stopCaptureSession
 {
-    if (self.session.running) {
-        [self.session stopRunning];
-    }
+#if TARGET_OS_IOS
+    // iOS port: the shared session keeps running for the other cameras. This source's input is removed by the caller.
+    if (!self.usesSharedSession)
+#endif
+        if (self.session.running) {
+            [self.session stopRunning];
+        }
 
     if (self.captureInfo->isFastPath) {
         if (self.captureInfo->texture) {
@@ -486,6 +782,16 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
         }
         return NO;
     }
+
+#if TARGET_OS_IOS
+    // iOS port: a multi-camera session has no presets (always input priority); keep the device's active format
+    if (self.usesSharedSession) {
+        [self AVCaptureLog:LOG_INFO withFormat:@"Presets are not available with the shared multi-camera session, "
+                                               @"keeping the device's format"];
+        self.isPresetBased = YES;
+        return YES;
+    }
+#endif
 
     if (![self.deviceInput.device supportsAVCaptureSessionPreset:preset]) {
         if (error) {

@@ -627,8 +627,17 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 	}
 
 	VT_BLOG(LOG_INFO, "iOS port: setting real-time, color space and preparing");
+#if TARGET_OS_IOS
+	/* iOS port: live capture must keep up with the canvas. A non-real-time
+	 * session may run at lower priority on iPadOS; with recording and
+	 * streaming sessions together the stream reached YouTube at 30 fps from
+	 * a 60 fps canvas. */
+	CFBooleanRef real_time = kCFBooleanTrue;
+#else
+	CFBooleanRef real_time = kCFBooleanFalse;
+#endif
 	// This can fail depending on hardware configuration
-	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, kCFBooleanFalse);
+	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, real_time);
 	if (code != noErr)
 		log_osstatus(LOG_WARNING, enc,
 			     "setting kVTCompressionPropertyKey_RealTime failed, "

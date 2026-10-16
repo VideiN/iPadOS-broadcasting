@@ -251,9 +251,11 @@ static void av_capture_destroy(void *av_capture)
         [capture.deviceInput.device unlockForConfiguration];
 
 #if TARGET_OS_IOS
-        // iOS port: no orientation or notification callbacks after capture_info is freed
+        // iOS port: no orientation or notification callbacks after capture_info is freed, and leave the shared
+        // multi-camera session to the other cameras
         [capture setUpRotationForDevice:nil];
         [[NSNotificationCenter defaultCenter] removeObserver:capture];
+        [capture detachFromSharedSession];
 #endif
 
         if (capture_info->isFastPath) {

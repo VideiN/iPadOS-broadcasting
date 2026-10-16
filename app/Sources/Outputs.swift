@@ -13,8 +13,13 @@ final class Outputs: ObservableObject {
     @Published private(set) var recordStopping = false
     @Published private(set) var streamStopping = false
 
+    @Published private(set) var streamFPS: Double = 0
+    @Published private(set) var recordFPS: Double = 0
+
     private var timer: AnyCancellable?
     private var lastStreamBytes: UInt64 = 0
+    private var lastStreamFrames: Int32 = 0
+    private var lastRecordFrames: Int32 = 0
     private var lastUpdate = Date()
 
     private init() {
@@ -36,7 +41,22 @@ final class Outputs: ObservableObject {
         } else if !stats.streaming {
             streamKbps = 0
         }
+
+        // 실제로 내보낸 비디오 프레임의 초당 개수 (캔버스 fps와 같아야 한다)
+        if stats.streaming, elapsed > 0, stats.stream_total_frames >= lastStreamFrames {
+            streamFPS = Double(stats.stream_total_frames - lastStreamFrames) / elapsed
+        } else if !stats.streaming {
+            streamFPS = 0
+        }
+        if stats.recording, elapsed > 0, stats.record_total_frames >= lastRecordFrames {
+            recordFPS = Double(stats.record_total_frames - lastRecordFrames) / elapsed
+        } else if !stats.recording {
+            recordFPS = 0
+        }
+
         lastStreamBytes = stats.stream_bytes
+        lastStreamFrames = stats.stream_total_frames
+        lastRecordFrames = stats.record_total_frames
         lastUpdate = now
 
         self.stats = stats
@@ -242,7 +262,7 @@ struct OutputStatusLines: View {
 
     private func recordingText(_ stats: core_output_stats) -> String {
         if stats.recording {
-            return "● \(clock(stats.recording_seconds))  \(megabytes(stats.recording_bytes)) MB"
+            return String(format: "● %@  %@ MB  %.1f fps", clock(stats.recording_seconds), megabytes(stats.recording_bytes), outputs.recordFPS)
         }
         if stats.record_stop_code != 0 && !outputs.recordError.isEmpty {
             return "오류: \(outputs.recordError)"
@@ -256,7 +276,7 @@ struct OutputStatusLines: View {
         }
         if stats.streaming {
             return String(
-                format: "● %@  %.0f kbps  드롭 %d/%d", clock(stats.streaming_seconds), outputs.streamKbps,
+                format: "● %@  %.0f kbps  %.1f fps  드롭 %d/%d", clock(stats.streaming_seconds), outputs.streamKbps, outputs.streamFPS,
                 stats.stream_dropped_frames, stats.stream_total_frames)
         }
         if !outputs.streamError.isEmpty {
