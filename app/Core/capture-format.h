@@ -20,3 +20,7 @@ char *capture_camera_list(void);
 // 맞는 것이 없으면 High 프리셋으로 둔다.
 void capture_configure_camera(obs_data_t *settings, const char *device_id, uint32_t width, uint32_t height,
 			      uint32_t fps);
+
+// 사용자가 입력 형식(supported_format)을 바꿨을 때 fps를 맞춘다: 형식이 캔버스 fps(fps_num/fps_den)를
+// 지원하면 그대로, 아니면 그 이하에서 가장 높은 값, 그것도 없으면 형식에서 가장 낮은 값.
+void capture_fit_frame_rate(obs_data_t *settings, uint32_t fps_num, uint32_t fps_den);

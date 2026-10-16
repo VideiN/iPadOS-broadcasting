@@ -15,6 +15,12 @@ struct SourceProperty: Decodable, Identifiable {
         let value: JSONValue
     }
 
+    /// 프레임 레이트 속성이 허용하는 범위 (초당 프레임)
+    struct FrameRateRange: Decodable, Hashable {
+        let min: Double
+        let max: Double
+    }
+
     let name: String
     let type: String
     let label: String
@@ -31,8 +37,58 @@ struct SourceProperty: Decodable, Identifiable {
     let filter: String?
     let format: String?
     let items: [ListItem]?
+    let fps_ranges: [FrameRateRange]?
 
     var id: String { name }
+}
+
+/// 프레임 레이트 값. obs_data에는 {"numerator": n, "denominator": d}로 들어간다 (obs_data_set_frames_per_second)
+struct FrameRateChoice: Hashable {
+    let numerator: Int
+    let denominator: Int
+
+    var fps: Double { Double(numerator) / Double(denominator) }
+
+    var label: String {
+        denominator == 1 ? "\(numerator) fps" : String(format: "%.2f fps", fps)
+    }
+
+    var json: JSONValue {
+        .object(["numerator": .number(Double(numerator)), "denominator": .number(Double(denominator))])
+    }
+
+    init(numerator: Int, denominator: Int) {
+        self.numerator = numerator
+        self.denominator = denominator
+    }
+
+    init?(_ value: JSONValue?) {
+        guard case .object(let object) = value, let numerator = object["numerator"]?.number,
+            let denominator = object["denominator"]?.number, numerator > 0, denominator > 0
+        else { return nil }
+        self.init(numerator: Int(numerator), denominator: Int(denominator))
+    }
+
+    private static let common: [FrameRateChoice] = [
+        .init(numerator: 240, denominator: 1), .init(numerator: 120, denominator: 1),
+        .init(numerator: 60, denominator: 1), .init(numerator: 60000, denominator: 1001),
+        .init(numerator: 50, denominator: 1), .init(numerator: 48, denominator: 1),
+        .init(numerator: 30, denominator: 1), .init(numerator: 30000, denominator: 1001),
+        .init(numerator: 25, denominator: 1), .init(numerator: 24, denominator: 1),
+        .init(numerator: 24000, denominator: 1001), .init(numerator: 15, denominator: 1),
+        .init(numerator: 10, denominator: 1), .init(numerator: 5, denominator: 1),
+    ]
+
+    /// 범위 안에 드는 흔한 값들, 높은 것부터. 지금 값이 목록에 없으면 함께 넣는다.
+    static func choices(in ranges: [SourceProperty.FrameRateRange], current: FrameRateChoice?) -> [FrameRateChoice] {
+        var result = common.filter { choice in
+            ranges.contains { $0.min - 0.01 <= choice.fps && choice.fps <= $0.max + 0.01 }
+        }
+        if let current, !result.contains(where: { abs($0.fps - current.fps) < 0.001 }) {
+            result.append(current)
+        }
+        return result.sorted { $0.fps > $1.fps }
+    }
 }
 
 /// 어떤 소스든 그 속성으로 만드는 설정 화면 (Qt 속성 창 대신)
@@ -138,6 +194,29 @@ struct SourcePropertiesView: View {
             Button(property.label) {
                 core_source_press_button(sourceName, property.name)
                 reload()
+            }
+
+        case "frame_rate":
+            let current = FrameRateChoice(value)
+            let choices = FrameRateChoice.choices(in: property.fps_ranges ?? [], current: current)
+            if choices.isEmpty {
+                LabeledContent(property.label) {
+                    Text("입력 형식을 먼저 고르세요").font(.footnote).foregroundStyle(.secondary)
+                }
+            } else {
+                Picker(
+                    property.label,
+                    selection: Binding(
+                        get: { choices.first { choice in current.map { abs($0.fps - choice.fps) < 0.001 } ?? false } },
+                        set: { if let choice = $0 { update(property.name, choice.json) } })
+                ) {
+                    if current == nil {
+                        Text("선택 안 함").tag(FrameRateChoice?.none)
+                    }
+                    ForEach(choices, id: \.self) { choice in
+                        Text(choice.label).tag(Optional(choice))
+                    }
+                }
             }
 
         default:
