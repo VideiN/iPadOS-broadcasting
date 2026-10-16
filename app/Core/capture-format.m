@@ -226,3 +226,45 @@ void capture_configure_camera(obs_data_t *settings, const char *device_id, uint3
 		     device.localizedName.UTF8String, width, height);
 	}
 }
+
+void capture_fit_frame_rate(obs_data_t *settings, uint32_t fps_num, uint32_t fps_den)
+{
+	AVCaptureDevice *device = [AVCaptureDevice deviceWithUniqueID:@(obs_data_get_string(settings, "device"))];
+	NSString *wanted = @(obs_data_get_string(settings, "supported_format"));
+
+	AVCaptureDeviceFormat *format = nil;
+	for (AVCaptureDeviceFormat *candidate in device.formats) {
+		if ([candidate.obsPropertyListInternalRepresentation isEqualToString:wanted]) {
+			format = candidate;
+			break;
+		}
+	}
+	if (!format || fps_num == 0 || fps_den == 0)
+		return;
+
+	struct media_frames_per_second rate = {.numerator = fps_num, .denominator = fps_den};
+	const double canvas_fps = (double)fps_num / fps_den;
+
+	if (!supports_fps(format, canvas_fps)) {
+		// 캔버스 fps 이하에서 가장 높은 값, 없으면 형식에서 가장 낮은 값
+		AVFrameRateRange *below = nil;
+		AVFrameRateRange *lowest = nil;
+		for (AVFrameRateRange *range in format.videoSupportedFrameRateRanges) {
+			if (range.maxFrameRate <= canvas_fps + 0.01 && (!below || range.maxFrameRate > below.maxFrameRate))
+				below = range;
+			if (!lowest || range.minFrameRate < lowest.minFrameRate)
+				lowest = range;
+		}
+		if (!below && !lowest)
+			return;
+
+		// 프레임 간격(초) = value / timescale 이므로 fps = timescale / value
+		CMTime duration = below ? below.minFrameDuration : lowest.maxFrameDuration;
+		rate.numerator = (uint32_t)duration.timescale;
+		rate.denominator = (uint32_t)duration.value;
+	}
+
+	obs_data_set_frames_per_second(settings, "frame_rate", rate, NULL);
+	blog(LOG_INFO, "[app] camera '%s': input format %s @ %.2f fps", device.localizedName.UTF8String,
+	     format.obsPropertyListDescription.UTF8String, media_frames_per_second_to_fps(rate));
+}

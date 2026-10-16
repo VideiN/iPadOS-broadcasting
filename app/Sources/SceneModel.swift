@@ -273,6 +273,25 @@ final class SceneModel: ObservableObject {
         renameSource(item, to: "시험 색")
         let properties = decodeCoreJSON(core_source_properties_json("시험 색"), as: SourceProperties.self)
 
+        // 카메라 소스의 프레임 레이트 속성이 범위와 함께 오는지 (시뮬레이터에는 카메라가 없어 범위는 비어 있다)
+        var cameraFrameRate = "no camera type"
+        if let camera = types.first(where: { $0.id == "macos-avcapture" }), let cameraName = addSource(type: camera),
+            let cameraItem = selectedItem
+        {
+            let cameraProperties = decodeCoreJSON(core_source_properties_json(cameraName), as: SourceProperties.self)
+            let frameRate = cameraProperties?.properties.first { $0.name == "frame_rate" }
+            cameraFrameRate = frameRate.map { "ok, \($0.fps_ranges?.count ?? -1) range(s)" } ?? "missing"
+            remove(cameraItem)
+        }
+
+        // 형식의 fps 범위 → 고를 수 있는 값
+        let sampleChoices = FrameRateChoice.choices(
+            in: [.init(min: 59.94, max: 59.94), .init(min: 1, max: 30)],
+            current: FrameRateChoice(numerator: 30, denominator: 1)
+        ).map(\.label)
+        let choicesOK =
+            sampleChoices == ["59.94 fps", "30 fps", "29.97 fps", "25 fps", "24 fps", "23.98 fps", "15 fps", "10 fps", "5 fps"]
+
         switchTo(firstScene)
         switchTo("시험 장면")
 
@@ -283,8 +302,12 @@ final class SceneModel: ObservableObject {
         let restored = core.applyCanvas(width: width, height: height, fps: fps)
         saveNow()
 
+        let status =
+            !(changed && restored) ? "canvas change failed"
+            : !cameraFrameRate.hasPrefix("ok") ? "camera frame rate property \(cameraFrameRate)"
+            : !choicesOK ? "frame rate choices wrong \(sampleChoices)" : "ok"
         appLog(
-            "scenes autotest: \(changed && restored ? "ok" : "canvas change failed") (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1))"
+            "scenes autotest: \(status) (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1), camera frame rate \(cameraFrameRate), choices \(sampleChoices))"
         )
     }
 }

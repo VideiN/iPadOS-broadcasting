@@ -631,6 +631,27 @@ static void add_list_items(obs_data_t *entry, obs_property_t *property)
 	obs_data_array_release(items);
 }
 
+// 프레임 레이트 속성이 허용하는 fps 범위 (예: 카메라의 지금 입력 형식이 지원하는 범위)
+static void add_frame_rate_ranges(obs_data_t *entry, obs_property_t *property)
+{
+	obs_data_array_t *ranges = obs_data_array_create();
+	const size_t count = obs_property_frame_rate_fps_ranges_count(property);
+	for (size_t i = 0; i < count; i++) {
+		struct media_frames_per_second min = obs_property_frame_rate_fps_range_min(property, i);
+		struct media_frames_per_second max = obs_property_frame_rate_fps_range_max(property, i);
+		if (!min.denominator || !max.denominator)
+			continue;
+
+		obs_data_t *range = obs_data_create();
+		obs_data_set_double(range, "min", media_frames_per_second_to_fps(min));
+		obs_data_set_double(range, "max", media_frames_per_second_to_fps(max));
+		obs_data_array_push_back(ranges, range);
+		obs_data_release(range);
+	}
+	obs_data_set_array(entry, "fps_ranges", ranges);
+	obs_data_array_release(ranges);
+}
+
 static void add_properties(obs_data_array_t *array, obs_properties_t *props, const char *group)
 {
 	for (obs_property_t *property = obs_properties_first(props); property; obs_property_next(&property)) {
@@ -673,6 +694,9 @@ static void add_properties(obs_data_array_t *array, obs_properties_t *props, con
 			break;
 		case OBS_PROPERTY_LIST:
 			add_list_items(entry, property);
+			break;
+		case OBS_PROPERTY_FRAME_RATE:
+			add_frame_rate_ranges(entry, property);
 			break;
 		default:
 			break;
@@ -723,12 +747,26 @@ void core_source_update(const char *source_name, const char *changes_json)
 	obs_data_t *settings = obs_source_get_settings(source);
 	obs_data_apply(settings, changes);
 
-	if (strcmp(obs_source_get_id(source), CAMERA_SOURCE_ID) == 0 && obs_data_has_user_value(changes, "device")) {
+	if (strcmp(obs_source_get_id(source), CAMERA_SOURCE_ID) == 0) {
 		uint32_t width, height;
 		canvas_size(&width, &height);
 		struct obs_video_info ovi;
-		const uint32_t fps = obs_get_video_info(&ovi) && ovi.fps_den ? ovi.fps_num / ovi.fps_den : 60;
-		capture_configure_camera(settings, obs_data_get_string(changes, "device"), width, height, fps);
+		const bool have_video = obs_get_video_info(&ovi) && ovi.fps_den;
+		const uint32_t fps = have_video ? ovi.fps_num / ovi.fps_den : 60;
+
+		if (obs_data_has_user_value(changes, "device")) {
+			capture_configure_camera(settings, obs_data_get_string(changes, "device"), width, height, fps);
+		} else if (obs_data_has_user_value(changes, "supported_format") &&
+			   !obs_data_has_user_value(changes, "frame_rate")) {
+			// 입력 형식을 바꾸면 fps를 그 형식이 지원하는 값 중 캔버스에 가까운 것으로
+			capture_fit_frame_rate(settings, have_video ? ovi.fps_num : 60, have_video ? ovi.fps_den : 1);
+		} else if (obs_data_has_user_value(changes, "use_preset") && !obs_data_get_bool(changes, "use_preset") &&
+			   !*obs_data_get_string(settings, "supported_format")) {
+			// 프리셋을 끄면 고른 형식이 없으니 캔버스에 맞는 형식을 고른다
+			char *device = bstrdup(obs_data_get_string(settings, "device"));
+			capture_configure_camera(settings, device, width, height, fps);
+			bfree(device);
+		}
 	}
 
 	obs_source_update(source, settings);
