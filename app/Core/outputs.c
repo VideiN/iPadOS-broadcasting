@@ -322,10 +322,18 @@ bool core_recording_start(const char *path)
 	return false;
 }
 
-void core_recording_stop(void)
+// 보통 멈춤은 인코더가 멈춘 시점까지의 패킷을 다 받은 뒤 끝난다. 인코더가 밀려 끝나지 않으면 강제로 멈춘다.
+void core_recording_stop(bool force)
 {
-	if (out.recording)
+	if (!out.recording)
+		return;
+
+	if (force) {
+		blog(LOG_WARNING, "[app] recording: force stop");
+		obs_output_force_stop(out.recording);
+	} else {
 		obs_output_stop(out.recording);
+	}
 }
 
 #pragma mark - 송출
@@ -380,10 +388,17 @@ bool core_streaming_start(const char *server, const char *key, int video_kbps)
 	return true;
 }
 
-void core_streaming_stop(void)
+void core_streaming_stop(bool force)
 {
-	if (out.streaming)
+	if (!out.streaming)
+		return;
+
+	if (force) {
+		blog(LOG_WARNING, "[app] streaming: force stop");
+		obs_output_force_stop(out.streaming);
+	} else {
 		obs_output_stop(out.streaming);
+	}
 }
 
 #pragma mark - 상태 조회

@@ -123,8 +123,9 @@ jobs:
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
           ffmpeg_pid=$!
 
-          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -autotest-output 20 rtmp://127.0.0.1:1935/live \
-            > app-run/app.log 2>&1 &
+          # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
+            -autotest-output 20 rtmp://127.0.0.1:1935/live > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t

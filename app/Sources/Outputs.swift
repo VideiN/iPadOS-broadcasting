@@ -9,6 +9,9 @@ final class Outputs: ObservableObject {
     @Published private(set) var streamKbps: Double = 0
     @Published private(set) var recordError = ""
     @Published private(set) var streamError = ""
+    /// 중지를 눌렀지만 아직 멈추지 않은 상태. 이때 한 번 더 누르면 강제로 멈춘다
+    @Published private(set) var recordStopping = false
+    @Published private(set) var streamStopping = false
 
     private var timer: AnyCancellable?
     private var lastStreamBytes: UInt64 = 0
@@ -39,14 +42,19 @@ final class Outputs: ObservableObject {
         self.stats = stats
         recordError = Self.lastError(stream: false)
         streamError = Self.lastError(stream: true)
+        if !stats.recording { recordStopping = false }
+        if !stats.streaming { streamStopping = false }
     }
 
     /// 시작·중지는 인코더 세션을 만들고 닫느라 시간이 걸릴 수 있어 메인 스레드 밖에서 한다
     func toggleRecording() {
         let active = stats.recording
+        let force = recordStopping
+        if active { recordStopping = true }
+
         DispatchQueue.global(qos: .userInitiated).async {
             if active {
-                core_recording_stop()
+                core_recording_stop(force)
             } else {
                 let path = Self.newRecordingPath()
                 let ok = core_recording_start(path)
@@ -58,9 +66,12 @@ final class Outputs: ObservableObject {
 
     func toggleStreaming(server: String, key: String, kbps: Int) {
         let active = stats.streaming
+        let force = streamStopping
+        if active { streamStopping = true }
+
         DispatchQueue.global(qos: .userInitiated).async {
             if active {
-                core_streaming_stop()
+                core_streaming_stop(force)
             } else {
                 let ok = core_streaming_start(server, key, Int32(kbps))
                 appLog("streaming start \(ok ? "requested" : "failed")")
@@ -95,14 +106,24 @@ final class Outputs: ObservableObject {
                         stats.recording_seconds, stats.recording_bytes, stats.streaming_seconds, stats.stream_bytes,
                         stats.stream_dropped_frames, stats.stream_total_frames, stats.encoder_skipped_frames,
                         stats.video_total_frames))
-                core_recording_stop()
-                core_streaming_stop()
+                core_recording_stop(false)
+                core_streaming_stop(false)
 
-                // 멈춤은 비동기다 (MP4 정리, 연결 종료)
-                queue.asyncAfter(deadline: .now() + 3) {
-                    appLog(
-                        "autotest: done (record error '\(Self.lastError(stream: false))', stream error '\(Self.lastError(stream: true))')"
-                    )
+                // 멈춤은 비동기다 (남은 패킷 처리, MP4 정리, 연결 종료). 10초 안에 안 끝나면 강제로 멈춘다
+                queue.asyncAfter(deadline: .now() + 10) {
+                    var stats = core_output_stats()
+                    core_get_output_stats(&stats)
+                    if stats.recording || stats.streaming {
+                        appLog("autotest: outputs still active after 10 s, forcing stop")
+                        if stats.recording { core_recording_stop(true) }
+                        if stats.streaming { core_streaming_stop(true) }
+                    }
+
+                    queue.asyncAfter(deadline: .now() + 2) {
+                        appLog(
+                            "autotest: done (record error '\(Self.lastError(stream: false))', stream error '\(Self.lastError(stream: true))')"
+                        )
+                    }
                 }
             }
         }
@@ -144,7 +165,7 @@ struct OutputControls: View {
                 outputs.toggleRecording()
             } label: {
                 Label(
-                    outputs.stats.recording ? "녹화 중지" : "녹화",
+                    outputs.recordStopping ? "멈추는 중 (누르면 강제)" : outputs.stats.recording ? "녹화 중지" : "녹화",
                     systemImage: outputs.stats.recording ? "stop.circle.fill" : "record.circle")
             }
             .tint(.red)
@@ -157,7 +178,7 @@ struct OutputControls: View {
                 }
             } label: {
                 Label(
-                    outputs.stats.streaming ? "송출 중지" : "송출",
+                    outputs.streamStopping ? "멈추는 중 (누르면 강제)" : outputs.stats.streaming ? "송출 중지" : "송출",
                     systemImage: outputs.stats.streaming ? "stop.circle.fill" : "dot.radiowaves.left.and.right")
             }
             .tint(.blue)
