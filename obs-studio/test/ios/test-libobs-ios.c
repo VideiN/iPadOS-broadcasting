@@ -153,6 +153,9 @@ static void test_static_module_and_scene(void)
 
 int main(void)
 {
+	/* Unbuffered, so the last check printed before a crash is the real one */
+	setvbuf(stdout, NULL, _IONBF, 0);
+
 	CHECK(obs_startup("en-US", NULL, NULL));
 	if (!obs_initialized()) {
 		printf("FAILED: obs_startup\n");

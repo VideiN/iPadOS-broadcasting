@@ -23,14 +23,17 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
     self = [super init];
 
     if (self) {
+#if TARGET_OS_OSX
         CMIOObjectPropertyAddress propertyAddress = {kCMIOHardwarePropertyAllowScreenCaptureDevices,
                                                      kCMIOObjectPropertyScopeGlobal, kCMIOObjectPropertyElementMain};
 
         UInt32 allow = 1;
         CMIOObjectSetPropertyData(kCMIOObjectSystemObject, &propertyAddress, 0, NULL, sizeof(allow), &allow);
+#endif
 
         _errorDomain = @"com.obsproject.obs-studio.av-capture";
 
+#if TARGET_OS_OSX
         _presetList = @{
             AVCaptureSessionPresetLow: @"Low",
             AVCaptureSessionPresetMedium: @"Medium",
@@ -43,6 +46,19 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
             AVCaptureSessionPreset1920x1080: @"1920x1080",
             AVCaptureSessionPreset3840x2160: @"3840x2160",
         };
+#else
+        // iOS port: 320x240 and 960x540 presets only exist on macOS
+        _presetList = @{
+            AVCaptureSessionPresetLow: @"Low",
+            AVCaptureSessionPresetMedium: @"Medium",
+            AVCaptureSessionPresetHigh: @"High",
+            AVCaptureSessionPreset352x288: @"352x288",
+            AVCaptureSessionPreset640x480: @"640x480",
+            AVCaptureSessionPreset1280x720: @"1280x720",
+            AVCaptureSessionPreset1920x1080: @"1920x1080",
+            AVCaptureSessionPreset3840x2160: @"3840x2160",
+        };
+#endif
 
         _sessionQueue = dispatch_queue_create("session queue", DISPATCH_QUEUE_SERIAL);
 
@@ -179,6 +195,27 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
         [audioOutput setSampleBufferDelegate:self queue:audioQueue];
     }
 
+#if TARGET_OS_IOS
+    // iOS port: keep capturing while the app shares the screen with other windows (Stage Manager, windowed apps)
+    if (session.multitaskingCameraAccessSupported) {
+        session.multitaskingCameraAccessEnabled = YES;
+    }
+
+    // iOS port: audio input is handled by the AVAudioSession based audio source, so the capture session must not
+    // reconfigure the shared audio session
+    session.automaticallyConfiguresApplicationAudioSession = NO;
+
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionWasInterrupted:)
+                                                 name:AVCaptureSessionWasInterruptedNotification
+                                               object:session];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionInterruptionEnded:)
+                                                 name:AVCaptureSessionInterruptionEndedNotification
+                                               object:session];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(sessionRuntimeError:)
+                                                 name:AVCaptureSessionRuntimeErrorNotification
+                                               object:session];
+#endif
+
     [session commitConfiguration];
 
     self.session = session;
@@ -285,6 +322,17 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
     } else {
         self.videoOutput.videoSettings = nil;
 
+#if TARGET_OS_IOS
+        // iOS port: ask for the pixel format of the device's active format (NV12 '420v'/'420f' for cameras) so the
+        // frames reach libobs without a conversion to the BGRA fallback
+        FourCharCode nativeSubType = CMFormatDescriptionGetMediaSubType(deviceFormat.formatDescription);
+
+        if ([OBSAVCapture formatFromSubtype:nativeSubType] != VIDEO_FORMAT_NONE &&
+            [self.videoOutput.availableVideoCVPixelFormatTypes containsObject:@(nativeSubType)]) {
+            self.videoOutput.videoSettings = @{(__bridge NSString *) kCVPixelBufferPixelFormatTypeKey: @(nativeSubType)};
+        }
+#endif
+
         FourCharCode subType = [[self.videoOutput.videoSettings
             objectForKey:(__bridge NSString *) kCVPixelBufferPixelFormatTypeKey] unsignedIntValue];
 
@@ -308,8 +356,84 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
     [self.session commitConfiguration];
 
+#if TARGET_OS_IOS
+    [self setUpRotationForDevice:device];
+#endif
+
     return YES;
 }
+
+#if TARGET_OS_IOS
+/// iOS port: built-in cameras deliver frames in their sensor orientation. Rotate them on the capture connection so the
+/// picture stays level with the horizon however the iPad is held. External (UVC) devices are left as they are.
+- (void)setUpRotationForDevice:(AVCaptureDevice *)device
+{
+    if (self.rotationCoordinator) {
+        [self.rotationCoordinator removeObserver:self forKeyPath:@"videoRotationAngleForHorizonLevelCapture"];
+        self.rotationCoordinator = nil;
+    }
+
+    if (!device || [device.deviceType isEqualToString:AVCaptureDeviceTypeExternal]) {
+        return;
+    }
+
+    self.rotationCoordinator = [[AVCaptureDeviceRotationCoordinator alloc] initWithDevice:device previewLayer:nil];
+    [self.rotationCoordinator addObserver:self forKeyPath:@"videoRotationAngleForHorizonLevelCapture"
+                                  options:NSKeyValueObservingOptionInitial
+                                  context:NULL];
+}
+
+- (void)observeValueForKeyPath:(NSString *)keyPath
+                      ofObject:(id)object
+                        change:(NSDictionary<NSKeyValueChangeKey, id> *)change
+                       context:(void *)context
+{
+    if (object != self.rotationCoordinator) {
+        [super observeValueForKeyPath:keyPath ofObject:object change:change context:context];
+        return;
+    }
+
+    CGFloat angle = self.rotationCoordinator.videoRotationAngleForHorizonLevelCapture;
+    AVCaptureConnection *connection = [self.videoOutput connectionWithMediaType:AVMediaTypeVideo];
+
+    if (connection && [connection isVideoRotationAngleSupported:angle]) {
+        connection.videoRotationAngle = angle;
+        [self AVCaptureLog:LOG_INFO withFormat:@"Video rotation angle: %.0f", angle];
+    }
+}
+
+- (void)dealloc
+{
+    if (_rotationCoordinator) {
+        [_rotationCoordinator removeObserver:self forKeyPath:@"videoRotationAngleForHorizonLevelCapture"];
+    }
+}
+
+- (void)sessionWasInterrupted:(NSNotification *)notification
+{
+    NSNumber *reason = notification.userInfo[AVCaptureSessionInterruptionReasonKey];
+    [self AVCaptureLog:LOG_WARNING withFormat:@"Capture session interrupted (reason %@)", reason];
+}
+
+- (void)sessionInterruptionEnded:(NSNotification *)notification
+{
+    [self AVCaptureLog:LOG_INFO withFormat:@"Capture session interruption ended"];
+}
+
+- (void)sessionRuntimeError:(NSNotification *)notification
+{
+    NSError *error = notification.userInfo[AVCaptureSessionErrorKey];
+    [self AVCaptureLog:LOG_ERROR withFormat:@"Capture session runtime error: %@ (%@ %ld)", error.localizedDescription,
+                                            error.domain, (long) error.code];
+
+    if (error.code == AVErrorMediaServicesWereReset) {
+        __weak OBSAVCapture *weakSelf = self;
+        dispatch_async(self.sessionQueue, ^{
+            [weakSelf startCaptureSession];
+        });
+    }
+}
+#endif
 
 - (void)startCaptureSession
 {
@@ -762,25 +886,25 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 {
     int effectsCount = 0;
     NSString *effectWarning = nil;
-    if (@available(macOS 12.0, *)) {
+    if (@available(macOS 12.0, iOS 15.0, *)) {
         if (device.portraitEffectActive) {
             effectWarning = @"Warning.Effect.Portrait";
             effectsCount++;
         }
     }
-    if (@available(macOS 12.3, *)) {
+    if (@available(macOS 12.3, iOS 14.5, *)) {
         if (device.centerStageActive) {
             effectWarning = @"Warning.Effect.CenterStage";
             effectsCount++;
         }
     }
-    if (@available(macOS 13.0, *)) {
+    if (@available(macOS 13.0, iOS 16.0, *)) {
         if (device.studioLightActive) {
             effectWarning = @"Warning.Effect.StudioLight";
             effectsCount++;
         }
     }
-    if (@available(macOS 14.0, *)) {
+    if (@available(macOS 14.0, iOS 17.0, *)) {
         /// Reaction effects do not follow the same paradigm as other effects in terms of checking whether they are active. According to Apple, this is because a device instance property `reactionEffectsActive` would have been ambiguous (conflicting with whether a reaction is currently rendering).
         ///
         /// Instead, Apple exposes the `AVCaptureDevice.reactionEffectGesturesEnabled` class property (an equivalent exists for all other effects, but is hidden/private) to tell us whether the effect is enabled application-wide, as well as the `device.canPerformReactionEffects` instance property to tell us whether the device's active format currently supports the effect.
@@ -791,7 +915,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
             effectsCount++;
         }
     }
-    if (@available(macOS 15.0, *)) {
+    if (@available(macOS 15.0, iOS 18.0, *)) {
         if (device.backgroundReplacementActive) {
             effectWarning = @"Warning.Effect.BackgroundReplacement";
             effectsCount++;
@@ -921,6 +1045,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
 + (NSString *)stringFromCapturePreset:(AVCaptureSessionPreset)preset
 {
+#if TARGET_OS_OSX
     NSDictionary *presetDescriptions = @{
         AVCaptureSessionPresetLow: @"Low",
         AVCaptureSessionPresetMedium: @"Medium",
@@ -933,6 +1058,18 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
         AVCaptureSessionPreset1920x1080: @"1920x1080",
         AVCaptureSessionPreset3840x2160: @"3840x2160",
     };
+#else
+    NSDictionary *presetDescriptions = @{
+        AVCaptureSessionPresetLow: @"Low",
+        AVCaptureSessionPresetMedium: @"Medium",
+        AVCaptureSessionPresetHigh: @"High",
+        AVCaptureSessionPreset352x288: @"352x288",
+        AVCaptureSessionPreset640x480: @"640x480",
+        AVCaptureSessionPreset1280x720: @"1280x720",
+        AVCaptureSessionPreset1920x1080: @"1920x1080",
+        AVCaptureSessionPreset3840x2160: @"3840x2160",
+    };
+#endif
 
     NSString *presetDescription = [presetDescriptions objectForKey:preset];
 
@@ -1151,7 +1288,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
     [self AVCaptureLog:LOG_INFO
             withFormat:@"Received connect event for device '%@' (UUID %@)", device.localizedName, device.uniqueID];
 
-    if (![[device uniqueID] isEqualTo:self.deviceUUID]) {
+    if (![[device uniqueID] isEqualToString:self.deviceUUID]) {
         return;
     }
 
@@ -1190,7 +1327,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
         return;
     }
 
-    if (![[device uniqueID] isEqualTo:self.deviceUUID]) {
+    if (![[device uniqueID] isEqualToString:self.deviceUUID]) {
         obs_source_update_properties(self.captureInfo->source);
         return;
     }
@@ -1276,7 +1413,7 @@ static const UInt32 kMaxFrameRateRangesInDescription = 10;
                 IOSurfaceRef previousSurface = NULL;
 
                 if (frameSurface && !pthread_mutex_lock(&_captureInfo->mutex)) {
-                    NSRect frameSize = _captureInfo->frameSize;
+                    CGRect frameSize = _captureInfo->frameSize;
 
                     if (frameSize.size.width != sampleBufferDimensions.width ||
                         frameSize.size.height != sampleBufferDimensions.height) {

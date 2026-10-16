@@ -231,6 +231,14 @@ bool properties_update_device(OBSAVCapture *capture __unused, obs_property_t *pr
     obs_property_list_add_string(property, "", "");
 
     NSArray *deviceTypes;
+#if TARGET_OS_IOS
+    // iOS port: built-in cameras of an iPad plus external UVC devices (iPadOS 17+)
+    deviceTypes = @[
+        AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeBuiltInUltraWideCamera,
+        AVCaptureDeviceTypeBuiltInTelephotoCamera, AVCaptureDeviceTypeBuiltInTrueDepthCamera,
+        AVCaptureDeviceTypeExternal
+    ];
+#else
     if (@available(macOS 13, *)) {
         deviceTypes = @[
             AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeExternalUnknown,
@@ -239,6 +247,7 @@ bool properties_update_device(OBSAVCapture *capture __unused, obs_property_t *pr
     } else {
         deviceTypes = @[AVCaptureDeviceTypeBuiltInWideAngleCamera, AVCaptureDeviceTypeExternalUnknown];
     }
+#endif
 
     AVCaptureDeviceDiscoverySession *videoDiscoverySession =
         [AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:deviceTypes mediaType:AVMediaTypeVideo

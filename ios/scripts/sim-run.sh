@@ -9,6 +9,7 @@ set -uo pipefail
 : "${SIM_UDID:?SIM_UDID is not set}"
 
 log=$(mktemp)
+marker=$(mktemp)
 xcrun simctl spawn "$SIM_UDID" "$@" 2>&1 | tee "$log"
 status=${PIPESTATUS[0]}
 
@@ -17,5 +18,22 @@ if [ "$status" -eq 0 ] && grep -qE '^\[  FAILED  \]|^FAIL - |^FAILED' "$log"; th
   status=1
 fi
 
-rm -f "$log"
+# 시그널로 죽었으면 크래시 리포트(.ips)를 기다렸다가 스택을 바로 출력한다.
+# 가끔만 터지는 문제는 그 실행의 스택이 없으면 원인을 좁히기 어렵다.
+if grep -q 'terminated with signal' "$log"; then
+  reports="$HOME/Library/Logs/DiagnosticReports"
+  name=$(basename "$1")
+  for _ in $(seq 1 30); do
+    report=$(find "$reports" -maxdepth 1 -name "$name-*.ips" -newer "$marker" 2>/dev/null | head -1)
+    if [ -n "$report" ]; then
+      sleep 1
+      python3 "$(dirname "$0")/print-crash-reports.py" "$reports" "$(basename "$report" .ips)"
+      break
+    fi
+    sleep 1
+  done
+  [ -z "${report:-}" ] && echo "no crash report for $name appeared in $reports"
+fi
+
+rm -f "$log" "$marker"
 exit "$status"

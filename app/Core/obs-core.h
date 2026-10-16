@@ -15,11 +15,36 @@ struct core_stats {
 	uint32_t lagged_frames;        // 제때 렌더하지 못한 프레임 수
 	uint64_t memory_footprint;     // 프로세스 메모리 사용량 (phys_footprint, 바이트)
 	uint64_t memory_available;     // 남은 메모리 한도 (os_proc_available_memory, 바이트)
+	uint32_t camera_width;         // 카메라 소스의 현재 프레임 크기 (프레임이 없으면 0)
+	uint32_t camera_height;
+	float audio_peak_db;           // 오디오 입력의 최근 피크 (dBFS, 무음이면 -inf)
 };
+
+enum core_device_kind {
+	CORE_DEVICE_CAMERA = 0,
+	CORE_DEVICE_AUDIO_INPUT = 1,
+};
+
+// 로그를 path 파일과 표준 출력에 남긴다. 이전 파일은 path.prev로 옮긴다. 가장 먼저 부른다.
+void core_log_open(const char *path);
+// 앱(Swift) 로그를 같은 곳에 남긴다
+void core_log(const char *message);
 
 // libobs를 시작하고 테스트 씬(색상 소스 + 이미지 소스 + 움직이는 막대)을 출력에 건다.
 // resource_path는 앱 번들의 리소스 경로.
 bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps);
+
+// 카메라 소스와 오디오 입력 소스를 만든다. 권한 요청이 끝난 뒤에 부른다.
+void core_start_capture(void);
+
+// 장치 목록을 "id\t이름\t연결(1/0)\n" 줄로 돌려준다. 연결 0은 고른 장치가 빠져 있는 경우다.
+// 오디오 입력의 id ""는 시스템 기본 경로. core_free로 해제한다.
+char *core_list_devices(enum core_device_kind kind);
+// 지금 고른 장치 id. core_free로 해제한다.
+char *core_current_device(enum core_device_kind kind);
+// 장치를 바꾼다. 카메라는 캔버스에 맞는 형식을 함께 고른다.
+void core_select_device(enum core_device_kind kind, const char *device_id);
+void core_free(void *ptr);
 
 // CAMetalLayer 기반 UIView에 프리뷰를 붙인다. 메인 스레드에서 호출해야 한다.
 void *core_display_create(void *view, uint32_t width, uint32_t height);

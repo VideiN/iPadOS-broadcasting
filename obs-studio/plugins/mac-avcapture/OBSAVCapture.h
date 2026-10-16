@@ -7,7 +7,9 @@
 
 @import Foundation;
 @import AVFoundation;
+#if TARGET_OS_OSX
 @import CoreMediaIO;
+#endif
 
 #import "OBSAVCapturePresetInfo.h"
 
@@ -43,7 +45,7 @@ typedef struct av_capture {
     OBSAVCaptureEffect *effect;
     OBSAVCaptureVideoFrame *videoFrame;
     OBSAVCaptureAudioFrame *audioFrame;
-    NSRect frameSize;
+    CGRect frameSize;
 
     pthread_mutex_t mutex;
 
@@ -117,6 +119,11 @@ typedef struct av_capture_info {
 
 /// Stops a capture session with the active capture device used by ``OBSAVCapture`` instance. Also sends an empty frame to clear any frames provided by the source.
 - (void)stopCaptureSession;
+
+#if TARGET_OS_IOS
+/// iOS port: starts following the device orientation for built-in cameras. Passing `nil` stops it.
+- (void)setUpRotationForDevice:(AVCaptureDevice *)device;
+#endif
 
 /// Configures the current [AVCaptureSession](https://developer.apple.com/documentation/avfoundation/avcapturesession?language=objc) to use the [AVCaptureSessionPreset](https://developer.apple.com/documentation/avfoundation/avcapturesessionpreset?language=objc) value selected in the source's property window.
 /// - Parameter error: Optional pointer to a valid [NSError](https://developer.apple.com/documentation/foundation/nserror?language=objc) instance to retain possible errors that occurred
@@ -362,6 +369,11 @@ typedef struct av_capture_info {
 
 /// Error domain identifier used for [NSError](https://developer.apple.com/documentation/foundation/nserror?language=objc) instances
 @property (readonly) NSString *errorDomain;
+
+#if TARGET_OS_IOS
+/// iOS port: tracks the device orientation so frames of built-in cameras stay level with the horizon
+@property AVCaptureDeviceRotationCoordinator *rotationCoordinator;
+#endif
 
 @end
 

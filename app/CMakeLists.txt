@@ -18,9 +18,13 @@ else()
 endif()
 
 # libobs 호출을 모은 C 브리지
-add_library(app-core STATIC Core/obs-core.c Core/obs-core.h)
+add_library(app-core STATIC Core/obs-core.c Core/obs-core.h Core/capture-format.m Core/capture-format.h)
 target_include_directories(app-core PUBLIC Core)
-target_link_libraries(app-core PUBLIC OBS::libobs OBS::libobs-metal OBS::image-source)
+target_link_libraries(
+  app-core
+  PUBLIC OBS::libobs OBS::libobs-metal OBS::image-source OBS::avcapture OBS::ios-audio-input
+)
+set_source_files_properties(Core/capture-format.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
 configure_file(Info.plist.in "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -32,6 +36,9 @@ add_executable(
   Sources/PreviewView.swift
 )
 target_link_libraries(app PRIVATE app-core)
+# 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
+# 심볼 참조가 없어 링커가 빼 버린다. -ObjC로 Objective-C 오브젝트 파일을 모두 넣는다.
+target_link_options(app PRIVATE "LINKER:-ObjC")
 target_compile_options(
   app
   PRIVATE -parse-as-library "SHELL:-import-objc-header ${CMAKE_CURRENT_SOURCE_DIR}/Sources/Bridging-Header.h"
@@ -62,6 +69,12 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/image-source/data"
     "${bundle_dir}/obs-plugins/image-source"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-avcapture/data"
+    "${bundle_dir}/obs-plugins/mac-avcapture"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-audio-input/data"
+    "${bundle_dir}/obs-plugins/ios-audio-input"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
   COMMAND codesign --force --sign - --timestamp=none ${codesign_entitlements} "$<TARGET_BUNDLE_DIR:app>"
   VERBATIM

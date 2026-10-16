@@ -101,7 +101,7 @@ jobs:
           echo "SIM_UDID=$udid" >> "$GITHUB_ENV"
           SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" --output-on-failure --verbose --timeout 300
           # 종료 경합처럼 가끔만 터지는 문제를 잡으려고 짧은 스모크 테스트는 여러 번 돌린다
-          SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" -R '^test_libobs_ios$' --repeat until-fail:30 --output-on-failure --timeout 60
+          SIM_UDID="$udid" ctest --test-dir "$BUILD_DIR" -R '^test_libobs_ios$' --repeat until-fail:30 --output-on-failure --timeout 120
 
       # 앱을 시뮬레이터에서 실제로 띄워 프리뷰 스크린숏과 로그를 남긴다
       - name: Run app on simulator
@@ -112,6 +112,9 @@ jobs:
           mkdir -p app-run
 
           xcrun simctl install "$SIM_UDID" "$app"
+          # 권한 창이 스크린숏을 가리지 않게 미리 허용한다 (시뮬레이터에는 카메라가 없다)
+          xcrun simctl privacy "$SIM_UDID" grant camera "$bundle_id" || true
+          xcrun simctl privacy "$SIM_UDID" grant microphone "$bundle_id" || true
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
@@ -125,12 +128,21 @@ jobs:
           xcrun simctl spawn "$SIM_UDID" log show --last 1m --style compact \
             --predicate "process == \"$(basename "$app" .app)\"" > app-run/system.log 2>&1 || true
 
+          # 앱이 Documents에 남기는 로그 파일 (기기에서 파일 앱으로 보는 것과 같은 파일)
+          data_dir=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data || true)
+          if [ -n "$data_dir" ]; then cp "$data_dir/Documents/broadcast.log" app-run/ || true; fi
+
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
 
           cat app-run/app.log
           grep -q 'core started' app-run/app.log
           grep -q '\[stats\]' app-run/app.log
+          grep -q 'capture started (camera: yes, audio input: yes)' app-run/app.log
+          # 시뮬레이터 마이크(CI에서는 무음)로도 버퍼가 libobs까지 오는지 본다
+          grep -q 'ios-audio-input\] first buffer' app-run/app.log
+          if grep -q 'failed to load' app-run/app.log; then exit 1; fi
+          grep -q 'capture started' app-run/broadcast.log
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

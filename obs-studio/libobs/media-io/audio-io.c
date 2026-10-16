@@ -373,11 +373,18 @@ int audio_output_open(audio_t **audio, struct audio_output_info *info)
 		goto fail0;
 	if (os_event_init(&out->stop_event, OS_EVENT_TYPE_MANUAL) != 0)
 		goto fail1;
-	if (pthread_create(&out->thread, NULL, audio_thread, out) != 0)
+
+	/* iOS port: publish the output before the thread starts. The first input
+	 * callback (one tick later) reads obs->audio.audio through
+	 * audio_output_get_sample_rate(), which crashed on NULL when the creating
+	 * thread was descheduled for longer than a tick (seen on the CI simulator). */
+	*audio = out;
+	if (pthread_create(&out->thread, NULL, audio_thread, out) != 0) {
+		*audio = NULL;
 		goto fail2;
+	}
 
 	out->initialized = true;
-	*audio = out;
 	return AUDIO_OUTPUT_SUCCESS;
 
 fail2:

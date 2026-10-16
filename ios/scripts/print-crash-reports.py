@@ -27,17 +27,27 @@ def print_report(path):
     print(f"exception: {exception.get('type')} {exception.get('signal')} {exception.get('subtype', '')}")
 
     images = report.get("usedImages", [])
-    for index, thread in enumerate(report.get("threads", [])):
-        if not thread.get("triggered"):
-            continue
-        print(f"crashed thread {index} {thread.get('name', '')}")
-        for depth, frame in enumerate(thread.get("frames", [])):
+
+    def print_frames(frames):
+        for depth, frame in enumerate(frames):
             image = images[frame["imageIndex"]] if frame.get("imageIndex", -1) < len(images) else {}
             name = image.get("name", "?")
             symbol = frame.get("symbol", hex(frame.get("imageOffset", 0)))
             location = frame.get("symbolLocation", 0)
             source = f"  ({frame['sourceFile']}:{frame.get('sourceLine', '?')})" if "sourceFile" in frame else ""
             print(f"  {depth:2} {name:30} {symbol} + {location}{source}")
+
+    threads = report.get("threads", [])
+    for index, thread in enumerate(threads):
+        if thread.get("triggered"):
+            print(f"crashed thread {index} {thread.get('name', '')}")
+            print_frames(thread.get("frames", []))
+
+    # 경합을 보려면 다른 스레드가 그때 무엇을 하고 있었는지도 필요하다 (위쪽 프레임만)
+    for index, thread in enumerate(threads):
+        if not thread.get("triggered"):
+            print(f"thread {index} {thread.get('name', '')}")
+            print_frames(thread.get("frames", [])[:10])
 
 
 def main():

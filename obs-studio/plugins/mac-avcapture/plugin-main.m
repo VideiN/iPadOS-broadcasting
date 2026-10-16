@@ -250,6 +250,12 @@ static void av_capture_destroy(void *av_capture)
         [capture stopCaptureSession];
         [capture.deviceInput.device unlockForConfiguration];
 
+#if TARGET_OS_IOS
+        // iOS port: no orientation or notification callbacks after capture_info is freed
+        [capture setUpRotationForDevice:nil];
+        [[NSNotificationCenter defaultCenter] removeObserver:capture];
+#endif
+
         if (capture_info->isFastPath) {
             pthread_mutex_destroy(&capture_info->mutex);
         }
