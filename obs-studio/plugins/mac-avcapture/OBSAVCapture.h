@@ -390,6 +390,12 @@ typedef struct av_capture_info {
 
 /// iOS port: `YES` once this source's device could not join the shared session; it then keeps its own session
 @property BOOL sharedSessionRejected;
+
+/// iOS port: frames per second the device actually delivered, measured over each second
+@property (atomic) double deliveredFrameRate;
+@property uint64_t frameRateWindowStart;
+@property uint32_t frameRateWindowFrames;
+@property uint32_t frameRateLogCounter;
 #endif
 
 @end

@@ -8,6 +8,8 @@
 #import "OBSAVCapture.h"
 #import "AVCaptureDeviceFormat+OBSListable.h"
 
+#include <util/platform.h>
+
 /// The maximum number of frame rate ranges to show complete information for before providing a more generic description of the supported frame rates inside of a device format description.
 static const UInt32 kMaxFrameRateRangesInDescription = 10;
 
@@ -701,6 +703,30 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
 
         if (!usedByOthers) {
             [session removeInput:input];
+        }
+    }
+}
+
+/// Measures the frame rate the device really delivers (the canvas may run faster than the camera, e.g. a capture card
+/// fed with a 30p signal). Logged every 10 seconds and readable through the source's "get_frame_rate" proc.
+- (void)countDeliveredFrame
+{
+    const uint64_t now = os_gettime_ns();
+
+    if (self.frameRateWindowStart == 0) {
+        self.frameRateWindowStart = now;
+    }
+    self.frameRateWindowFrames++;
+
+    const uint64_t elapsed = now - self.frameRateWindowStart;
+    if (elapsed >= 1000000000ULL) {
+        self.deliveredFrameRate = self.frameRateWindowFrames * 1e9 / (double) elapsed;
+        self.frameRateWindowStart = now;
+        self.frameRateWindowFrames = 0;
+
+        self.frameRateLogCounter++;
+        if (self.frameRateLogCounter % 10 == 1) {
+            [self AVCaptureLog:LOG_INFO withFormat:@"Device delivers %.1f fps", self.deliveredFrameRate];
         }
     }
 }
@@ -1766,6 +1792,9 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
 
     switch (mediaType) {
         case kCMMediaType_Video: {
+#if TARGET_OS_IOS
+            [self countDeliveredFrame];
+#endif
             CMVideoDimensions sampleBufferDimensions = CMVideoFormatDescriptionGetDimensions(description);
             CVImageBufferRef imageBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
             FourCharCode mediaSubType = CMFormatDescriptionGetMediaSubType(description);

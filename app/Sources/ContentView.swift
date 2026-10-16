@@ -38,7 +38,8 @@ struct DiagnosticsOverlay: View {
     }
 
     private func cameraSize(_ stats: core_stats) -> String {
-        stats.camera_width > 0 ? "\(stats.camera_width)x\(stats.camera_height)" : "프레임 없음"
+        stats.camera_width > 0
+            ? String(format: "%ux%u  %.1f fps", stats.camera_width, stats.camera_height, stats.camera_fps) : "프레임 없음"
     }
 
     private func channelMeter(_ channel: String, _ db: Float) -> some View {
@@ -102,10 +103,10 @@ final class Diagnostics: ObservableObject {
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u camera_fps=%.1f audio_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
-                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_left_db,
+                    thermalState, stats.camera_width, stats.camera_height, stats.camera_fps, stats.audio_peak_left_db,
                     stats.audio_peak_right_db,
                     output.recording ? 1 : 0, Outputs.shared.recordFPS, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
                     Outputs.shared.streamFPS,

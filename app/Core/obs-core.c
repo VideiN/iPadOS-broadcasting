@@ -451,6 +451,14 @@ void core_get_stats(struct core_stats *stats)
 	obs_source_t *camera = scenes_primary_camera();
 	stats->camera_width = camera ? obs_source_get_width(camera) : 0;
 	stats->camera_height = camera ? obs_source_get_height(camera) : 0;
+	stats->camera_fps = 0.0f;
+	if (camera) {
+		// mac-avcapture (iOS)가 재는 장치의 실제 fps
+		calldata_t cd = {0};
+		if (proc_handler_call(obs_source_get_proc_handler(camera), "get_frame_rate", &cd))
+			stats->camera_fps = (float)calldata_float(&cd, "fps");
+		calldata_free(&cd);
+	}
 	obs_source_release(camera);
 	// 오디오가 1초 넘게 안 들어오면 무음으로 표시한다
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
