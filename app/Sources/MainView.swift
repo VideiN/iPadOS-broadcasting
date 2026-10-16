@@ -249,13 +249,15 @@ struct Sidebar: View {
                         model.switchTo(scene)
                     } label: {
                         HStack {
-                            Text(scene).foregroundStyle(.primary)
+                            Text(scene)
                             Spacer()
                             if scene == model.currentScene {
                                 Image(systemName: "checkmark").foregroundStyle(Color.accentColor)
                             }
                         }
                     }
+                    // 목록 안 버튼 글자가 링크처럼 파랗게 나오지 않게
+                    .tint(.primary)
                     .contextMenu {
                         Button("이름 바꾸기…") { startRenaming(.scene(scene), current: scene) }
                         Button("위로") { model.moveScene(scene, by: -1) }

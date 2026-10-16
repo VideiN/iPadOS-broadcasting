@@ -111,6 +111,11 @@ jobs:
           bundle_id=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
           mkdir -p app-run
 
+          # 라이선스 화면에 쓰는 파일이 번들에 들어갔는지 (계획 10.1)
+          for license in app obs-studio ffmpeg librtmp mbedtls jansson libcaption simde uthash; do
+            test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
+          done
+
           xcrun simctl install "$SIM_UDID" "$app"
           # 권한 창이 스크린숏을 가리지 않게 미리 허용한다 (시뮬레이터에는 카메라가 없다)
           xcrun simctl privacy "$SIM_UDID" grant camera "$bundle_id" || true

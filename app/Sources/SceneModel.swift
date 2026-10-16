@@ -275,10 +275,16 @@ final class SceneModel: ObservableObject {
 
         switchTo(firstScene)
         switchTo("시험 장면")
+
+        // 캔버스를 한 번 바꿨다가 되돌린다 (프리뷰가 떠 있는 채로 obs_reset_video)
+        let core = Core.shared
+        let (width, height, fps) = (core.width, core.height, core.fps)
+        let changed = core.applyCanvas(width: 1280, height: 720, fps: 30)
+        let restored = core.applyCanvas(width: width, height: height, fps: fps)
         saveNow()
 
         appLog(
-            "scenes autotest: ok (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1))"
+            "scenes autotest: \(changed && restored ? "ok" : "canvas change failed") (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1))"
         )
     }
 }

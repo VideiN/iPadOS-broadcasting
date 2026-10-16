@@ -43,6 +43,8 @@ final class Outputs: ObservableObject {
         recordError = Self.lastError(stream: false)
         streamError = Self.lastError(stream: true)
         if !stats.recording { recordStopping = false }
+        // 녹화가 끝나면 고른 폴더의 접근을 놓는다
+        if !stats.recording && !startingRecording && recordingFolder != nil { releaseRecordingFolder() }
         if !stats.streaming { streamStopping = false }
     }
 
@@ -52,32 +54,57 @@ final class Outputs: ObservableObject {
         let force = recordStopping
         if active { recordStopping = true }
 
+        let defaults = AppSettings.defaults
+        let codec = defaults.string(forKey: AppSettings.recordCodec) ?? "hevc"
+        let videoKbps = Int32(defaults.integer(forKey: AppSettings.recordBitrate))
+        let audioKbps = Int32(defaults.integer(forKey: AppSettings.recordAudioBitrate))
+        let path = active ? "" : newRecordingPath()
+        if !active { startingRecording = true }
+
         DispatchQueue.global(qos: .userInitiated).async {
+            var started = false
             if active {
                 core_recording_stop(force)
             } else {
-                let path = Self.newRecordingPath()
-                let ok = core_recording_start(path)
-                appLog("recording start \(ok ? "requested" : "failed"): \(path)")
+                started = core_recording_start(path, codec, videoKbps, audioKbps)
+                appLog("recording start \(started ? "requested" : "failed"): \(path)")
             }
-            DispatchQueue.main.async { self.update() }
+            DispatchQueue.main.async {
+                if !active {
+                    self.startingRecording = false
+                    if !started { self.releaseRecordingFolder() }
+                }
+                self.update()
+            }
         }
     }
 
-    func toggleStreaming(server: String, key: String, kbps: Int) {
+    /// 송출 서버를 아직 정하지 않았으면 false (설정을 열어야 함)
+    @discardableResult
+    func toggleStreaming() -> Bool {
         let active = stats.streaming
+        let defaults = AppSettings.defaults
+        let server = defaults.string(forKey: AppSettings.streamServer) ?? ""
+        guard active || !server.isEmpty else { return false }
+
         let force = streamStopping
         if active { streamStopping = true }
+
+        let key = StreamKeyStore.load()
+        let codec = defaults.string(forKey: AppSettings.streamCodec) ?? "h264"
+        let videoKbps = Int32(defaults.integer(forKey: AppSettings.streamBitrate))
+        let audioKbps = Int32(defaults.integer(forKey: AppSettings.streamAudioBitrate))
 
         DispatchQueue.global(qos: .userInitiated).async {
             if active {
                 core_streaming_stop(force)
             } else {
-                let ok = core_streaming_start(server, key, Int32(kbps))
+                let ok = core_streaming_start(server, key, codec, videoKbps, audioKbps)
                 appLog("streaming start \(ok ? "requested" : "failed")")
             }
             DispatchQueue.main.async { self.update() }
         }
+        return true
     }
 
     /// CI용: `-autotest-output <초> <RTMP 서버 URL>`로 띄우면 입력 소스가 준비된 뒤
@@ -88,12 +115,13 @@ final class Outputs: ObservableObject {
             let seconds = Double(args[index + 1])
         else { return }
         let server = args[index + 2]
+        let path = RecordingFolder.defaultFolder.appendingPathComponent("autotest.mp4").path
 
         appLog("autotest: recording and streaming for \(seconds) s to \(server)")
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
-            let recording = core_recording_start(Self.newRecordingPath(name: "autotest"))
-            let streaming = core_streaming_start(server, "autotest", 4000)
+            let recording = core_recording_start(path, "hevc", 20000, 192)
+            let streaming = core_streaming_start(server, "autotest", "h264", 4000, 160)
             appLog("autotest: started (recording \(recording), streaming \(streaming))")
 
             queue.asyncAfter(deadline: .now() + seconds) {
@@ -129,19 +157,25 @@ final class Outputs: ObservableObject {
         }
     }
 
-    /// Documents/Recordings. 파일 앱에서 보인다 (UIFileSharingEnabled)
-    static func recordingsDirectory() -> URL {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let directory = documents.appendingPathComponent("Recordings", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        return directory
-    }
+    // MARK: 녹화 폴더
 
-    static func newRecordingPath(name: String? = nil) -> String {
+    /// 설정에서 고른 폴더(외장 저장장치 등)는 보안 범위 접근을 녹화가 끝날 때까지 유지한다
+    private var recordingFolder: URL?
+    private var startingRecording = false
+
+    private func newRecordingPath() -> String {
+        releaseRecordingFolder()
+        recordingFolder = RecordingFolder.resolveChosen()
+        let folder = recordingFolder ?? RecordingFolder.defaultFolder
+
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH.mm.ss"
-        let fileName = (name ?? formatter.string(from: Date())) + ".mp4"
-        return recordingsDirectory().appendingPathComponent(fileName).path
+        return folder.appendingPathComponent(formatter.string(from: Date()) + ".mp4").path
+    }
+
+    private func releaseRecordingFolder() {
+        recordingFolder?.stopAccessingSecurityScopedResource()
+        recordingFolder = nil
     }
 
     private static func lastError(stream: Bool) -> String {
@@ -151,12 +185,9 @@ final class Outputs: ObservableObject {
     }
 }
 
-/// 녹화·송출 버튼과 송출 설정 (P3 확인용. 본 UI는 P4)
+/// 녹화·송출 버튼과 설정 열기
 struct OutputControls: View {
     @ObservedObject var outputs: Outputs
-    @AppStorage("streamServer") private var server = ""
-    @AppStorage("streamKey") private var key = ""
-    @AppStorage("streamBitrate") private var bitrate = 6000
     @State private var showSettings = false
 
     var body: some View {
@@ -171,11 +202,8 @@ struct OutputControls: View {
             .tint(.red)
 
             Button {
-                if server.isEmpty {
-                    showSettings = true
-                } else {
-                    outputs.toggleStreaming(server: server, key: key, kbps: bitrate)
-                }
+                // 송출 서버를 정하지 않았으면 설정을 연다
+                if !outputs.toggleStreaming() { showSettings = true }
             } label: {
                 Label(
                     outputs.streamStopping ? "멈추는 중 (누르면 강제)" : outputs.stats.streaming ? "송출 중지" : "송출",
@@ -189,47 +217,11 @@ struct OutputControls: View {
                 Image(systemName: "gearshape")
             }
             .tint(.gray)
-            .disabled(outputs.stats.streaming)
         }
         .buttonStyle(.borderedProminent)
         .font(.system(size: 14, weight: .semibold))
         .sheet(isPresented: $showSettings) {
-            StreamSettingsView(server: $server, key: $key, bitrate: $bitrate)
-        }
-    }
-}
-
-struct StreamSettingsView: View {
-    @Binding var server: String
-    @Binding var key: String
-    @Binding var bitrate: Int
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("rtmp://… 또는 rtmps://…", text: $server)
-                        .keyboardType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("스트림 키", text: $key)
-                } header: {
-                    Text("송출 대상")
-                } footer: {
-                    Text("예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2. 스트림 키는 이 기기의 앱 설정에 저장됩니다.")
-                }
-
-                Section("비디오 (H.264 CBR)") {
-                    Stepper("\(bitrate) kbps", value: $bitrate, in: 1000...20000, step: 500)
-                }
-            }
-            .navigationTitle("송출 설정")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("완료") { dismiss() }
-                }
-            }
+            SettingsView(core: Core.shared, outputs: outputs)
         }
     }
 }

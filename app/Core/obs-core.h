@@ -117,14 +117,20 @@ struct core_output_stats {
 	uint32_t video_total_frames;
 };
 
-// 녹화(HEVC, Hybrid MP4). path의 폴더는 미리 만들어 둔다. HEVC가 안 되면 H.264로 녹화한다.
-bool core_recording_start(const char *path);
+// 녹화(Hybrid MP4, 비디오 ABR + AAC). codec은 "hevc"·"h264". path의 폴더는 미리 만들어 둔다.
+// 그 코덱의 인코더를 쓸 수 없으면 H.264로 녹화한다.
+bool core_recording_start(const char *path, const char *codec, int video_kbps, int audio_kbps);
 // force: 인코더가 밀려 보통 멈춤이 끝나지 않을 때 남은 패킷을 버리고 바로 멈춘다
 void core_recording_stop(bool force);
 
-// RTMP/RTMPS 송출 (H.264 CBR + AAC 160kbps). 연결은 비동기로 하고 결과는 상태와 마지막 오류로 본다.
-bool core_streaming_start(const char *server, const char *key, int video_kbps);
+// RTMP/RTMPS 송출 (비디오 CBR + AAC). codec "hevc"는 Enhanced RTMP (받는 쪽이 지원해야 함).
+// 연결은 비동기로 하고 결과는 상태와 마지막 오류로 본다.
+bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps);
 void core_streaming_stop(bool force);
+bool core_outputs_active(void);
+
+// 캔버스(해상도·fps)를 바꾼다. 녹화·송출 중이면 바꾸지 않고 false
+bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps);
 
 void core_get_output_stats(struct core_output_stats *stats);
 // 녹화(false)나 송출(true)의 마지막 오류 문장. 없으면 "". core_free로 해제한다.

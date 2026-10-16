@@ -209,6 +209,26 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 	return true;
 }
 
+bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps)
+{
+	if (core_outputs_active()) {
+		blog(LOG_WARNING, "[app] canvas not changed: recording or streaming is active");
+		return false;
+	}
+
+	if (!reset_video(width, height, fps)) {
+		// 실패하면 원래 설정으로 되돌린다
+		reset_video(core.width, core.height, (uint32_t)core.fps);
+		return false;
+	}
+
+	core.width = width;
+	core.height = height;
+	core.fps = fps;
+	blog(LOG_INFO, "[app] canvas changed to %ux%u @ %u fps", width, height, fps);
+	return true;
+}
+
 #pragma mark - 카메라·오디오 입력
 
 static void volmeter_updated(void *param, const float magnitude[MAX_AUDIO_CHANNELS],

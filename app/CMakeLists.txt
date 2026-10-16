@@ -59,6 +59,7 @@ add_executable(
   Sources/SceneModel.swift
   Sources/PropertiesView.swift
   Sources/MainView.swift
+  Sources/Settings.swift
 )
 target_link_libraries(app PRIVATE app-core)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
@@ -87,6 +88,8 @@ else()
 endif()
 
 set(bundle_dir "$<TARGET_BUNDLE_CONTENT_DIR:app>")
+# 의존성 설치 경로 (CMAKE_PREFIX_PATH의 첫 항목, CI는 .deps/ios-<플랫폼>)
+list(GET CMAKE_PREFIX_PATH 0 deps_prefix)
 add_custom_command(
   TARGET app
   POST_BUILD
@@ -110,6 +113,16 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/data"
     "${bundle_dir}/obs-plugins/obs-outputs"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
+  # 라이선스 화면용 (계획 10.1): 이 앱·OBS Studio(GPLv2+), OBS가 함께 넣은 코드, 의존성(ios/deps/build-deps.sh가 모음)
+  COMMAND "${CMAKE_COMMAND}" -E make_directory "${bundle_dir}/licenses"
+  COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/../LICENSE" "${bundle_dir}/licenses/app.txt"
+  COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/COPYING" "${bundle_dir}/licenses/obs-studio.txt"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/deps/libcaption/LICENSE.txt" "${bundle_dir}/licenses/libcaption.txt"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/COPYING"
+    "${bundle_dir}/licenses/librtmp.txt"
+  COMMAND "${CMAKE_COMMAND}" -E copy_directory "${deps_prefix}/share/licenses" "${bundle_dir}/licenses"
   # swiftc는 디버그 정보(dSYM)를 실행 파일 옆, 즉 번들 안에 만든다. 번들 안에 있으면 LiveContainer가 설치할 때
   # 서명하려다 "Failed to Sign …/Broadcast.dSYM/…" 경고를 낸다. 서명 전에 번들 밖으로 옮긴다.
   COMMAND
