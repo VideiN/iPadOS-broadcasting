@@ -126,10 +126,15 @@ typedef struct av_capture_info {
 
 /// iOS port: shared multi-camera session handling (see OBSSharedCaptureSession in OBSAVCapture.m)
 - (BOOL)joinSharedSession;
-- (BOOL)connectSharedInput:(AVCaptureDeviceInput *)deviceInput;
+- (AVCaptureDeviceInput *)connectSharedInput:(AVCaptureDeviceInput *)deviceInput;
+- (void)disconnectSharedInput:(AVCaptureDeviceInput *)input;
 - (void)leaveSharedSession;
 - (void)detachFromSharedSession;
 #endif
+
+/// Removes this source's device input from its session (iOS port: in the shared session, only this source's
+/// connection while another source still uses the same device)
+- (void)removeDeviceInput:(AVCaptureDeviceInput *)input;
 
 /// Configures the current [AVCaptureSession](https://developer.apple.com/documentation/avfoundation/avcapturesession?language=objc) to use the [AVCaptureSessionPreset](https://developer.apple.com/documentation/avfoundation/avcapturesessionpreset?language=objc) value selected in the source's property window.
 /// - Parameter error: Optional pointer to a valid [NSError](https://developer.apple.com/documentation/foundation/nserror?language=objc) instance to retain possible errors that occurred

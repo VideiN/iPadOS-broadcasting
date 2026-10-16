@@ -366,7 +366,7 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
 
     if (self.deviceInput.device || !device) {
         [self stopCaptureSession];
-        [self.session removeInput:self.deviceInput];
+        [self removeDeviceInput:self.deviceInput];
 
         [self.deviceInput.device unlockForConfiguration];
         self.deviceInput = nil;
@@ -409,7 +409,12 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
 
 #if TARGET_OS_IOS
     if (self.usesSharedSession) {
-        isInputAdded = [self connectSharedInput:deviceInput];
+        // Another source may already use this device: then its input is shared and only connected to this output
+        AVCaptureDeviceInput *sharedInput = [self connectSharedInput:deviceInput];
+        isInputAdded = sharedInput != nil;
+        if (sharedInput) {
+            deviceInput = sharedInput;
+        }
 
         if (!isInputAdded) {
             // The device cannot run together with the other cameras (not part of a supported multi-camera device set,
@@ -457,7 +462,7 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
             *error = [NSError errorWithDomain:self.errorDomain code:-108 userInfo:userInfo];
         }
 
-        [self.session removeInput:deviceInput];
+        [self removeDeviceInput:deviceInput];
         [self.session commitConfiguration];
         return NO;
     }
@@ -608,25 +613,40 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
     return YES;
 }
 
-/// Adds the input without automatic connections and connects its video port to this source's output.
+/// Connects the device's video port to this source's output. If another source already uses the device, its input is
+/// reused (one device can feed several outputs), otherwise the input is added without automatic connections.
+/// Returns the input that is used, or nil if the device cannot join the shared session.
 /// Must be called between beginConfiguration and commitConfiguration of the shared session.
-- (BOOL)connectSharedInput:(AVCaptureDeviceInput *)deviceInput
+- (AVCaptureDeviceInput *)connectSharedInput:(AVCaptureDeviceInput *)deviceInput
 {
     AVCaptureSession *session = self.session;
+    AVCaptureDevice *device = deviceInput.device;
 
     @synchronized(session) {
-        if (![session canAddInput:deviceInput]) {
-            return NO;
+        AVCaptureDeviceInput *input = nil;
+        for (AVCaptureInput *candidate in session.inputs) {
+            if ([candidate isKindOfClass:[AVCaptureDeviceInput class]] &&
+                [((AVCaptureDeviceInput *) candidate).device.uniqueID isEqualToString:device.uniqueID]) {
+                input = (AVCaptureDeviceInput *) candidate;
+                break;
+            }
         }
-        [session addInputWithNoConnections:deviceInput];
 
-        AVCaptureDevice *device = deviceInput.device;
-        NSArray<AVCaptureInputPort *> *ports = [deviceInput portsWithMediaType:AVMediaTypeVideo
-                                                              sourceDeviceType:device.deviceType
-                                                          sourceDevicePosition:device.position];
+        BOOL isNewInput = input == nil;
+        if (isNewInput) {
+            if (![session canAddInput:deviceInput]) {
+                return nil;
+            }
+            [session addInputWithNoConnections:deviceInput];
+            input = deviceInput;
+        }
+
+        NSArray<AVCaptureInputPort *> *ports = [input portsWithMediaType:AVMediaTypeVideo
+                                                        sourceDeviceType:device.deviceType
+                                                    sourceDevicePosition:device.position];
         if (ports.count == 0) {
             NSMutableArray<AVCaptureInputPort *> *videoPorts = [NSMutableArray array];
-            for (AVCaptureInputPort *port in deviceInput.ports) {
+            for (AVCaptureInputPort *port in input.ports) {
                 if ([port.mediaType isEqualToString:AVMediaTypeVideo]) {
                     [videoPorts addObject:port];
                 }
@@ -638,13 +658,65 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
                                                                                                output:self.videoOutput]
                                                       : nil;
         if (!connection || ![session canAddConnection:connection]) {
-            [session removeInput:deviceInput];
-            return NO;
+            if (isNewInput) {
+                [session removeInput:input];
+            }
+            return nil;
         }
         [session addConnection:connection];
+
+        if (!isNewInput) {
+            [self AVCaptureLog:LOG_INFO withFormat:@"Sharing '%@' with another source", device.localizedName];
+        }
+        return input;
+    }
+}
+
+/// Removes this source's connection, and the input too unless another source still uses the same device
+- (void)disconnectSharedInput:(AVCaptureDeviceInput *)input
+{
+    AVCaptureSession *session = self.session;
+
+    @synchronized(session) {
+        BOOL usedByOthers = NO;
+
+        for (AVCaptureConnection *connection in [session.connections copy]) {
+            BOOL fromInput = NO;
+            for (AVCaptureInputPort *port in connection.inputPorts) {
+                if (port.input == input) {
+                    fromInput = YES;
+                }
+            }
+
+            if (!fromInput) {
+                continue;
+            }
+
+            if (connection.output == self.videoOutput) {
+                [session removeConnection:connection];
+            } else {
+                usedByOthers = YES;
+            }
+        }
+
+        if (!usedByOthers) {
+            [session removeInput:input];
+        }
+    }
+}
+
+/// Removes this source's device input. In the shared session another source may still use the same device.
+- (void)removeDeviceInput:(AVCaptureDeviceInput *)input
+{
+    if (!input) {
+        return;
     }
 
-    return YES;
+    if (self.usesSharedSession) {
+        [self disconnectSharedInput:input];
+    } else {
+        [self.session removeInput:input];
+    }
 }
 
 /// Gives this source its own capture session (the device could not join the shared one)
@@ -677,7 +749,7 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
     @synchronized(shared) {
         [shared beginConfiguration];
         if (self.deviceInput) {
-            [shared removeInput:self.deviceInput];
+            [self disconnectSharedInput:self.deviceInput];
         }
         [shared removeOutput:self.videoOutput];
         [shared commitConfiguration];
@@ -713,6 +785,11 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
             [weakSelf startCaptureSession];
         });
     }
+}
+#else
+- (void)removeDeviceInput:(AVCaptureDeviceInput *)input
+{
+    [self.session removeInput:input];
 }
 #endif
 
@@ -1653,7 +1730,7 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
         OBSAVCapture *instance = weakSelf;
 
         [instance stopCaptureSession];
-        [instance.session removeInput:instance.deviceInput];
+        [instance removeDeviceInput:instance.deviceInput];
 
         instance.deviceInput = nil;
         instance = nil;
