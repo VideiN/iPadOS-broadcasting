@@ -49,6 +49,12 @@ jobs=$(sysctl -n hw.ncpu)
 
 mkdir -p "$prefix/include" "$prefix/lib" "$src_dir" "$work_dir"
 
+# install_license <이름> <라이선스 파일>: 앱 번들의 라이선스 화면에 넣을 사본 ($prefix/share/licenses/<이름>.txt)
+install_license() {
+  mkdir -p "$prefix/share/licenses"
+  cp "$2" "$prefix/share/licenses/$1.txt"
+}
+
 # fetch <파일 이름> <URL> <sha256>
 fetch() {
   local file="$src_dir/$1"
@@ -88,6 +94,7 @@ echo "::group::simde $SIMDE_VERSION"
 fetch "simde-$SIMDE_VERSION.tar.gz" \
   "https://github.com/simd-everywhere/simde/archive/refs/tags/v$SIMDE_VERSION.tar.gz" "$SIMDE_SHA256"
 unpack "$src_dir/simde-$SIMDE_VERSION.tar.gz" "$work_dir/simde"
+install_license simde "$work_dir/simde/COPYING"
 rm -rf "$prefix/include/simde"
 cp -R "$work_dir/simde/simde" "$prefix/include/simde"
 echo "::endgroup::"
@@ -96,6 +103,7 @@ echo "::group::uthash $UTHASH_VERSION"
 fetch "uthash-$UTHASH_VERSION.tar.gz" \
   "https://github.com/troydhanson/uthash/archive/refs/tags/v$UTHASH_VERSION.tar.gz" "$UTHASH_SHA256"
 unpack "$src_dir/uthash-$UTHASH_VERSION.tar.gz" "$work_dir/uthash"
+install_license uthash "$work_dir/uthash/LICENSE"
 cp "$work_dir/uthash/src/"*.h "$prefix/include/"
 echo "::endgroup::"
 
@@ -104,6 +112,7 @@ fetch "jansson-$JANSSON_VERSION.tar.bz2" \
   "https://github.com/akheron/jansson/releases/download/v$JANSSON_VERSION/jansson-$JANSSON_VERSION.tar.bz2" \
   "$JANSSON_SHA256"
 unpack "$src_dir/jansson-$JANSSON_VERSION.tar.bz2" "$work_dir/jansson"
+install_license jansson "$work_dir/jansson/LICENSE"
 cmake_ios "$work_dir/jansson" "$work_dir/jansson/build" \
   -DJANSSON_BUILD_SHARED_LIBS=OFF \
   -DJANSSON_BUILD_DOCS=OFF \
@@ -116,6 +125,7 @@ fetch "mbedtls-$MBEDTLS_VERSION.tar.bz2" \
   "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-$MBEDTLS_VERSION/mbedtls-$MBEDTLS_VERSION.tar.bz2" \
   "$MBEDTLS_SHA256"
 unpack "$src_dir/mbedtls-$MBEDTLS_VERSION.tar.bz2" "$work_dir/mbedtls"
+install_license mbedtls "$work_dir/mbedtls/LICENSE"
 # obs-deps와 같이 pthread 뮤텍스를 켠다 (obs-deps patches/mbedtls/0001-enable-posix-threading-support.patch)
 sed -i '' \
   -e 's|^//#define MBEDTLS_THREADING_PTHREAD$|#define MBEDTLS_THREADING_PTHREAD|' \
@@ -145,6 +155,8 @@ echo "::group::FFmpeg $FFMPEG_VERSION"
 fetch "ffmpeg-$FFMPEG_VERSION.tar.xz" \
   "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" "$FFMPEG_SHA256"
 unpack "$src_dir/ffmpeg-$FFMPEG_VERSION.tar.xz" "$work_dir/ffmpeg"
+# 앱의 라이선스 화면에 넣는다 (FFmpeg는 GPL·nonfree 구성요소를 켜지 않아 LGPL 2.1 이상)
+install_license ffmpeg "$work_dir/ffmpeg/COPYING.LGPLv2.1"
 mkdir -p "$work_dir/ffmpeg/build"
 (
   cd "$work_dir/ffmpeg/build"

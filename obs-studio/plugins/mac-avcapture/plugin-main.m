@@ -14,6 +14,14 @@ const char *av_capture_get_text(const char *text_id)
     return obs_module_text(text_id);
 }
 
+#if TARGET_OS_IOS
+static void av_capture_get_frame_rate(void *data, calldata_t *cd)
+{
+    OBSAVCapture *capture = (__bridge OBSAVCapture *) data;
+    calldata_set_float(cd, "fps", capture.deliveredFrameRate);
+}
+#endif
+
 static void *av_capture_create(obs_data_t *settings, obs_source_t *source)
 {
     OBSAVCaptureInfo *capture_data = bzalloc(sizeof(OBSAVCaptureInfo));
@@ -24,6 +32,12 @@ static void *av_capture_create(obs_data_t *settings, obs_source_t *source)
     capture_data->audioFrame = bzalloc(sizeof(OBSAVCaptureAudioFrame));
 
     OBSAVCapture *capture = [[OBSAVCapture alloc] initWithCaptureInfo:capture_data];
+
+#if TARGET_OS_IOS
+    // iOS port: lets the app show the frame rate the device really delivers
+    proc_handler_add(obs_source_get_proc_handler(source), "void get_frame_rate(out float fps)",
+                     av_capture_get_frame_rate, (__bridge void *) capture);
+#endif
 
     return (void *) CFBridgingRetain(capture);
 }
@@ -251,9 +265,11 @@ static void av_capture_destroy(void *av_capture)
         [capture.deviceInput.device unlockForConfiguration];
 
 #if TARGET_OS_IOS
-        // iOS port: no orientation or notification callbacks after capture_info is freed
+        // iOS port: no orientation or notification callbacks after capture_info is freed, and leave the shared
+        // multi-camera session to the other cameras
         [capture setUpRotationForDevice:nil];
         [[NSNotificationCenter defaultCenter] removeObserver:capture];
+        [capture detachFromSharedSession];
 #endif
 
         if (capture_info->isFastPath) {

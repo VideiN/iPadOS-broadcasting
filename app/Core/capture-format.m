@@ -54,6 +54,20 @@ char *capture_default_camera_id(void)
 	return pick ? bstrdup(pick.uniqueID.UTF8String) : NULL;
 }
 
+char *capture_camera_list(void)
+{
+	AVCaptureDeviceDiscoverySession *discovery =
+		[AVCaptureDeviceDiscoverySession discoverySessionWithDeviceTypes:camera_device_types()
+								       mediaType:AVMediaTypeVideo
+									position:AVCaptureDevicePositionUnspecified];
+
+	NSMutableString *lines = [NSMutableString string];
+	for (AVCaptureDevice *device in discovery.devices)
+		[lines appendFormat:@"%@\t%@\t1\n", device.uniqueID, device.localizedName];
+
+	return bstrdup(lines.UTF8String);
+}
+
 static bool is_nv12(FourCharCode subtype)
 {
 	return subtype == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange ||

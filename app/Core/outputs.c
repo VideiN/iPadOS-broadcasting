@@ -256,31 +256,60 @@ static obs_encoder_t *create_audio_encoder(const char *name, int bitrate_kbps)
 	return encoder;
 }
 
-static void set_video_bitrate(obs_encoder_t *encoder, int bitrate_kbps)
+// 인코더를 원하는 코덱·설정으로 맞춘다. 쓰는 중이면 그대로 둔다.
+// 캔버스를 바꿨을 수 있으므로 지금 비디오 출력에 다시 붙인다.
+static obs_encoder_t *prepare_video_encoder(obs_encoder_t *encoder, const char *codec, const char *name,
+					    const char *rate_control, int bitrate_kbps)
 {
-	if (!encoder || obs_encoder_active(encoder))
-		return;
+	if (encoder && obs_encoder_active(encoder))
+		return encoder;
+
+	if (encoder && strcmp(obs_encoder_get_codec(encoder), codec) != 0) {
+		obs_encoder_release(encoder);
+		encoder = NULL;
+	}
+	if (!encoder)
+		return create_video_encoder(codec, name, rate_control, bitrate_kbps);
+
+	obs_data_t *settings = obs_encoder_get_settings(encoder);
+	obs_data_set_string(settings, "rate_control", rate_control);
+	obs_data_set_int(settings, "bitrate", bitrate_kbps);
+	obs_encoder_update(encoder, settings);
+	obs_data_release(settings);
+
+	obs_encoder_set_video(encoder, obs_get_video());
+	return encoder;
+}
+
+static obs_encoder_t *prepare_audio_encoder(obs_encoder_t *encoder, const char *name, int bitrate_kbps)
+{
+	if (encoder && obs_encoder_active(encoder))
+		return encoder;
+	if (!encoder)
+		return create_audio_encoder(name, bitrate_kbps);
 
 	obs_data_t *settings = obs_encoder_get_settings(encoder);
 	obs_data_set_int(settings, "bitrate", bitrate_kbps);
 	obs_encoder_update(encoder, settings);
 	obs_data_release(settings);
+	return encoder;
+}
+
+bool core_outputs_active(void)
+{
+	return (out.recording && obs_output_active(out.recording)) ||
+	       (out.streaming && obs_output_active(out.streaming));
 }
 
 #pragma mark - 녹화
 
-static bool start_recording_with(const char *codec, const char *path)
+static bool start_recording_with(const char *codec, const char *path, int video_kbps, int audio_kbps)
 {
-	if (!out.record_video) {
-		out.record_video = create_video_encoder(codec, "Record Video", "ABR", 20000);
-		if (!out.record_video)
-			return false;
-	}
-	if (!out.record_audio)
-		out.record_audio = create_audio_encoder("Record Audio", 192);
+	out.record_video = prepare_video_encoder(out.record_video, codec, "Record Video", "ABR", video_kbps);
+	out.record_audio = prepare_audio_encoder(out.record_audio, "Record Audio", audio_kbps);
 	if (!out.recording)
 		out.recording = create_output("mp4_output", "Recording", false);
-	if (!out.recording || !out.record_audio)
+	if (!out.recording || !out.record_video || !out.record_audio)
 		return false;
 
 	obs_data_t *settings = obs_data_create();
@@ -292,7 +321,7 @@ static bool start_recording_with(const char *codec, const char *path)
 	obs_output_set_audio_encoder(out.recording, out.record_audio, 0);
 
 	if (obs_output_start(out.recording)) {
-		blog(LOG_INFO, "[app] recording to %s (%s)", path, codec);
+		blog(LOG_INFO, "[app] recording to %s (%s %d kbps, AAC %d kbps)", path, codec, video_kbps, audio_kbps);
 		return true;
 	}
 
@@ -301,7 +330,7 @@ static bool start_recording_with(const char *codec, const char *path)
 	return false;
 }
 
-bool core_recording_start(const char *path)
+bool core_recording_start(const char *path, const char *codec, int video_kbps, int audio_kbps)
 {
 	if (out.recording && obs_output_active(out.recording))
 		return true;
@@ -310,15 +339,12 @@ bool core_recording_start(const char *path)
 	out.record_error[0] = 0;
 	pthread_mutex_unlock(&out.mutex);
 
-	// 녹화는 HEVC. 인코더를 만들 수 없는 환경(예: 시뮬레이터)에서는 H.264로 다시 시도한다.
-	if (start_recording_with("hevc", path))
+	if (start_recording_with(codec, path, video_kbps, audio_kbps))
 		return true;
 
-	if (out.record_video && strcmp(obs_encoder_get_codec(out.record_video), "h264") != 0) {
-		obs_encoder_release(out.record_video);
-		out.record_video = NULL;
-		return start_recording_with("h264", path);
-	}
+	// 그 코덱의 인코더를 만들 수 없는 환경(예: 시뮬레이터)에서는 H.264로 다시 시도한다
+	if (strcmp(codec, "h264") != 0)
+		return start_recording_with("h264", path, video_kbps, audio_kbps);
 	return false;
 }
 
@@ -338,7 +364,8 @@ void core_recording_stop(bool force)
 
 #pragma mark - 송출
 
-bool core_streaming_start(const char *server, const char *key, int video_kbps)
+// codec이 "hevc"면 Enhanced RTMP로 HEVC를 보낸다 (받는 쪽이 지원해야 한다, O4)
+bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps)
 {
 	if (out.streaming && obs_output_active(out.streaming))
 		return true;
@@ -356,12 +383,8 @@ bool core_streaming_start(const char *server, const char *key, int video_kbps)
 		obs_service_update(out.service, settings);
 	obs_data_release(settings);
 
-	if (!out.stream_video)
-		out.stream_video = create_video_encoder("h264", "Stream Video", "CBR", video_kbps);
-	else
-		set_video_bitrate(out.stream_video, video_kbps);
-	if (!out.stream_audio)
-		out.stream_audio = create_audio_encoder("Stream Audio", 160);
+	out.stream_video = prepare_video_encoder(out.stream_video, codec, "Stream Video", "CBR", video_kbps);
+	out.stream_audio = prepare_audio_encoder(out.stream_audio, "Stream Audio", audio_kbps);
 	if (!out.streaming) {
 		out.streaming = create_output("rtmp_output", "Streaming", true);
 		if (out.streaming)
@@ -384,7 +407,10 @@ bool core_streaming_start(const char *server, const char *key, int video_kbps)
 	}
 
 	// 서버 주소는 남기되 스트림 키는 로그에 남기지 않는다
-	blog(LOG_INFO, "[app] streaming to %s (%d kbps)", server, video_kbps);
+	video_t *video = obs_encoder_video(out.stream_video);
+	blog(LOG_INFO, "[app] streaming to %s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)", server, codec, video_kbps,
+	     video ? video_output_get_frame_rate(video) : 0.0, obs_encoder_get_width(out.stream_video),
+	     obs_encoder_get_height(out.stream_video), audio_kbps);
 	return true;
 }
 
@@ -414,6 +440,7 @@ void core_get_output_stats(struct core_output_stats *stats)
 		stats->recording = obs_output_active(out.recording);
 		stats->recording_seconds = obs_output_get_total_frames(out.recording) / fps;
 		stats->recording_bytes = obs_output_get_total_bytes(out.recording);
+		stats->record_total_frames = obs_output_get_total_frames(out.recording);
 	}
 
 	if (out.streaming) {

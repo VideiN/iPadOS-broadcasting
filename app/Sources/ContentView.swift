@@ -2,106 +2,6 @@ import Combine
 import SwiftUI
 import UIKit
 
-struct ContentView: View {
-    @ObservedObject private var core = Core.shared
-    @ObservedObject private var outputs = Outputs.shared
-    @StateObject private var diagnostics = Diagnostics()
-
-    var body: some View {
-        ZStack(alignment: .topLeading) {
-            Color.black.ignoresSafeArea()
-
-            if core.isRunning {
-                PreviewView()
-                    .aspectRatio(CGFloat(core.width) / CGFloat(core.height), contentMode: .fit)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Text(core.failed ? "libobs를 시작하지 못했습니다. 로그를 확인하세요." : "libobs 시작 중…")
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-
-            DiagnosticsOverlay(diagnostics: diagnostics, outputs: outputs)
-                .padding(12)
-
-            if core.isRunning {
-                VStack(alignment: .trailing, spacing: 8) {
-                    InputPicker(core: core)
-                    OutputControls(outputs: outputs)
-                }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .topTrailing)
-            }
-        }
-        .onAppear {
-            appLog("content appeared")
-            // 방송 중 화면 자동 잠금을 막는다 (계획 5.4)
-            UIApplication.shared.isIdleTimerDisabled = true
-        }
-    }
-}
-
-/// 카메라·오디오 입력 선택 (P2 확인용. 본 UI는 P4)
-struct InputPicker: View {
-    @ObservedObject var core: Core
-
-    var body: some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            Menu {
-                Picker(
-                    "카메라",
-                    selection: Binding(
-                        get: { core.currentCamera },
-                        set: { core.select(CORE_DEVICE_CAMERA, $0) })
-                ) {
-                    ForEach(core.cameras) { device in
-                        Text(itemName(device)).tag(device.id).selectionDisabled(!device.available)
-                    }
-                }
-            } label: {
-                Label(
-                    label(of: core.currentCamera, in: core.cameras, empty: "카메라 없음", disconnected: "연결 끊김"),
-                    systemImage: "video")
-            }
-
-            Menu {
-                Picker(
-                    "오디오 입력",
-                    selection: Binding(
-                        get: { core.currentAudioInput },
-                        set: { core.select(CORE_DEVICE_AUDIO_INPUT, $0) })
-                ) {
-                    ForEach(core.audioInputs) { device in
-                        Text(device.id.isEmpty ? "시스템 기본" : itemName(device)).tag(device.id)
-                            .selectionDisabled(!device.available)
-                    }
-                }
-            } label: {
-                // 고른 장치가 빠지면 오디오는 시스템 기본 경로로 녹음하다가, 다시 꽂으면 돌아간다 (ios-audio-input)
-                Label(
-                    label(
-                        of: core.currentAudioInput, in: core.audioInputs, empty: "시스템 기본",
-                        disconnected: "연결 끊김, 시스템 기본 사용 중"),
-                    systemImage: "mic")
-            }
-        }
-        .font(.system(size: 14, weight: .medium))
-        .foregroundStyle(.white)
-        .padding(8)
-        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func itemName(_ device: Device) -> String {
-        device.available ? device.name : "\(device.name) (연결 끊김)"
-    }
-
-    private func label(of id: String, in devices: [Device], empty: String, disconnected: String) -> String {
-        if id.isEmpty { return empty }
-        guard let device = devices.first(where: { $0.id == id }) else { return id }
-        return device.available ? device.name : "\(device.name) (\(disconnected))"
-    }
-}
-
 /// 계측 오버레이 (계획 11장): 렌더 fps, 프레임 시간, GPU 시간, 지연 프레임, 메모리, 발열, 입력 상태
 struct DiagnosticsOverlay: View {
     @ObservedObject var diagnostics: Diagnostics
@@ -138,7 +38,8 @@ struct DiagnosticsOverlay: View {
     }
 
     private func cameraSize(_ stats: core_stats) -> String {
-        stats.camera_width > 0 ? "\(stats.camera_width)x\(stats.camera_height)" : "프레임 없음"
+        stats.camera_width > 0
+            ? String(format: "%ux%u  %.1f fps", stats.camera_width, stats.camera_height, stats.camera_fps) : "프레임 없음"
     }
 
     private func channelMeter(_ channel: String, _ db: Float) -> some View {
@@ -202,13 +103,15 @@ final class Diagnostics: ObservableObject {
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u audio_peak=%.1f/%.1fdB rec=%d stream=%d stream_kbps=%.0f dropped=%d/%d enc_skipped=%u",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u camera_fps=%.1f audio_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
-                    thermalState, stats.camera_width, stats.camera_height, stats.audio_peak_left_db,
+                    thermalState, stats.camera_width, stats.camera_height, stats.camera_fps, stats.audio_peak_left_db,
                     stats.audio_peak_right_db,
-                    output.recording ? 1 : 0, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
-                    output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames))
+                    output.recording ? 1 : 0, Outputs.shared.recordFPS, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
+                    Outputs.shared.streamFPS,
+                    output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames,
+                    output.video_total_frames))
         }
     }
 

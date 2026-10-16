@@ -40,14 +40,37 @@ struct Device: Identifiable, Hashable {
 final class Core: ObservableObject {
     static let shared = Core()
 
-    /// 캔버스 설정 (계획: 1080p60 단일 캔버스).
+    /// 캔버스 (기본 1080p60, 설정 화면에서 바꿈).
     /// CI 시뮬레이터는 소프트웨어 인코더라 1080p60을 따라가지 못해 `-canvas 640x360@30`으로 줄여 띄운다.
-    let width: UInt32
-    let height: UInt32
-    let fps: UInt32
+    @Published private(set) var width: UInt32
+    @Published private(set) var height: UInt32
+    @Published private(set) var fps: UInt32
 
     private init() {
-        (width, height, fps) = Self.canvasFromArguments() ?? (1920, 1080, 60)
+        AppSettings.register()
+        let defaults = AppSettings.defaults
+        (width, height, fps) =
+            Self.canvasFromArguments()
+            ?? (
+                UInt32(defaults.integer(forKey: AppSettings.canvasWidth)),
+                UInt32(defaults.integer(forKey: AppSettings.canvasHeight)),
+                UInt32(defaults.integer(forKey: AppSettings.canvasFPS))
+            )
+    }
+
+    /// 캔버스를 바꾸고 저장한다. 녹화·송출 중이면 바꾸지 않는다.
+    func applyCanvas(width: UInt32, height: UInt32, fps: UInt32) -> Bool {
+        guard core_reset_canvas(width, height, fps) else { return false }
+        self.width = width
+        self.height = height
+        self.fps = fps
+
+        let defaults = AppSettings.defaults
+        defaults.set(Int(width), forKey: AppSettings.canvasWidth)
+        defaults.set(Int(height), forKey: AppSettings.canvasHeight)
+        defaults.set(Int(fps), forKey: AppSettings.canvasFPS)
+        appLog("canvas set to \(width)x\(height) @ \(fps)")
+        return true
     }
 
     private static func canvasFromArguments() -> (UInt32, UInt32, UInt32)? {
@@ -96,11 +119,13 @@ final class Core: ObservableObject {
 
         ready.notify(queue: .global(qos: .userInitiated)) {
             guard ok else { return }
-            core_start_capture()
+            core_start_capture(Self.collectionPath())
 
             DispatchQueue.main.async {
                 self.refreshDevices()
                 self.observeDeviceChanges()
+                SceneModel.shared.refresh()
+                SceneModel.shared.runAutotestIfRequested()
                 Outputs.shared.runAutotestIfRequested()
             }
         }
@@ -133,6 +158,13 @@ final class Core: ObservableObject {
                 self?.refreshDevices()
             }
         }
+    }
+
+    /// 씬 구성 파일. 파일 앱에 보이지 않게 Application Support에 둔다
+    private static func collectionPath() -> String {
+        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        return support.appendingPathComponent("scenes.json").path
     }
 
     private static func requestPermissions(_ done: @escaping () -> Void) {

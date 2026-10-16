@@ -123,7 +123,18 @@ typedef struct av_capture_info {
 #if TARGET_OS_IOS
 /// iOS port: starts following the device orientation for built-in cameras. Passing `nil` stops it.
 - (void)setUpRotationForDevice:(AVCaptureDevice *)device;
+
+/// iOS port: shared multi-camera session handling (see OBSSharedCaptureSession in OBSAVCapture.m)
+- (BOOL)joinSharedSession;
+- (AVCaptureDeviceInput *)connectSharedInput:(AVCaptureDeviceInput *)deviceInput;
+- (void)disconnectSharedInput:(AVCaptureDeviceInput *)input;
+- (void)leaveSharedSession;
+- (void)detachFromSharedSession;
 #endif
+
+/// Removes this source's device input from its session (iOS port: in the shared session, only this source's
+/// connection while another source still uses the same device)
+- (void)removeDeviceInput:(AVCaptureDeviceInput *)input;
 
 /// Configures the current [AVCaptureSession](https://developer.apple.com/documentation/avfoundation/avcapturesession?language=objc) to use the [AVCaptureSessionPreset](https://developer.apple.com/documentation/avfoundation/avcapturesessionpreset?language=objc) value selected in the source's property window.
 /// - Parameter error: Optional pointer to a valid [NSError](https://developer.apple.com/documentation/foundation/nserror?language=objc) instance to retain possible errors that occurred
@@ -373,6 +384,18 @@ typedef struct av_capture_info {
 #if TARGET_OS_IOS
 /// iOS port: tracks the device orientation so frames of built-in cameras stay level with the horizon
 @property AVCaptureDeviceRotationCoordinator *rotationCoordinator;
+
+/// iOS port: `YES` if this source uses the shared multi-camera session (see OBSSharedCaptureSession)
+@property BOOL usesSharedSession;
+
+/// iOS port: `YES` once this source's device could not join the shared session; it then keeps its own session
+@property BOOL sharedSessionRejected;
+
+/// iOS port: frames per second the device actually delivered, measured over each second
+@property (atomic) double deliveredFrameRate;
+@property uint64_t frameRateWindowStart;
+@property uint32_t frameRateWindowFrames;
+@property uint32_t frameRateLogCounter;
 #endif
 
 @end
