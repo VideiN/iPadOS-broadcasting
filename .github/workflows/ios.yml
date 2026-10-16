@@ -189,6 +189,10 @@ jobs:
         run: |
           app=$(ls -d "$BUILD_DIR"/app/*.app)
           name=$(basename "$app" .app)
+          # 번들 안에 dSYM이 있으면 LiveContainer가 설치할 때 서명에 실패한다 (app/CMakeLists.txt 참고)
+          if find "$app" -name '*.dSYM' | grep -q .; then
+            echo "dSYM inside the app bundle:"; find "$app" -name '*.dSYM'; exit 1
+          fi
           mkdir -p dist/ipa/Payload
           cp -R "$app" dist/ipa/Payload/
           (cd dist/ipa && zip -qry "../$name.ipa" Payload)

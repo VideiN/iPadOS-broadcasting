@@ -396,8 +396,13 @@ static OSStatus session_set_colorspace(VTCompressionSessionRef session, enum vid
 		values[4] = contentLightLevel;
 	}
 
-	CFDictionaryRef session_properties = CFDictionaryCreate(
-		kCFAllocatorDefault, keys, values, 5, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	/* iOS port: only pass the entries that are set. The HDR entries are NULL for
+	 * SDR, and NULL keys must not reach the CFType retain/hash callbacks
+	 * (suspected cause of an encoder crash on iPadOS 27). */
+	const CFIndex count = keys[3] ? 5 : 3;
+	CFDictionaryRef session_properties = CFDictionaryCreate(kCFAllocatorDefault, keys, values, count,
+								&kCFTypeDictionaryKeyCallBacks,
+								&kCFTypeDictionaryValueCallBacks);
 
 	code = VTSessionSetProperties(session, session_properties);
 
@@ -580,21 +585,26 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 			CFDictionaryCreate(kCFAllocatorDefault, session_keys, session_values, 4,
 					   &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
+		VT_BLOG(LOG_INFO, "iOS port: setting keyframe, frame rate and profile properties");
 		code = VTSessionSetProperties(s, session_properties);
 
+		/* iOS port: AllowFrameReordering (kCFBoolean*) and ProfileLevel
+		 * (kVTProfileLevel_*) are constants this function does not own, so
+		 * they are not released */
 		CFRelease(MaxKeyFrameInterval);
 		CFRelease(ExpectedFrameRate);
-		CFRelease(AllowFrameReordering);
-		CFRelease(ProfileLevel);
 		CFRelease(session_properties);
 
 		if (code != noErr) {
+			log_osstatus(LOG_ERROR, enc, "setting keyframe, frame rate and profile properties", code);
 			return code;
 		}
 
+		VT_BLOG(LOG_INFO, "iOS port: setting rate control");
 		code = session_set_bitrate(s, enc->rate_control, enc->bitrate, enc->quality, enc->limit_bitrate,
 					   enc->rc_max_bitrate, enc->rc_max_bitrate_window);
 		if (code != noErr) {
+			log_osstatus(LOG_ERROR, enc, "setting rate control", code);
 			return code;
 		}
 
@@ -616,6 +626,7 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 #endif
 	}
 
+	VT_BLOG(LOG_INFO, "iOS port: setting real-time, color space and preparing");
 	// This can fail depending on hardware configuration
 	code = session_set_prop(s, kVTCompressionPropertyKey_RealTime, kCFBooleanFalse);
 	if (code != noErr)
@@ -626,11 +637,13 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 
 	code = session_set_colorspace(s, enc->colorspace);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "setting the color space", code);
 		return code;
 	}
 
 	code = VTCompressionSessionPrepareToEncodeFrames(s);
 	if (code != noErr) {
+		log_osstatus(LOG_ERROR, enc, "VTCompressionSessionPrepareToEncodeFrames", code);
 		return code;
 	}
 

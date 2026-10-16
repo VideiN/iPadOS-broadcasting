@@ -26,6 +26,8 @@ add_library(
   Core/outputs.c
   Core/capture-format.m
   Core/capture-format.h
+  Core/crash-log.m
+  Core/crash-log.h
 )
 target_include_directories(app-core PUBLIC Core)
 target_link_libraries(
@@ -40,7 +42,7 @@ target_link_libraries(
     OBS::coreaudio-encoder
     OBS::outputs
 )
-set_source_files_properties(Core/capture-format.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
+set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
 configure_file(Info.plist.in "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -102,6 +104,12 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/data"
     "${bundle_dir}/obs-plugins/obs-outputs"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
+  # swiftc는 디버그 정보(dSYM)를 실행 파일 옆, 즉 번들 안에 만든다. 번들 안에 있으면 LiveContainer가 설치할 때
+  # 서명하려다 "Failed to Sign …/Broadcast.dSYM/…" 경고를 낸다. 서명 전에 번들 밖으로 옮긴다.
+  COMMAND
+    sh -c
+    "if [ -d \"$1/${APP_EXECUTABLE}.dSYM\" ]; then rm -rf \"$2\"; mv \"$1/${APP_EXECUTABLE}.dSYM\" \"$2\"; fi" sh
+    "$<TARGET_BUNDLE_DIR:app>" "${CMAKE_CURRENT_BINARY_DIR}/${APP_EXECUTABLE}.app.dSYM"
   COMMAND codesign --force --sign - --timestamp=none ${codesign_entitlements} "$<TARGET_BUNDLE_DIR:app>"
   VERBATIM
 )

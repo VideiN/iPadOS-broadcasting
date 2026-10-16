@@ -1,5 +1,6 @@
 #include "obs-core.h"
 #include "capture-format.h"
+#include "crash-log.h"
 
 #include <obs.h>
 #include <graphics/vec2.h>
@@ -101,6 +102,9 @@ void core_log_open(const char *path)
 	pthread_mutex_lock(&log_file.mutex);
 	log_file.file = fopen(path, "w");
 	pthread_mutex_unlock(&log_file.mutex);
+
+	// 크래시가 나면 스택을 같은 파일에 남긴다 (기기에서 원인을 찾을 수 있게)
+	crash_log_install(log_file.file ? fileno(log_file.file) : -1);
 
 	base_set_log_handler(log_handler, NULL);
 	blog(LOG_INFO, "[app] log file: %s", log_file.file ? path : "(failed to open)");
