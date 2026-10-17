@@ -43,6 +43,7 @@ target_link_libraries(
     OBS::mac-videotoolbox
     OBS::coreaudio-encoder
     OBS::outputs
+    OBS::filters
 )
 set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
@@ -58,6 +59,7 @@ add_executable(
   Sources/JSON.swift
   Sources/SceneModel.swift
   Sources/PropertiesView.swift
+  Sources/FiltersView.swift
   Sources/MainView.swift
   Sources/Settings.swift
 )
@@ -112,6 +114,9 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/data"
     "${bundle_dir}/obs-plugins/obs-outputs"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-filters/data"
+    "${bundle_dir}/obs-plugins/obs-filters"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
   # 라이선스 화면용 (계획 10.1): 이 앱·OBS Studio(GPLv2+), OBS가 함께 넣은 코드, 의존성(ios/deps/build-deps.sh가 모음)
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${bundle_dir}/licenses"
@@ -122,6 +127,9 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/obs-outputs/librtmp/COPYING"
     "${bundle_dir}/licenses/librtmp.txt"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/obs-filters/rnnoise/COPYING"
+    "${bundle_dir}/licenses/rnnoise.txt"
   COMMAND "${CMAKE_COMMAND}" -E copy_directory "${deps_prefix}/share/licenses" "${bundle_dir}/licenses"
   # swiftc는 디버그 정보(dSYM)를 실행 파일 옆, 즉 번들 안에 만든다. 번들 안에 있으면 LiveContainer가 설치할 때
   # 서명하려다 "Failed to Sign …/Broadcast.dSYM/…" 경고를 낸다. 서명 전에 번들 밖으로 옮긴다.

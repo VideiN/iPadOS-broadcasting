@@ -86,6 +86,15 @@ void core_source_set_muted(const char *source_name, bool muted);
 float core_source_volume(const char *source_name);
 bool core_source_muted(const char *source_name);
 
+// 오디오 필터. 필터의 속성은 "소스 이름" + 0x1F + "필터 이름"을 core_source_properties_json·core_source_update·
+// core_source_press_button에 넘겨 다룬다. 필터는 씬 구성 저장에 함께 들어간다 (obs_save_sources).
+char *core_filter_types_json(const char *source_name); // {"types": [{"id", "name"}]}, 소리 없는 소스면 비어 있음
+char *core_filters_json(const char *source_name);      // {"filters": [{"name", "id", "type_name", "enabled"}]}
+bool core_filter_add(const char *source_name, const char *type_id);
+void core_filter_remove(const char *source_name, const char *filter_name);
+void core_filter_set_enabled(const char *source_name, const char *filter_name, bool enabled);
+void core_filter_move(const char *source_name, const char *filter_name, int direction); // -1 위로, +1 아래로
+
 bool core_collection_save(const char *path, const char *audio_input_name);
 
 // 장치 목록을 "id\t이름\t연결(1/0)\n" 줄로 돌려준다. 연결 0은 고른 장치가 빠져 있는 경우다.
