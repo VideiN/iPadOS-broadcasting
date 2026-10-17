@@ -25,7 +25,11 @@
 #include "obs-ffmpeg-output.h"
 #include "obs-ffmpeg-formats.h"
 #include "obs-ffmpeg-compat.h"
+#ifdef OBS_IOS_NO_RIST
+#include "obs-ffmpeg-rist-ios.h" /* iOS port */
+#else
 #include "obs-ffmpeg-rist.h"
+#endif
 #include "obs-ffmpeg-srt.h"
 #include <libavutil/channel_layout.h>
 #include <libavutil/mastering_display_metadata.h>
@@ -462,7 +466,7 @@ static inline int open_output_file(struct ffmpeg_output *stream, struct ffmpeg_d
 	} else if (allowed_proto) {
 		ret = avio_open2(&data->output->pb, data->config.url, AVIO_FLAG_WRITE, NULL, &dict);
 	} else {
-		info("[ffmpeg mpegts muxer]: Invalid protocol: %s", data->config.url);
+		info("[ffmpeg mpegts muxer]: Invalid protocol: %s", LOG_URL(data->config.url));
 		return OBS_OUTPUT_BAD_PATH;
 	}
 
@@ -486,7 +490,7 @@ static inline int open_output_file(struct ffmpeg_output *stream, struct ffmpeg_d
 				break;
 			}
 		} else {
-			ffmpeg_mpegts_log_error(LOG_WARNING, data, "Couldn't open '%s', %s", data->config.url,
+			ffmpeg_mpegts_log_error(LOG_WARNING, data, "Couldn't open '%s', %s", LOG_URL(data->config.url),
 						av_err2str(ret));
 			av_dict_free(&dict);
 		}
@@ -512,7 +516,7 @@ static inline int open_output_file(struct ffmpeg_output *stream, struct ffmpeg_d
 	} else {
 		ret = allocate_custom_aviocontext(stream, rist);
 		if (ret < 0) {
-			info("Couldn't allocate custom avio_context for url: '%s', %s", data->config.url,
+			info("Couldn't allocate custom avio_context for url: '%s', %s", LOG_URL(data->config.url),
 			     av_err2str(ret));
 			return OBS_OUTPUT_ERROR;
 		}
@@ -571,7 +575,7 @@ static void close_mpegts_url(struct ffmpeg_output *stream, bool is_rist)
 	s = NULL;
 
 	if (err)
-		info("[ffmpeg mpegts muxer]: Error closing URL %s", stream->ff_data.config.url);
+		info("[ffmpeg mpegts muxer]: Error closing URL %s", LOG_URL(stream->ff_data.config.url));
 }
 
 void ffmpeg_mpegts_data_free(struct ffmpeg_output *stream, struct ffmpeg_data *data)
@@ -1298,7 +1302,7 @@ static bool write_header(struct ffmpeg_output *stream, struct ffmpeg_data *data)
 	/* Allocate the stream private data and write the stream header. */
 	ret = avformat_write_header(data->output, &dict);
 	if (ret < 0) {
-		ffmpeg_mpegts_log_error(LOG_WARNING, data, "Error setting stream header for '%s': %s", data->config.url,
+		ffmpeg_mpegts_log_error(LOG_WARNING, data, "Error setting stream header for '%s': %s", LOG_URL(data->config.url),
 					av_err2str(ret));
 		return false;
 	}

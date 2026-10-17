@@ -26,6 +26,7 @@ extern const struct obs_static_module obs_static_module_mac_videotoolbox;
 extern const struct obs_static_module obs_static_module_coreaudio_encoder;
 extern const struct obs_static_module obs_static_module_obs_outputs;
 extern const struct obs_static_module obs_static_module_obs_filters;
+extern const struct obs_static_module obs_static_module_obs_ffmpeg;
 
 // outputs.c
 extern void core_outputs_register(void);
@@ -147,6 +148,7 @@ static bool load_modules(const char *resource_path)
 	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
 	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);
 	load_module(resource_path, "obs-filters", &obs_static_module_obs_filters);
+	load_module(resource_path, "obs-ffmpeg", &obs_static_module_obs_ffmpeg);
 
 	// VideoToolbox 인코더는 post_load에서 등록된다
 	obs_post_load_modules();

@@ -7,6 +7,22 @@
 #include <libavutil/error.h>
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
+
+/* iOS port: URL for log lines without its query string (an SRT passphrase or stream id may be in it) */
+static inline const char *url_for_log(const char *url, char *buf, size_t size)
+{
+	if (!url)
+		return "";
+	const char *query = strchr(url, '?');
+	size_t len = query ? (size_t)(query - url) : strlen(url);
+	if (len >= size)
+		len = size - 1;
+	memcpy(buf, url, len);
+	buf[len] = 0;
+	return buf;
+}
+#define LOG_URL(url) url_for_log((url), (char[512]){0}, 512)
 
 #define HTTP_PROTO "http"
 #define RIST_PROTO "rist"

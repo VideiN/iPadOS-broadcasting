@@ -112,7 +112,7 @@ jobs:
           mkdir -p app-run
 
           # 라이선스 화면에 쓰는 파일이 번들에 들어갔는지 (계획 10.1)
-          for license in app obs-studio ffmpeg librtmp rnnoise mbedtls jansson libcaption simde uthash; do
+          for license in app obs-studio ffmpeg librtmp rnnoise srt mbedtls jansson libcaption simde uthash; do
             test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
           done
 
@@ -168,15 +168,26 @@ jobs:
           sleep 2
 
           # 씬 구성 저장·불러오기: 다시 띄우면 기본 씬과 "시험 장면", 2개를 불러와야 한다
+          # 이번에는 SRT 송출(P5)을 10초 돌린다. 받는 쪽은 로컬 ffmpeg의 SRT listener
+          ffmpeg -nostdin -hide_banner -i 'srt://127.0.0.1:9000?mode=listener&listen_timeout=120000000' \
+            -c copy -f mpegts app-run/received-srt.ts > app-run/ffmpeg-srt.log 2>&1 &
+          ffmpeg_srt_pid=$!
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
-            > app-run/app-relaunch.log 2>&1 &
+            -autotest-srt 10 srt://127.0.0.1:9000 > app-run/app-relaunch.log 2>&1 &
           for _ in $(seq 1 60); do
             grep -q 'capture started' app-run/app-relaunch.log && break
             sleep 2
           done
           xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-relaunch.png || true
+          for _ in $(seq 1 30); do
+            grep -q 'srt autotest: done' app-run/app-relaunch.log && break
+            sleep 2
+          done
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
+          (sleep 5; kill "$ffmpeg_srt_pid" 2> /dev/null) &
+          wait "$ffmpeg_srt_pid" || true
+          cat app-run/ffmpeg-srt.log
 
           # 송출이 끝나면 ffmpeg도 끝난다. 연결조차 안 됐으면 기다리지 않고 끝낸다
           (sleep 5; kill "$ffmpeg_pid" 2> /dev/null) &
@@ -224,8 +235,12 @@ jobs:
           # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
           grep -q '\[app\] replay saved: ' app-run/app.log
           check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
+          # SRT 송출 10초 (P5)
+          grep -q 'srt autotest: started true' app-run/app-relaunch.log
+          grep -q "srt autotest: done (stream error '')" app-run/app-relaunch.log
+          check_media app-run/received-srt.ts 'h264' 7
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
-          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4
+          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

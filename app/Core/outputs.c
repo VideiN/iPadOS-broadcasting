@@ -53,9 +53,16 @@ static void service_destroy(void *data)
 	bfree(service);
 }
 
+static bool is_srt_url(const char *url)
+{
+	return url && strncasecmp(url, "srt://", 6) == 0;
+}
+
 static const char *service_get_protocol(void *data)
 {
 	struct app_service *service = data;
+	if (is_srt_url(service->server))
+		return "SRT";
 	return service->server && strncasecmp(service->server, "rtmps://", 8) == 0 ? "RTMPS" : "RTMP";
 }
 
@@ -76,6 +83,9 @@ static const char *service_get_connect_info(void *data, uint32_t type)
 		return service_get_url(data);
 	case OBS_SERVICE_CONNECT_INFO_STREAM_KEY:
 		return service_get_key(data);
+	case OBS_SERVICE_CONNECT_INFO_STREAM_ID:
+		// SRT: 스트림 키를 streamid로 쓴다 (비어 있으면 URL의 streamid=…). 암호는 URL의 passphrase=…
+		return service_get_key(data);
 	default:
 		return NULL;
 	}
@@ -89,8 +99,8 @@ static bool service_can_try_to_connect(void *data)
 
 static const char *service_get_output_type(void *data)
 {
-	UNUSED_PARAMETER(data);
-	return "rtmp_output";
+	struct app_service *service = data;
+	return is_srt_url(service->server) ? "ffmpeg_mpegts_muxer" : "rtmp_output";
 }
 
 static struct obs_service_info app_service_info = {
@@ -388,8 +398,15 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 
 	out.stream_video = prepare_video_encoder(out.stream_video, codec, "Stream Video", "CBR", video_kbps);
 	out.stream_audio = prepare_audio_encoder(out.stream_audio, "Stream Audio", audio_kbps);
+
+	// RTMP/RTMPS는 rtmp_output, SRT는 obs-ffmpeg의 mpegts 출력 (P5). 프로토콜이 바뀌면 출력을 다시 만든다
+	const char *output_id = is_srt_url(server) ? "ffmpeg_mpegts_muxer" : "rtmp_output";
+	if (out.streaming && strcmp(obs_output_get_id(out.streaming), output_id) != 0) {
+		obs_output_release(out.streaming);
+		out.streaming = NULL;
+	}
 	if (!out.streaming) {
-		out.streaming = create_output("rtmp_output", "Streaming", true);
+		out.streaming = create_output(output_id, "Streaming", true);
 		if (out.streaming)
 			obs_output_set_reconnect_settings(out.streaming, 20, 5);
 	}
@@ -409,9 +426,11 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 		return false;
 	}
 
-	// 서버 주소는 남기되 스트림 키는 로그에 남기지 않는다
+	// 서버 주소는 남기되 스트림 키와 URL의 옵션(SRT passphrase 등)은 로그에 남기지 않는다
 	video_t *video = obs_encoder_video(out.stream_video);
-	blog(LOG_INFO, "[app] streaming to %s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)", server, codec, video_kbps,
+	const char *query = strchr(server, '?');
+	blog(LOG_INFO, "[app] streaming to %.*s%s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)",
+	     query ? (int)(query - server) : (int)strlen(server), server, query ? "?…" : "", codec, video_kbps,
 	     video ? video_output_get_frame_rate(video) : 0.0, obs_encoder_get_width(out.stream_video),
 	     obs_encoder_get_height(out.stream_video), audio_kbps);
 	return true;

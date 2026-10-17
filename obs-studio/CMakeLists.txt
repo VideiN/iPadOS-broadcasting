@@ -32,6 +32,7 @@ if(OS_IOS)
   add_subdirectory(plugins/coreaudio-encoder)
   add_subdirectory(plugins/obs-outputs)
   add_subdirectory(plugins/obs-filters)
+  add_subdirectory(plugins/obs-ffmpeg)
 
   option(ENABLE_APP "Build the iPadOS app in ../app" ON)
   if(ENABLE_APP)

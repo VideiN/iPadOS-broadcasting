@@ -194,7 +194,7 @@ struct SettingsView: View {
 
     private var streamSection: some View {
         Section {
-            TextField("rtmp://… 또는 rtmps://…", text: $server)
+            TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -212,7 +212,7 @@ struct SettingsView: View {
             Text("송출")
         } footer: {
             Text(
-                "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
+                "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
             )
         }
         .disabled(outputs.stats.streaming)
@@ -370,6 +370,7 @@ struct LicensesView: View {
         Entry(file: "librtmp", title: "librtmp (obs-outputs)", license: "LGPL-2.1"),
         Entry(file: "rnnoise", title: "RNNoise (obs-filters 노이즈 억제)", license: "BSD-3-Clause"),
         Entry(file: "mbedtls", title: "Mbed TLS", license: "Apache-2.0 또는 GPL-2.0-or-later"),
+        Entry(file: "srt", title: "SRT (libsrt)", license: "MPL-2.0"),
         Entry(file: "jansson", title: "Jansson", license: "MIT"),
         Entry(file: "libcaption", title: "libcaption", license: "MIT"),
         Entry(file: "simde", title: "SIMDe", license: "MIT"),

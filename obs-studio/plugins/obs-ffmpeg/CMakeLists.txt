@@ -1,5 +1,42 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
+if(OS_IOS)
+  # iOS port: only the native mpegts output for SRT, linked statically into the app. FFmpeg is built with the mpegts
+  # muxer only (no codecs); librist is not built, RIST URLs fail with a message (obs-ffmpeg-rist-ios.h).
+  find_package(FFmpeg 6.1 REQUIRED avformat avcodec avutil)
+  find_package(Libsrt REQUIRED)
+  set(CMAKE_FIND_PACKAGE_PREFER_CONFIG TRUE)
+  find_package(MbedTLS REQUIRED)
+  set(CMAKE_FIND_PACKAGE_PREFER_CONFIG FALSE)
+
+  add_library(obs-ffmpeg STATIC)
+  add_library(OBS::ffmpeg ALIAS obs-ffmpeg)
+
+  target_sources(
+    obs-ffmpeg
+    PRIVATE
+      obs-ffmpeg-compat.h
+      obs-ffmpeg-formats.h
+      obs-ffmpeg-ios.c
+      obs-ffmpeg-mpegts.c
+      obs-ffmpeg-output.h
+      obs-ffmpeg-rist-ios.h
+      obs-ffmpeg-srt.h
+      obs-ffmpeg-url.h
+  )
+  target_compile_options(obs-ffmpeg PRIVATE -Wno-shorten-64-to-32)
+  target_compile_definitions(obs-ffmpeg PRIVATE NEW_MPEGTS_OUTPUT OBS_IOS_NO_RIST $<$<BOOL:${ENABLE_HEVC}>:ENABLE_HEVC>)
+  # libsrt is C++ and uses mbedtls for encryption
+  target_link_libraries(
+    obs-ffmpeg
+    PRIVATE OBS::libobs FFmpeg::avformat FFmpeg::avcodec FFmpeg::avutil Libsrt::Libsrt MbedTLS::mbedtls c++
+  )
+
+  obs_ios_static_module(obs-ffmpeg)
+  set_target_properties_obs(obs-ffmpeg PROPERTIES FOLDER plugins/obs-ffmpeg PREFIX "")
+  return()
+endif()
+
 option(ENABLE_FFMPEG_LOGGING "Enables obs-ffmpeg logging" OFF)
 option(ENABLE_NEW_MPEGTS_OUTPUT "Use native SRT/RIST mpegts output" ON)
 

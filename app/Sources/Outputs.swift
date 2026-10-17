@@ -223,6 +223,35 @@ final class Outputs: ObservableObject {
         }
     }
 
+    /// CI용: `-autotest-srt <초> <SRT URL>`로 띄우면 SRT 송출만 돌리고 멈춘다 (P5, obs-ffmpeg mpegts 출력)
+    func runSRTAutotestIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-autotest-srt"), index + 2 < args.count,
+            let seconds = Double(args[index + 1])
+        else { return }
+        let server = args[index + 2]
+
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        queue.asyncAfter(deadline: .now() + 3) {
+            let started = core_streaming_start(server, "autotest", "h264", 3000, 160)
+            appLog("srt autotest: started \(started)")
+
+            queue.asyncAfter(deadline: .now() + seconds) {
+                var stats = core_output_stats()
+                core_get_output_stats(&stats)
+                appLog(
+                    String(
+                        format: "srt autotest: streamed %.1f s %llu bytes, dropped %d/%d", stats.streaming_seconds,
+                        stats.stream_bytes, stats.stream_dropped_frames, stats.stream_total_frames))
+                core_streaming_stop(false)
+
+                queue.asyncAfter(deadline: .now() + 5) {
+                    appLog("srt autotest: done (stream error '\(Self.lastError(stream: true))')")
+                }
+            }
+        }
+    }
+
     // MARK: 녹화 폴더
 
     /// 설정에서 고른 폴더(외장 저장장치 등)는 보안 범위 접근을 녹화가 끝날 때까지 유지한다
