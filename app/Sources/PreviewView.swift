@@ -9,6 +9,11 @@ struct PreviewView: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: MetalPreviewView, context: Context) {}
+
+    /// 뷰가 빠질 때 디스플레이를 없앤다. libobs-metal이 뷰를 붙잡고 있어 deinit만으로는 없어지지 않는다.
+    static func dismantleUIView(_ uiView: MetalPreviewView, coordinator: ()) {
+        uiView.destroyDisplay()
+    }
 }
 
 /// CAMetalLayer를 기본 레이어로 쓰는 뷰. libobs-metal이 이 레이어에 프리뷰를 내보낸다.
@@ -38,6 +43,13 @@ final class MetalPreviewView: UIView {
             display = core_display_create(Unmanaged.passUnretained(self).toOpaque(), width, height)
             appLog("display created \(width)x\(height): \(display != nil)")
         }
+    }
+
+    func destroyDisplay() {
+        guard let display else { return }
+        self.display = nil
+        core_display_destroy(display)
+        appLog("display destroyed")
     }
 
     deinit {
