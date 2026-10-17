@@ -1,6 +1,13 @@
 cmake_minimum_required(VERSION 3.28...3.30)
 
-add_library(obs-filters MODULE)
+if(OS_IOS)
+  # iOS port: linked statically into the app. SpeexDSP is not built for iOS; noise suppression uses the bundled
+  # RNNoise.
+  add_library(obs-filters STATIC)
+  set(ENABLE_SPEEXDSP OFF)
+else()
+  add_library(obs-filters MODULE)
+endif()
 add_library(OBS::filters ALIAS obs-filters)
 
 target_sources(
@@ -34,6 +41,10 @@ target_link_libraries(obs-filters PRIVATE OBS::libobs $<$<PLATFORM_ID:Windows>:O
 
 include(cmake/speexdsp.cmake)
 include(cmake/rnnoise.cmake)
+
+if(OS_IOS)
+  obs_ios_static_module(obs-filters)
+endif()
 
 if(OS_WINDOWS)
   configure_file(cmake/windows/obs-module.rc.in obs-filters.rc)

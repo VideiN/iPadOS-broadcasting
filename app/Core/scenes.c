@@ -19,6 +19,7 @@
 
 #define CAMERA_SOURCE_ID "macos-avcapture"
 #define AUDIO_INPUT_SOURCE_ID "ios_audio_input"
+#define FILTER_SEPARATOR 0x1F // 필터 이름: "소스" + 0x1F + "필터" (Swift에서는 "\u{1F}")
 
 // 씬 목록(표시 순서). 목록이 각 씬의 참조를 가진다.
 static struct {
@@ -44,6 +45,24 @@ static char *json_from(obs_data_t *data)
 	char *json = bstrdup(obs_data_get_json(data));
 	obs_data_release(data);
 	return json;
+}
+
+// 소스 이름으로 찾는다. "소스\x1F필터"면 그 소스의 필터를 찾는다 (속성 편집기가 필터에도 쓰인다). 참조를 돌려준다.
+static obs_source_t *find_source(const char *name)
+{
+	const char *separator = name ? strchr(name, FILTER_SEPARATOR) : NULL;
+	if (!separator)
+		return obs_get_source_by_name(name);
+
+	char *parent_name = bstrdup_n(name, separator - name);
+	obs_source_t *parent = obs_get_source_by_name(parent_name);
+	bfree(parent_name);
+	if (!parent)
+		return NULL;
+
+	obs_source_t *filter = obs_source_get_filter_by_name(parent, separator + 1);
+	obs_source_release(parent);
+	return filter;
 }
 
 // base, "base 2", "base 3", … 중 아직 없는 이름
@@ -709,7 +728,7 @@ static void add_properties(obs_data_array_t *array, obs_properties_t *props, con
 
 char *core_source_properties_json(const char *source_name)
 {
-	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *source = find_source(source_name);
 	if (!source)
 		return NULL;
 
@@ -739,7 +758,7 @@ char *core_source_properties_json(const char *source_name)
 // 바뀐 설정만 담은 JSON을 소스 설정에 덮어쓴다. 카메라 장치가 바뀌면 캔버스에 맞는 형식도 다시 고른다.
 void core_source_update(const char *source_name, const char *changes_json)
 {
-	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *source = find_source(source_name);
 	if (!source)
 		return;
 
@@ -778,7 +797,7 @@ void core_source_update(const char *source_name, const char *changes_json)
 
 void core_source_press_button(const char *source_name, const char *property_name)
 {
-	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *source = find_source(source_name);
 	if (!source)
 		return;
 
@@ -844,6 +863,124 @@ bool core_source_muted(const char *source_name)
 	bool muted = source ? obs_source_muted(source) : false;
 	obs_source_release(source);
 	return muted;
+}
+
+#pragma mark - 필터
+
+// 소스에 넣을 수 있는 오디오 필터 종류 (소스에 소리가 없으면 비어 있다)
+char *core_filter_types_json(const char *source_name)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	const bool has_audio = source && (obs_source_get_output_flags(source) & OBS_SOURCE_AUDIO) != 0;
+	obs_source_release(source);
+
+	obs_data_array_t *types = obs_data_array_create();
+	const char *id;
+	for (size_t i = 0; has_audio && obs_enum_filter_types(i, &id); i++) {
+		const uint32_t flags = obs_get_source_output_flags(id);
+		if (!(flags & OBS_SOURCE_AUDIO) || (flags & OBS_SOURCE_VIDEO) ||
+		    (flags & (OBS_SOURCE_DEPRECATED | OBS_SOURCE_CAP_DISABLED)))
+			continue;
+
+		obs_data_t *type = obs_data_create();
+		obs_data_set_string(type, "id", id);
+		obs_data_set_string(type, "name", obs_source_get_display_name(id));
+		obs_data_array_push_back(types, type);
+		obs_data_release(type);
+	}
+
+	obs_data_t *root = obs_data_create();
+	obs_data_set_array(root, "types", types);
+	obs_data_array_release(types);
+	return json_from(root);
+}
+
+static void add_filter_entry(obs_source_t *parent, obs_source_t *filter, void *param)
+{
+	UNUSED_PARAMETER(parent);
+	obs_data_t *entry = obs_data_create();
+	obs_data_set_string(entry, "name", obs_source_get_name(filter));
+	obs_data_set_string(entry, "id", obs_source_get_id(filter));
+	obs_data_set_string(entry, "type_name", obs_source_get_display_name(obs_source_get_id(filter)));
+	obs_data_set_bool(entry, "enabled", obs_source_enabled(filter));
+	obs_data_array_push_back(param, entry);
+	obs_data_release(entry);
+}
+
+// 소스의 필터 목록, 적용 순서대로: {"filters": [{"name", "id", "type_name", "enabled"}]}
+char *core_filters_json(const char *source_name)
+{
+	obs_data_array_t *filters = obs_data_array_create();
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	if (source)
+		obs_source_enum_filters(source, add_filter_entry, filters);
+	obs_source_release(source);
+
+	obs_data_t *root = obs_data_create();
+	obs_data_set_array(root, "filters", filters);
+	obs_data_array_release(filters);
+	return json_from(root);
+}
+
+// 필터를 맨 뒤에 넣는다. 이름은 종류 이름에서 겹치지 않게 만든다.
+bool core_filter_add(const char *source_name, const char *type_id)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	if (!source)
+		return false;
+
+	const char *base = obs_source_get_display_name(type_id);
+	struct dstr name = {0};
+	dstr_copy(&name, base ? base : type_id);
+	for (int i = 2;; i++) {
+		obs_source_t *existing = obs_source_get_filter_by_name(source, name.array);
+		if (!existing)
+			break;
+		obs_source_release(existing);
+		dstr_printf(&name, "%s %d", base ? base : type_id, i);
+	}
+
+	obs_source_t *filter = obs_source_create(type_id, name.array, NULL, NULL);
+	if (filter) {
+		obs_source_filter_add(source, filter);
+		blog(LOG_INFO, "[app] filter '%s' (%s) added to '%s'", name.array, type_id, source_name);
+	}
+
+	obs_source_release(filter);
+	dstr_free(&name);
+	obs_source_release(source);
+	return filter != NULL;
+}
+
+void core_filter_remove(const char *source_name, const char *filter_name)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *filter = source ? obs_source_get_filter_by_name(source, filter_name) : NULL;
+	if (filter)
+		obs_source_filter_remove(source, filter);
+	obs_source_release(filter);
+	obs_source_release(source);
+}
+
+void core_filter_set_enabled(const char *source_name, const char *filter_name, bool enabled)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *filter = source ? obs_source_get_filter_by_name(source, filter_name) : NULL;
+	if (filter)
+		obs_source_set_enabled(filter, enabled);
+	obs_source_release(filter);
+	obs_source_release(source);
+}
+
+// direction: -1이면 목록에서 위로(먼저 적용), +1이면 아래로
+void core_filter_move(const char *source_name, const char *filter_name, int direction)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	obs_source_t *filter = source ? obs_source_get_filter_by_name(source, filter_name) : NULL;
+	if (filter)
+		obs_source_filter_set_order(source, filter, direction < 0 ? OBS_ORDER_MOVE_UP : OBS_ORDER_MOVE_DOWN);
+	obs_source_release(filter);
+	obs_source_release(source);
 }
 
 #pragma mark - 첫 카메라

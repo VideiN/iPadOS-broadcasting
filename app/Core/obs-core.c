@@ -23,6 +23,7 @@ extern const struct obs_static_module obs_static_module_ios_audio_input;
 extern const struct obs_static_module obs_static_module_mac_videotoolbox;
 extern const struct obs_static_module obs_static_module_coreaudio_encoder;
 extern const struct obs_static_module obs_static_module_obs_outputs;
+extern const struct obs_static_module obs_static_module_obs_filters;
 
 // outputs.c
 extern void core_outputs_register(void);
@@ -141,6 +142,7 @@ static bool load_modules(const char *resource_path)
 	load_module(resource_path, "mac-videotoolbox", &obs_static_module_mac_videotoolbox);
 	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
 	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);
+	load_module(resource_path, "obs-filters", &obs_static_module_obs_filters);
 
 	// VideoToolbox 인코더는 post_load에서 등록된다
 	obs_post_load_modules();
@@ -267,6 +269,8 @@ void core_start_capture(const char *collection_path)
 		core.audio_input = obs_source_create("ios_audio_input", "오디오 입력", NULL, NULL);
 	if (core.audio_input) {
 		obs_set_output_source(1, core.audio_input);
+		blog(LOG_INFO, "[app] audio input '%s' has %zu filter(s)", obs_source_get_name(core.audio_input),
+		     obs_source_filter_count(core.audio_input));
 
 		core.volmeter = obs_volmeter_create(OBS_FADER_LOG);
 		obs_volmeter_add_callback(core.volmeter, volmeter_updated, NULL);

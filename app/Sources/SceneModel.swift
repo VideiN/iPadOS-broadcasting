@@ -302,6 +302,43 @@ final class SceneModel: ObservableObject {
         let restored = core.applyCanvas(width: width, height: height, fps: fps)
         saveNow()
 
+        // 오디오 필터: 오디오 입력에 노이즈 억제(RNNoise)와 게인을 넣고, 설정·순서·켜기를 바꾼 뒤 게인만 지운다.
+        // 남은 노이즈 억제는 저장돼서 다시 띄우면 불러와야 한다 (CI가 "has 1 filter(s)"를 본다).
+        let audioInput = String(cString: core_audio_input_name())
+        let filterTypes = decodeCoreJSON(core_filter_types_json(audioInput), as: FilterTypes.self)?.types.map(\.id) ?? []
+        var filterResult = "no noise suppression in \(filterTypes)"
+        if filterTypes.contains("noise_suppress_filter_v2"), filterTypes.contains("gain_filter"),
+            core_filter_add(audioInput, "noise_suppress_filter_v2"), core_filter_add(audioInput, "gain_filter")
+        {
+            let added = decodeCoreJSON(core_filters_json(audioInput), as: SourceFilters.self)?.filters ?? []
+            if let suppress = added.first(where: { $0.id == "noise_suppress_filter_v2" }),
+                let gain = added.first(where: { $0.id == "gain_filter" })
+            {
+                let path = FiltersView.path(source: audioInput, filter: suppress.name)
+                core_source_update(path, encodeJSON(["method": .string("rnnoise"), "suppress_level": .number(-40)]))
+                let settings = decodeCoreJSON(core_source_properties_json(path), as: SourceProperties.self)?.settings
+                core_filter_move(audioInput, suppress.name, 1)
+                let moved = (decodeCoreJSON(core_filters_json(audioInput), as: SourceFilters.self)?.filters ?? []).map(\.id)
+                core_filter_set_enabled(audioInput, suppress.name, false)
+                let disabled = decodeCoreJSON(core_filters_json(audioInput), as: SourceFilters.self)?.filters
+                    .first { $0.id == "noise_suppress_filter_v2" }?.enabled == false
+                core_filter_set_enabled(audioInput, suppress.name, true)
+                core_filter_remove(audioInput, gain.name)
+                let remaining = (decodeCoreJSON(core_filters_json(audioInput), as: SourceFilters.self)?.filters ?? []).map(\.id)
+
+                let ok =
+                    settings?["method"]?.string == "rnnoise" && settings?["suppress_level"]?.number == -40
+                    && added.map(\.id) == ["noise_suppress_filter_v2", "gain_filter"]
+                    && moved == ["gain_filter", "noise_suppress_filter_v2"] && disabled
+                    && remaining == ["noise_suppress_filter_v2"]
+                filterResult =
+                    ok ? "ok"
+                    : "added \(added.map(\.id)), method \(settings?["method"]?.string ?? "nil"), moved \(moved), disabled \(disabled), remaining \(remaining)"
+            }
+        }
+        appLog("filters autotest: \(filterResult)")
+        saveNow()
+
         // 미리보기 끄기·켜기: 디스플레이가 없어졌다가 다시 생겨야 하고, 그동안에도 출력용 캔버스는 돈다
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             UserDefaults.standard.set(false, forKey: AppSettings.previewEnabled)

@@ -112,7 +112,7 @@ jobs:
           mkdir -p app-run
 
           # 라이선스 화면에 쓰는 파일이 번들에 들어갔는지 (계획 10.1)
-          for license in app obs-studio ffmpeg librtmp mbedtls jansson libcaption simde uthash; do
+          for license in app obs-studio ffmpeg librtmp rnnoise mbedtls jansson libcaption simde uthash; do
             test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
           done
 
@@ -186,8 +186,11 @@ jobs:
           awk '/preview autotest: off/ { s = 1 } s == 1 && /display destroyed/ { s = 2 }
                s == 2 && /\[stats\] fps=[1-9]/ { s = 3 } s == 3 && /preview autotest: on/ { s = 4 }
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
+          # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
+          grep -q 'filters autotest: ok' app-run/app.log
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
+          grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
 
           # 녹화 파일(Hybrid MP4)과 받은 송출(FLV)을 ffprobe로 확인: 비디오·오디오 코덱과 길이 10초 이상
           check_media() {

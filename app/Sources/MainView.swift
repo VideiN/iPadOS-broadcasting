@@ -257,6 +257,7 @@ struct Sidebar: View {
 
     @State private var addingSource = false
     @State private var sourceToEdit: EditedSource?
+    @State private var filtersToEdit: EditedSource?
     @State private var pendingEdit: String?
     @State private var renaming: Renaming?
     @State private var renameText = ""
@@ -298,6 +299,7 @@ struct Sidebar: View {
                     SourceRow(
                         item: item, selected: item.id == model.selection, model: model,
                         editProperties: { sourceToEdit = EditedSource(name: item.name) },
+                        editFilters: { filtersToEdit = EditedSource(name: item.name) },
                         rename: { startRenaming(.source(item), current: item.name) })
                 }
                 Button {
@@ -308,7 +310,9 @@ struct Sidebar: View {
             }
 
             Section("오디오") {
-                AudioInputRow(core: core)
+                AudioInputRow(core: core) {
+                    filtersToEdit = EditedSource(name: String(cString: core_audio_input_name()))
+                }
             }
         }
         .listStyle(.insetGrouped)
@@ -332,6 +336,18 @@ struct Sidebar: View {
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button("완료") { sourceToEdit = nil }
+                        }
+                    }
+            }
+        }
+        .sheet(item: $filtersToEdit) { source in
+            NavigationStack {
+                FiltersView(sourceName: source.name) { model.setNeedsSave() }
+                    .navigationTitle("\(source.name) 필터")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("완료") { filtersToEdit = nil }
                         }
                     }
             }
@@ -369,6 +385,7 @@ struct SourceRow: View {
     let selected: Bool
     let model: SceneModel
     let editProperties: () -> Void
+    let editFilters: () -> Void
     let rename: () -> Void
 
     var body: some View {
@@ -393,6 +410,9 @@ struct SourceRow: View {
 
             Menu {
                 Button("속성…", systemImage: "slider.horizontal.3", action: editProperties)
+                if item.audio {
+                    Button("오디오 필터…", systemImage: "waveform", action: editFilters)
+                }
                 Button("이름 바꾸기…", systemImage: "pencil", action: rename)
                 Divider()
                 if item.video {
@@ -451,6 +471,7 @@ struct AddSourceSheet: View {
 /// 전역 오디오 입력: 장치, 음소거, 볼륨
 struct AudioInputRow: View {
     @ObservedObject var core: Core
+    var editFilters: () -> Void = {}
 
     @State private var volumeDB: Double = 0
     @State private var muted = false
@@ -478,6 +499,12 @@ struct AudioInputRow: View {
                 }
 
                 Spacer(minLength: 0)
+
+                Button(action: editFilters) {
+                    Image(systemName: "waveform")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("오디오 필터")
 
                 Button {
                     muted.toggle()

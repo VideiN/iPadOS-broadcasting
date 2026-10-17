@@ -349,6 +349,7 @@ struct LicensesView: View {
         Entry(file: "obs-studio", title: "OBS Studio (libobs, 플러그인)", license: "GPL-2.0-or-later"),
         Entry(file: "ffmpeg", title: "FFmpeg", license: "LGPL-2.1-or-later"),
         Entry(file: "librtmp", title: "librtmp (obs-outputs)", license: "LGPL-2.1"),
+        Entry(file: "rnnoise", title: "RNNoise (obs-filters 노이즈 억제)", license: "BSD-3-Clause"),
         Entry(file: "mbedtls", title: "Mbed TLS", license: "Apache-2.0 또는 GPL-2.0-or-later"),
         Entry(file: "jansson", title: "Jansson", license: "MIT"),
         Entry(file: "libcaption", title: "libcaption", license: "MIT"),
