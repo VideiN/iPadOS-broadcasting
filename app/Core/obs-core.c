@@ -190,7 +190,8 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 
 	gs_register_static_module("libobs-metal", libobs_metal_get_export);
 
-	if (!obs_startup("en-US", NULL, NULL)) {
+	// 플러그인 문자열(필터·속성 이름)은 한국어로. 번역이 없는 모듈은 en-US로 떨어진다.
+	if (!obs_startup("ko-KR", NULL, NULL)) {
 		blog(LOG_ERROR, "[app] obs_startup failed");
 		return false;
 	}
