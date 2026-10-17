@@ -182,6 +182,10 @@ jobs:
           # 씬·소스 (P4)
           grep -q 'created the default scene' app-run/app.log
           grep -q 'scenes autotest: ok' app-run/app.log
+          # 미리보기 끄기·켜기: 디스플레이를 없앴다가 다시 만들고, 꺼진 동안에도 캔버스는 돈다
+          awk '/preview autotest: off/ { s = 1 } s == 1 && /display destroyed/ { s = 2 }
+               s == 2 && /\[stats\] fps=[1-9]/ { s = 3 } s == 3 && /preview autotest: on/ { s = 4 }
+               s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
 

@@ -59,6 +59,7 @@ struct ContentView: View {
 struct TopBar: View {
     @ObservedObject var outputs: Outputs
     @Binding var showDiagnostics: Bool
+    @AppStorage(AppSettings.previewEnabled) private var previewEnabled = true
 
     var body: some View {
         HStack(spacing: 10) {
@@ -77,6 +78,14 @@ struct TopBar: View {
             Spacer(minLength: 0)
 
             OutputControls(outputs: outputs)
+
+            Button {
+                previewEnabled.toggle()
+            } label: {
+                Image(systemName: previewEnabled ? "eye" : "eye.slash")
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(previewEnabled ? "미리보기 끄기" : "미리보기 켜기")
 
             Button {
                 showDiagnostics.toggle()
@@ -120,12 +129,23 @@ struct PreviewArea: View {
     @State private var dragging = false
     @State private var lastTranslation: CGSize = .zero
     @State private var lastMagnification: CGFloat = 1
+    @AppStorage(AppSettings.previewEnabled) private var previewEnabled = true
 
     var body: some View {
         ZStack {
             Color.black
 
-            if core.isRunning {
+            if core.isRunning && !previewEnabled {
+                // 프리뷰 디스플레이를 없애 GPU가 프리뷰를 그리고 화면에 내보내는 일을 멈춘다
+                VStack(spacing: 12) {
+                    Image(systemName: "eye.slash").font(.system(size: 36))
+                    Text("미리보기 꺼짐").font(.headline)
+                    Text("송출과 녹화는 그대로 계속됩니다.").font(.footnote).foregroundStyle(.secondary)
+                    Button("미리보기 켜기") { previewEnabled = true }
+                        .buttonStyle(.bordered)
+                }
+                .foregroundStyle(.white)
+            } else if core.isRunning {
                 PreviewView()
                     .aspectRatio(CGFloat(core.width) / CGFloat(core.height), contentMode: .fit)
                     .overlay {

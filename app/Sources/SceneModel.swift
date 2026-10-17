@@ -302,6 +302,16 @@ final class SceneModel: ObservableObject {
         let restored = core.applyCanvas(width: width, height: height, fps: fps)
         saveNow()
 
+        // 미리보기 끄기·켜기: 디스플레이가 없어졌다가 다시 생겨야 하고, 그동안에도 출력용 캔버스는 돈다
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+            UserDefaults.standard.set(false, forKey: AppSettings.previewEnabled)
+            appLog("preview autotest: off")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 7) {
+                UserDefaults.standard.set(true, forKey: AppSettings.previewEnabled)
+                appLog("preview autotest: on")
+            }
+        }
+
         let status =
             !(changed && restored) ? "canvas change failed"
             : !cameraFrameRate.hasPrefix("ok") ? "camera frame rate property \(cameraFrameRate)"

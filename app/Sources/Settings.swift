@@ -15,6 +15,7 @@ enum AppSettings {
     static let canvasWidth = "canvasWidth"
     static let canvasHeight = "canvasHeight"
     static let canvasFPS = "canvasFPS"
+    static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
