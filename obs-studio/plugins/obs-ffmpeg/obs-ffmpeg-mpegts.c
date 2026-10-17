@@ -270,6 +270,11 @@ static inline bool init_streams(struct ffmpeg_output *stream, struct ffmpeg_data
 	return true;
 }
 
+/* iOS port: FFmpeg is linked statically there and libavformat already has ff_network_init (same behaviour off
+ * Windows) */
+#ifdef OBS_IOS_NO_RIST
+int ff_network_init(void);
+#else
 int ff_network_init(void)
 {
 #if HAVE_WINSOCK2_H
@@ -280,6 +285,7 @@ int ff_network_init(void)
 #endif
 	return 1;
 }
+#endif
 
 static inline int connect_mpegts_url(struct ffmpeg_output *stream, bool is_rist)
 {
