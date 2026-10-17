@@ -149,6 +149,10 @@ jobs:
           if [ -n "$data_dir" ]; then
             cp "$data_dir/Documents/broadcast.log" app-run/ || true
             cp "$data_dir/Documents/Recordings/autotest.mp4" app-run/ || true
+            # 리플레이 버퍼가 저장한 파일 (P5)
+            for replay in "$data_dir"/Documents/Recordings/Replay*.mp4; do
+              if [ -f "$replay" ]; then cp "$replay" app-run/replay.mp4; fi
+            done
           fi
 
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
@@ -192,19 +196,23 @@ jobs:
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
 
-          # 녹화 파일(Hybrid MP4)과 받은 송출(FLV)을 ffprobe로 확인: 비디오·오디오 코덱과 길이 10초 이상
+          # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {
-            local file=$1 video=$2
+            local file=$1 video=$2 min=${3:-10} max=${4:-100000}
             ffprobe -v error -show_entries stream=codec_type,codec_name,width,height:format=duration \
               -of default=noprint_wrappers=1 "$file" | tee "$file.txt"
             grep -Eq "codec_name=($video)" "$file.txt"
             grep -q 'codec_name=aac' "$file.txt"
-            awk -F= '/^duration=/ { found = 1; if ($2 + 0 < 10) exit 1 } END { if (!found) exit 1 }' "$file.txt"
+            awk -F= -v min="$min" -v max="$max" \
+              '/^duration=/ { found = 1; if ($2 + 0 < min || $2 + 0 > max) exit 1 } END { if (!found) exit 1 }' "$file.txt"
           }
           check_media app-run/autotest.mp4 'hevc|h264'
           check_media app-run/received.flv 'h264'
+          # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
+          grep -q '\[app\] replay saved: ' app-run/app.log
+          check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
-          rm -f app-run/autotest.mp4 app-run/received.flv
+          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

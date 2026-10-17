@@ -116,6 +116,7 @@ static struct {
 	obs_encoder_t *stream_audio;
 	obs_output_t *recording;
 	obs_output_t *streaming;
+	obs_output_t *replay;
 	obs_service_t *service;
 
 	pthread_mutex_t mutex; // 아래 마지막 결과
@@ -123,6 +124,8 @@ static struct {
 	int stream_stop_code;
 	char record_error[512];
 	char stream_error[512];
+	int replay_saved_count;
+	char replay_last_path[1024];
 } out = {.mutex = PTHREAD_MUTEX_INITIALIZER};
 
 void core_outputs_register(void)
@@ -298,7 +301,7 @@ static obs_encoder_t *prepare_audio_encoder(obs_encoder_t *encoder, const char *
 bool core_outputs_active(void)
 {
 	return (out.recording && obs_output_active(out.recording)) ||
-	       (out.streaming && obs_output_active(out.streaming));
+	       (out.streaming && obs_output_active(out.streaming)) || (out.replay && obs_output_active(out.replay));
 }
 
 #pragma mark - 녹화
@@ -427,6 +430,101 @@ void core_streaming_stop(bool force)
 	}
 }
 
+#pragma mark - 리플레이 버퍼
+
+// obs-outputs의 ios_replay_buffer: 마지막 몇 초의 인코딩된 패킷을 메모리에 두었다가 저장하면 MP4로 쓴다.
+// 녹화 인코더를 같이 쓴다 (녹화와 리플레이를 함께 켜도 하드웨어 인코더 세션이 늘지 않는다).
+
+static void replay_saved(void *param, calldata_t *cd)
+{
+	UNUSED_PARAMETER(param);
+	const char *path = calldata_string(cd, "path");
+	blog(LOG_INFO, "[app] replay saved: %s", path ? path : "");
+
+	pthread_mutex_lock(&out.mutex);
+	out.replay_saved_count++;
+	snprintf(out.replay_last_path, sizeof(out.replay_last_path), "%s", path ? path : "");
+	pthread_mutex_unlock(&out.mutex);
+}
+
+static void replay_stopped(void *param, calldata_t *cd)
+{
+	UNUSED_PARAMETER(param);
+	const int code = (int)calldata_int(cd, "code");
+	blog(code == OBS_OUTPUT_SUCCESS ? LOG_INFO : LOG_WARNING, "[app] replay buffer stopped: %s (%d)",
+	     stop_code_text(code), code);
+}
+
+static bool start_replay_with(const char *codec, const char *directory, int seconds, int video_kbps, int audio_kbps)
+{
+	out.record_video = prepare_video_encoder(out.record_video, codec, "Record Video", "ABR", video_kbps);
+	out.record_audio = prepare_audio_encoder(out.record_audio, "Record Audio", audio_kbps);
+	if (!out.replay) {
+		out.replay = obs_output_create("ios_replay_buffer", "Replay Buffer", NULL, NULL);
+		if (out.replay) {
+			signal_handler_t *handler = obs_output_get_signal_handler(out.replay);
+			signal_handler_connect(handler, "saved", replay_saved, NULL);
+			signal_handler_connect(handler, "stop", replay_stopped, NULL);
+		}
+	}
+	if (!out.replay || !out.record_video || !out.record_audio)
+		return false;
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "directory", directory);
+	obs_data_set_int(settings, "max_time_sec", seconds);
+	obs_output_update(out.replay, settings);
+	obs_data_release(settings);
+
+	obs_output_set_video_encoder(out.replay, out.record_video);
+	obs_output_set_audio_encoder(out.replay, out.record_audio, 0);
+
+	if (obs_output_start(out.replay)) {
+		blog(LOG_INFO, "[app] replay buffer: last %d s to %s (%s)", seconds, directory,
+		     obs_encoder_get_codec(out.record_video));
+		return true;
+	}
+
+	const char *error = obs_output_get_last_error(out.replay);
+	blog(LOG_WARNING, "[app] replay buffer failed to start with %s: %s", codec, error ? error : "unknown error");
+	return false;
+}
+
+bool core_replay_start(const char *directory, int seconds, const char *codec, int video_kbps, int audio_kbps)
+{
+	if (out.replay && obs_output_active(out.replay))
+		return true;
+	if (start_replay_with(codec, directory, seconds, video_kbps, audio_kbps))
+		return true;
+	// 녹화와 같이 그 코덱을 쓸 수 없으면 H.264로
+	if (strcmp(codec, "h264") != 0)
+		return start_replay_with("h264", directory, seconds, video_kbps, audio_kbps);
+	return false;
+}
+
+void core_replay_stop(void)
+{
+	if (out.replay)
+		obs_output_stop(out.replay);
+}
+
+void core_replay_save(void)
+{
+	if (!out.replay || !obs_output_active(out.replay))
+		return;
+	calldata_t cd = {0};
+	proc_handler_call(obs_output_get_proc_handler(out.replay), "save", &cd);
+	calldata_free(&cd);
+}
+
+char *core_replay_last_path(void)
+{
+	pthread_mutex_lock(&out.mutex);
+	char *path = bstrdup(out.replay_last_path);
+	pthread_mutex_unlock(&out.mutex);
+	return path;
+}
+
 #pragma mark - 상태 조회
 
 void core_get_output_stats(struct core_output_stats *stats)
@@ -453,6 +551,11 @@ void core_get_output_stats(struct core_output_stats *stats)
 		stats->stream_congestion = obs_output_get_congestion(out.streaming);
 	}
 
+	if (out.replay) {
+		stats->replay_active = obs_output_active(out.replay);
+		stats->replay_bytes = obs_output_get_total_bytes(out.replay);
+	}
+
 	video_t *video = obs_get_video();
 	stats->encoder_skipped_frames = video ? video_output_get_skipped_frames(video) : 0;
 	stats->video_total_frames = video ? video_output_get_total_frames(video) : 0;
@@ -460,6 +563,7 @@ void core_get_output_stats(struct core_output_stats *stats)
 	pthread_mutex_lock(&out.mutex);
 	stats->record_stop_code = out.record_stop_code;
 	stats->stream_stop_code = out.stream_stop_code;
+	stats->replay_saved_count = out.replay_saved_count;
 	pthread_mutex_unlock(&out.mutex);
 }
 

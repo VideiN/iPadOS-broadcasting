@@ -124,9 +124,20 @@ struct core_output_stats {
 	float stream_congestion;        // 0~1
 	int stream_stop_code;
 
+	bool replay_active;
+	uint64_t replay_bytes;          // 지금 메모리에 든 리플레이 크기
+	int replay_saved_count;         // 지금까지 저장한 리플레이 수 (늘면 새로 저장된 것)
+
 	uint32_t encoder_skipped_frames; // 인코더가 못 따라가 건너뛴 프레임 (전체 출력 기준)
 	uint32_t video_total_frames;
 };
+
+// 리플레이 버퍼: 마지막 seconds초를 메모리에 두고, 저장하면 directory에 "Replay 날짜 시각.mp4"로 쓴다.
+// 녹화 인코더를 같이 쓴다 (녹화 중이면 녹화 코덱·비트레이트 그대로).
+bool core_replay_start(const char *directory, int seconds, const char *codec, int video_kbps, int audio_kbps);
+void core_replay_stop(void);
+void core_replay_save(void); // 비동기. 끝나면 replay_saved_count가 늘고 core_replay_last_path가 바뀐다
+char *core_replay_last_path(void); // core_free로 해제한다
 
 // 녹화(Hybrid MP4, 비디오 ABR + AAC). codec은 "hevc"·"h264". path의 폴더는 미리 만들어 둔다.
 // 그 코덱의 인코더를 쓸 수 없으면 H.264로 녹화한다.

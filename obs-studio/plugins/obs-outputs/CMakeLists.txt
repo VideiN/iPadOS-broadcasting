@@ -57,6 +57,7 @@ target_sources(
     net-if.c
     net-if.h
     null-output.c
+    $<$<BOOL:${OS_IOS}>:replay-buffer.c>
     obs-output-ver.h
     obs-outputs.c
     rtmp-av1.c

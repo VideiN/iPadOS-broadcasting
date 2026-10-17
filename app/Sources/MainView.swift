@@ -66,6 +66,11 @@ struct TopBar: View {
             if outputs.stats.recording {
                 StatusChip(text: "REC " + formatClock(outputs.stats.recording_seconds), color: .red)
             }
+            if let saved = outputs.replayNotice {
+                StatusChip(text: "리플레이 저장됨: " + saved, color: .green)
+            } else if outputs.stats.replay_active {
+                StatusChip(text: "REPLAY", color: .green)
+            }
             if outputs.stats.stream_reconnecting {
                 StatusChip(text: "재연결 중", color: .orange)
             } else if outputs.stats.streaming {

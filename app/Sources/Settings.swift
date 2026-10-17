@@ -16,6 +16,7 @@ enum AppSettings {
     static let canvasHeight = "canvasHeight"
     static let canvasFPS = "canvasFPS"
     static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
+    static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -28,6 +29,7 @@ enum AppSettings {
             canvasWidth: 1920,
             canvasHeight: 1080,
             canvasFPS: 60,
+            replaySeconds: 30,
         ])
     }
 
@@ -137,6 +139,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.recordCodec) private var recordCodec = "hevc"
     @AppStorage(AppSettings.recordBitrate) private var recordBitrate = 20000
     @AppStorage(AppSettings.recordAudioBitrate) private var recordAudioBitrate = 192
+    @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
 
     @State private var streamKey = ""
     @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
@@ -161,6 +164,7 @@ struct SettingsView: View {
             Form {
                 streamSection
                 recordSection
+                replaySection
                 canvasSection
 
                 Section("정보") {
@@ -238,6 +242,21 @@ struct SettingsView: View {
             Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다.")
         }
         .disabled(outputs.stats.recording)
+    }
+
+    private var replaySection: some View {
+        Section {
+            Picker("길이", selection: $replaySeconds) {
+                ForEach([10, 15, 30, 60, 120, 300], id: \.self) { seconds in
+                    Text(seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분").tag(seconds)
+                }
+            }
+        } header: {
+            Text("리플레이 버퍼")
+        } footer: {
+            Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 녹화 코덱·비트레이트를 같이 씁니다.")
+        }
+        .disabled(outputs.stats.replay_active)
     }
 
     private var canvasSection: some View {

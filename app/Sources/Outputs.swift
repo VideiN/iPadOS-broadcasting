@@ -16,6 +16,10 @@ final class Outputs: ObservableObject {
     @Published private(set) var streamFPS: Double = 0
     @Published private(set) var recordFPS: Double = 0
 
+    /// 방금 저장한 리플레이 파일 이름 (몇 초 동안 위쪽 막대에 보인다)
+    @Published private(set) var replayNotice: String?
+    private var lastReplaySavedCount: Int32 = 0
+
     private var timer: AnyCancellable?
     private var lastStreamBytes: UInt64 = 0
     private var lastStreamFrames: Int32 = 0
@@ -59,6 +63,18 @@ final class Outputs: ObservableObject {
         lastRecordFrames = stats.record_total_frames
         lastUpdate = now
 
+        if stats.replay_saved_count > lastReplaySavedCount {
+            lastReplaySavedCount = stats.replay_saved_count
+            if let pointer = core_replay_last_path() {
+                let name = URL(fileURLWithPath: String(cString: pointer)).lastPathComponent
+                core_free(pointer)
+                replayNotice = name
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    if self?.replayNotice == name { self?.replayNotice = nil }
+                }
+            }
+        }
+
         self.stats = stats
         recordError = Self.lastError(stream: false)
         streamError = Self.lastError(stream: true)
@@ -97,6 +113,31 @@ final class Outputs: ObservableObject {
                 self.update()
             }
         }
+    }
+
+    /// 리플레이 버퍼 켜기·끄기. 저장 위치는 앱의 Recordings 폴더 (고른 외장 폴더는 녹화에만 쓴다)
+    func toggleReplay() {
+        let active = stats.replay_active
+        let defaults = AppSettings.defaults
+        let seconds = Int32(defaults.integer(forKey: AppSettings.replaySeconds))
+        let codec = defaults.string(forKey: AppSettings.recordCodec) ?? "hevc"
+        let videoKbps = Int32(defaults.integer(forKey: AppSettings.recordBitrate))
+        let audioKbps = Int32(defaults.integer(forKey: AppSettings.recordAudioBitrate))
+        let directory = RecordingFolder.defaultFolder.path
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            if active {
+                core_replay_stop()
+            } else {
+                let ok = core_replay_start(directory, seconds, codec, videoKbps, audioKbps)
+                appLog("replay buffer start \(ok ? "requested" : "failed")")
+            }
+            DispatchQueue.main.async { self.update() }
+        }
+    }
+
+    func saveReplay() {
+        DispatchQueue.global(qos: .userInitiated).async { core_replay_save() }
     }
 
     /// 송출 서버를 아직 정하지 않았으면 false (설정을 열어야 함)
@@ -142,9 +183,12 @@ final class Outputs: ObservableObject {
         queue.asyncAfter(deadline: .now() + 3) {
             let recording = core_recording_start(path, "hevc", 20000, 192)
             let streaming = core_streaming_start(server, "autotest", "h264", 4000, 160)
-            appLog("autotest: started (recording \(recording), streaming \(streaming))")
+            // 리플레이 버퍼(10초)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5)
+            let replay = core_replay_start(RecordingFolder.defaultFolder.path, 10, "hevc", 20000, 192)
+            appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
 
             queue.asyncAfter(deadline: .now() + seconds) {
+                core_replay_save()
                 var stats = core_output_stats()
                 core_get_output_stats(&stats)
                 appLog(
@@ -161,6 +205,8 @@ final class Outputs: ObservableObject {
                 queue.asyncAfter(deadline: .now() + 10) {
                     var stats = core_output_stats()
                     core_get_output_stats(&stats)
+                    appLog("autotest: replay saved \(stats.replay_saved_count)")
+                    core_replay_stop()
                     if stats.recording || stats.streaming {
                         appLog("autotest: outputs still active after 10 s, forcing stop")
                         if stats.recording { core_recording_stop(true) }
@@ -230,6 +276,29 @@ struct OutputControls: View {
                     systemImage: outputs.stats.streaming ? "stop.circle.fill" : "dot.radiowaves.left.and.right")
             }
             .tint(.blue)
+
+            if outputs.stats.replay_active {
+                Button {
+                    outputs.saveReplay()
+                } label: {
+                    Label("리플레이 저장", systemImage: "square.and.arrow.down")
+                }
+                .tint(.green)
+                Button {
+                    outputs.toggleReplay()
+                } label: {
+                    Image(systemName: "stop.fill")
+                }
+                .tint(.green)
+                .accessibilityLabel("리플레이 버퍼 끄기")
+            } else {
+                Button {
+                    outputs.toggleReplay()
+                } label: {
+                    Label("리플레이", systemImage: "gobackward")
+                }
+                .tint(.green)
+            }
 
             Button {
                 showSettings = true
