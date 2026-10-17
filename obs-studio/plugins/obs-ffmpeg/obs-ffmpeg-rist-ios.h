@@ -7,8 +7,11 @@
 
 #define RIST_MAX_PAYLOAD_SIZE (10000 - 28)
 
+/* Only the fields obs-ffmpeg-mpegts.c sets */
 typedef struct RISTContext {
-	int unused;
+	char *secret;
+	char *username;
+	char *password;
 } RISTContext;
 
 static int librist_open(URLContext *h, const char *uri)
@@ -21,7 +24,13 @@ static int librist_open(URLContext *h, const char *uri)
 
 static int librist_close(URLContext *h)
 {
-	UNUSED_PARAMETER(h);
+	RISTContext *s = h ? h->priv_data : NULL;
+	if (s) {
+		bfree(s->secret);
+		bfree(s->username);
+		bfree(s->password);
+		s->secret = s->username = s->password = NULL;
+	}
 	return 0;
 }
 

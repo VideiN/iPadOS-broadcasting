@@ -82,9 +82,8 @@ static const char *service_get_connect_info(void *data, uint32_t type)
 	case OBS_SERVICE_CONNECT_INFO_SERVER_URL:
 		return service_get_url(data);
 	case OBS_SERVICE_CONNECT_INFO_STREAM_KEY:
-		return service_get_key(data);
-	case OBS_SERVICE_CONNECT_INFO_STREAM_ID:
-		// SRT: 스트림 키를 streamid로 쓴다 (비어 있으면 URL의 streamid=…). 암호는 URL의 passphrase=…
+		// SRT에서는 같은 값(OBS_SERVICE_CONNECT_INFO_STREAM_ID)이 streamid다 (비어 있으면 URL의 streamid=…).
+		// 암호는 URL의 passphrase=…
 		return service_get_key(data);
 	default:
 		return NULL;
