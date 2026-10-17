@@ -41,6 +41,7 @@ target_link_libraries(
     OBS::avcapture
     OBS::ios-audio-input
     OBS::ios-text
+    OBS::ios-media-source
     OBS::mac-videotoolbox
     OBS::coreaudio-encoder
     OBS::outputs
@@ -109,6 +110,9 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-text/data"
     "${bundle_dir}/obs-plugins/ios-text"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-media-source/data"
+    "${bundle_dir}/obs-plugins/ios-media-source"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-videotoolbox/data"
     "${bundle_dir}/obs-plugins/mac-videotoolbox"

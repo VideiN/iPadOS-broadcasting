@@ -418,6 +418,12 @@ struct SourceRow: View {
                 if item.audio {
                     Button("오디오 필터…", systemImage: "waveform", action: editFilters)
                 }
+                if item.type == "ios_media_source" {
+                    Divider()
+                    Button("재생/일시정지", systemImage: "playpause") { _ = core_source_media(item.name, 0) }
+                    Button("처음부터", systemImage: "backward.end") { _ = core_source_media(item.name, 1) }
+                    Button("정지", systemImage: "stop") { _ = core_source_media(item.name, 2) }
+                }
                 Button("이름 바꾸기…", systemImage: "pencil", action: rename)
                 Divider()
                 if item.video {

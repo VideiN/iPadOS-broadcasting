@@ -21,6 +21,7 @@ extern const struct obs_static_module obs_static_module_image_source;
 extern const struct obs_static_module obs_static_module_mac_avcapture;
 extern const struct obs_static_module obs_static_module_ios_audio_input;
 extern const struct obs_static_module obs_static_module_ios_text;
+extern const struct obs_static_module obs_static_module_ios_media_source;
 extern const struct obs_static_module obs_static_module_mac_videotoolbox;
 extern const struct obs_static_module obs_static_module_coreaudio_encoder;
 extern const struct obs_static_module obs_static_module_obs_outputs;
@@ -141,6 +142,7 @@ static bool load_modules(const char *resource_path)
 	load_module(resource_path, "mac-avcapture", &obs_static_module_mac_avcapture);
 	load_module(resource_path, "ios-audio-input", &obs_static_module_ios_audio_input);
 	load_module(resource_path, "ios-text", &obs_static_module_ios_text);
+	load_module(resource_path, "ios-media-source", &obs_static_module_ios_media_source);
 	load_module(resource_path, "mac-videotoolbox", &obs_static_module_mac_videotoolbox);
 	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
 	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);

@@ -104,14 +104,18 @@ static void ios_text_update(void *data, obs_data_t *settings)
             NSParagraphStyleAttributeName: paragraph,
         } mutableCopy];
 
-        if (outline && outlineSize > 0) {
-            // A negative stroke width fills and strokes. The stroke is centred on the glyph outline and its width is
-            // a percentage of the font size, so twice the outline size is needed for it to show outside the glyph.
-            attributes[NSStrokeWidthAttributeName] = @(-200.0 * outlineSize / MAX(size, 1));
-            attributes[NSStrokeColorAttributeName] = color_from_obs(obs_data_get_int(settings, "outline_color"));
-        }
-
         NSAttributedString *string = [[NSAttributedString alloc] initWithString:text attributes:attributes];
+
+        // The outline is drawn first and the text on top of it. A stroke is centred on the glyph outline (its width
+        // is a percentage of the font size), so it is twice the outline size wide and the text covers its inner half.
+        NSAttributedString *outlineString = nil;
+        if (outline && outlineSize > 0) {
+            NSMutableDictionary *outlineAttributes = [attributes mutableCopy];
+            outlineAttributes[NSStrokeWidthAttributeName] = @(200.0 * outlineSize / MAX(size, 1));
+            outlineAttributes[NSStrokeColorAttributeName] =
+                color_from_obs(obs_data_get_int(settings, "outline_color"));
+            outlineString = [[NSAttributedString alloc] initWithString:text attributes:outlineAttributes];
+        }
         const CGRect bounds = [string boundingRectWithSize:CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX)
                                                    options:NSStringDrawingUsesLineFragmentOrigin
                                                    context:nil];
@@ -137,10 +141,10 @@ static void ios_text_update(void *data, obs_data_t *settings)
                 CGContextTranslateCTM(bitmap, 0, height);
                 CGContextScaleCTM(bitmap, 1, -1);
 
+                const CGRect rect = CGRectMake(padding, padding, width - 2 * padding, height - 2 * padding);
                 UIGraphicsPushContext(bitmap);
-                [string drawWithRect:CGRectMake(padding, padding, width - 2 * padding, height - 2 * padding)
-                             options:NSStringDrawingUsesLineFragmentOrigin
-                             context:nil];
+                [outlineString drawWithRect:rect options:NSStringDrawingUsesLineFragmentOrigin context:nil];
+                [string drawWithRect:rect options:NSStringDrawingUsesLineFragmentOrigin context:nil];
                 UIGraphicsPopContext();
                 CGContextRelease(bitmap);
             }

@@ -124,6 +124,15 @@ jobs:
           # 출력 시험 (P3): 앱이 입력 소스가 준비된 뒤 녹화와 RTMP 송출을 20초 동안 함께 돌린다.
           # 송출은 로컬 ffmpeg가 받는다 (시뮬레이터는 호스트와 네트워크를 같이 쓴다).
           command -v ffmpeg > /dev/null || brew install ffmpeg
+
+          # 미디어 소스 시험 (P5): 3초짜리 H.264+AAC 파일을 앱의 Documents에 넣어 둔다 (씬 자동 시험이 반복 재생)
+          ffmpeg -nostdin -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=30 \
+            -f lavfi -i sine=frequency=440:sample_rate=48000 -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -shortest app-run/test-media.mp4
+          media_dir=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/Documents
+          mkdir -p "$media_dir"
+          cp app-run/test-media.mp4 "$media_dir/"
+
           ffmpeg -nostdin -hide_banner -listen 1 -timeout 150 -i rtmp://127.0.0.1:1935/live/autotest \
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
           ffmpeg_pid=$!
@@ -192,6 +201,10 @@ jobs:
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
           grep -q 'filters autotest: ok' app-run/app.log
+          # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
+          grep -q 'media autotest: added' app-run/app.log
+          grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log
+          grep -q 'ios-media-source: .*looping (play 2)' app-run/app.log
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
@@ -212,7 +225,7 @@ jobs:
           grep -q '\[app\] replay saved: ' app-run/app.log
           check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
-          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4
+          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

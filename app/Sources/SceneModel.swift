@@ -24,6 +24,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "image_source": "이미지"
         case "slideshow_v2", "slideshow": "이미지 슬라이드쇼"
         case "ios_text_source": "텍스트"
+        case "ios_media_source": "미디어 (동영상·음악 파일)"
         default: name
         }
     }
@@ -35,6 +36,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "image_source": "photo"
         case "slideshow_v2", "slideshow": "photo.on.rectangle"
         case "ios_text_source": "textformat"
+        case "ios_media_source": "film"
         default: "square.on.square"
         }
     }
@@ -285,6 +287,19 @@ final class SceneModel: ObservableObject {
             cameraFrameRate = frameRate.map { "ok, \($0.fps_ranges?.count ?? -1) range(s)" } ?? "missing"
             remove(cameraItem)
         }
+
+        // 미디어 소스: CI가 Documents/test-media.mp4(3초, 640x360, 소리 있음)를 넣어 둔다. 반복 재생으로 남긴다.
+        // 재생은 플러그인 로그("first video frame", "looping")로 CI가 확인한다.
+        let testMedia = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("test-media.mp4")
+        var mediaResult = "skipped (no test media)"
+        if FileManager.default.fileExists(atPath: testMedia.path),
+            let mediaType = types.first(where: { $0.id == "ios_media_source" }), let mediaName = addSource(type: mediaType)
+        {
+            core_source_update(mediaName, encodeJSON(["local_file": .string(testMedia.path), "looping": .bool(true)]))
+            mediaResult = "added"
+        }
+        appLog("media autotest: \(mediaResult)")
 
         // 텍스트 소스: 만들자마자 기본 글("텍스트")을 그린 크기가 있어야 한다. 스크린숏에 보이게 한국어 두 줄을 남긴다.
         var textResult = "no text type"

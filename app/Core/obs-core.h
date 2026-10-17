@@ -86,6 +86,9 @@ void core_source_set_muted(const char *source_name, bool muted);
 float core_source_volume(const char *source_name);
 bool core_source_muted(const char *source_name);
 
+// 미디어 소스 조작. action: 0 재생/일시정지 전환, 1 처음부터, 2 정지. 조작 뒤 상태(enum obs_media_state)를 돌려준다
+int core_source_media(const char *source_name, int action);
+
 // 오디오 필터. 필터의 속성은 "소스 이름" + 0x1F + "필터 이름"을 core_source_properties_json·core_source_update·
 // core_source_press_button에 넘겨 다룬다. 필터는 씬 구성 저장에 함께 들어간다 (obs_save_sources).
 char *core_filter_types_json(const char *source_name); // {"types": [{"id", "name"}]}, 소리 없는 소스면 비어 있음
