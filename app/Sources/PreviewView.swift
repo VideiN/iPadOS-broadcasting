@@ -43,6 +43,7 @@ final class MetalPreviewView: UIView {
     deinit {
         if let display {
             core_display_destroy(display)
+            appLog("display destroyed")
         }
     }
 }
