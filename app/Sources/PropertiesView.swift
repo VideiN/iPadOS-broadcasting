@@ -154,6 +154,10 @@ struct SourcePropertiesView: View {
                 CommitTextField(label: property.label, text: value?.string ?? "", secure: true) {
                     update(property.name, .string($0))
                 }
+            case 2:  // OBS_TEXT_MULTILINE
+                MultilineTextRow(label: property.label, text: value?.string ?? "") {
+                    update(property.name, .string($0))
+                }
             default:
                 CommitTextField(label: property.label, text: value?.string ?? "", secure: false) {
                     update(property.name, .string($0))
@@ -373,6 +377,28 @@ private struct NumberRow: View {
 }
 
 /// 입력을 마칠 때(리턴) 반영하는 문자열 칸
+/// 여러 줄 글 (텍스트 소스의 글 등). 줄바꿈을 넣을 수 있게 "적용"을 눌러야 반영된다 (화면을 닫아도 반영)
+private struct MultilineTextRow: View {
+    let label: String
+    let text: String
+    let commit: (String) -> Void
+
+    @State private var editing = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+            TextEditor(text: $editing)
+                .frame(minHeight: 90)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            Button("적용") { commit(editing) }
+                .disabled(editing == text)
+        }
+        .onAppear { editing = text }
+        .onDisappear { if editing != text { commit(editing) } }
+    }
+}
+
 private struct CommitTextField: View {
     let label: String
     let text: String
