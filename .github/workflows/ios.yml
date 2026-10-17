@@ -168,9 +168,11 @@ jobs:
           sleep 2
 
           # 씬 구성 저장·불러오기: 다시 띄우면 기본 씬과 "시험 장면", 2개를 불러와야 한다
-          # 이번에는 SRT 송출(P5)을 10초 돌린다. 받는 쪽은 로컬 ffmpeg의 SRT listener
-          ffmpeg -nostdin -hide_banner -i 'srt://127.0.0.1:9000?mode=listener&listen_timeout=120000000' \
-            -c copy -f mpegts app-run/received-srt.ts > app-run/ffmpeg-srt.log 2>&1 &
+          # 이번에는 SRT 송출(P5)을 10초 돌린다. 러너의 ffmpeg에는 SRT가 없어 받는 쪽은 libsrt의
+          # srt-live-transmit listener (받은 MPEG-TS를 그대로 파일로, 송출이 끊기면 끝남)
+          brew list srt > /dev/null 2>&1 || brew install srt
+          srt-live-transmit -a:no -t:120 'srt://:9000?mode=listener' file://con \
+            > app-run/received-srt.ts 2> app-run/ffmpeg-srt.log &
           ffmpeg_srt_pid=$!
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
             -autotest-srt 10 srt://127.0.0.1:9000 > app-run/app-relaunch.log 2>&1 &
