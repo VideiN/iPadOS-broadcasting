@@ -286,6 +286,17 @@ struct OutputControls: View {
     @State private var showSettings = false
 
     var body: some View {
+        // 자리가 모자라면(세로 화면, 창 모드, 리플레이까지 켠 경우) 글자 없이 아이콘만
+        ViewThatFits(in: .horizontal) {
+            buttons(iconOnly: false).fixedSize()
+            buttons(iconOnly: true).fixedSize()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(core: Core.shared, outputs: outputs)
+        }
+    }
+
+    private func buttons(iconOnly: Bool) -> some View {
         HStack(spacing: 8) {
             Button {
                 outputs.toggleRecording()
@@ -316,10 +327,10 @@ struct OutputControls: View {
                 Button {
                     outputs.toggleReplay()
                 } label: {
-                    Image(systemName: "stop.fill")
+                    Label("리플레이 끄기", systemImage: "stop.fill")
+                        .labelStyle(.iconOnly)
                 }
                 .tint(.green)
-                .accessibilityLabel("리플레이 버퍼 끄기")
             } else {
                 Button {
                     outputs.toggleReplay()
@@ -332,14 +343,28 @@ struct OutputControls: View {
             Button {
                 showSettings = true
             } label: {
-                Image(systemName: "gearshape")
+                Label("설정", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
             }
             .tint(.gray)
         }
+        .labelStyle(OutputLabelStyle(iconOnly: iconOnly))
         .buttonStyle(.borderedProminent)
         .font(.system(size: 14, weight: .semibold))
-        .sheet(isPresented: $showSettings) {
-            SettingsView(core: Core.shared, outputs: outputs)
+        .lineLimit(1)
+    }
+}
+
+/// 출력 버튼의 글자를 보이거나 숨긴다
+private struct OutputLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            if !iconOnly {
+                configuration.title
+            }
         }
     }
 }

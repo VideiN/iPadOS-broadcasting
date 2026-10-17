@@ -66,8 +66,8 @@ struct TopBar: View {
             if outputs.stats.recording {
                 StatusChip(text: "REC " + formatClock(outputs.stats.recording_seconds), color: .red)
             }
-            if let saved = outputs.replayNotice {
-                StatusChip(text: "리플레이 저장됨: " + saved, color: .green)
+            if outputs.replayNotice != nil {
+                StatusChip(text: "리플레이 저장됨", color: .green)
             } else if outputs.stats.replay_active {
                 StatusChip(text: "REPLAY", color: .green)
             }
@@ -116,6 +116,8 @@ struct StatusChip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color, in: Capsule())
+            .lineLimit(1)
+            .fixedSize()
     }
 }
 
