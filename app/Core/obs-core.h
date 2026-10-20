@@ -167,3 +167,13 @@ void core_display_resize(void *display, uint32_t width, uint32_t height);
 void core_display_destroy(void *display);
 
 void core_get_stats(struct core_stats *stats);
+
+// --- 채팅 소스 (P7, plugins/ios-chat의 proc handler) ---
+// 메인 스레드에서 부른다. libobs가 아직 안 떴으면 아무것도 하지 않는다.
+
+// 이벤트 JSON 배열(add/remove/removeAuthor, ios-chat.m 참고)을 YouTube 채팅 소스들에 보낸다
+void core_chat_push(const char *json);
+// 채팅 소스 속성 화면에 보일 상태 줄
+void core_chat_set_status(const char *text);
+// YouTube 채팅을 보여 주는 채팅 소스 수
+int core_chat_listeners(void);

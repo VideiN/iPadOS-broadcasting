@@ -43,8 +43,9 @@ final class YouTubeAccount: ObservableObject {
     @Published var busy = false
     /// 마지막 오류 (설정 화면에 보인다)
     @Published var message = ""
-    /// 마지막으로 만든 방송 (P7 채팅이 쓴다)
+    /// 마지막으로 만든(또는 찾은) 방송과 그 채팅 (P7 채팅이 쓴다). 방송 id가 곧 영상 id다
     @Published private(set) var broadcastID: String?
+    @Published private(set) var liveChatID: String?
 
     private var endpoints = Endpoints()
     private let refreshItem = SecretItem(
@@ -149,6 +150,8 @@ final class YouTubeAccount: ObservableObject {
         loggedIn = false
         channelTitle = ""
         message = ""
+        broadcastID = nil
+        liveChatID = nil
         appLog("youtube: logged out")
 
         // 토큰을 Google에서도 무효로 (실패해도 이 기기에서는 이미 지웠다)
@@ -211,11 +214,30 @@ final class YouTubeAccount: ObservableObject {
                 ],
             ])
         guard let id = broadcast["id"] as? String else { throw YouTubeError("방송을 만들었지만 ID가 없습니다.") }
+        let chatID = (broadcast["snippet"] as? [String: Any])?["liveChatId"] as? String
 
         _ = try await api("POST", "liveBroadcasts/bind", query: ["id": id, "streamId": streamID, "part": "id,contentDetails"])
         appLog("youtube: broadcast \(id) created and bound")
-        await publish { $0.broadcastID = id }
+        await publish {
+            $0.broadcastID = id
+            $0.liveChatID = chatID
+        }
         return StreamTarget(server: server, key: key, broadcastID: id)
+    }
+
+    /// 지금 진행 중인 내 방송 ("스트림 키만"으로 보냈거나 앱을 다시 켠 경우, 채팅이 쓴다). 1 단위
+    @discardableResult
+    func findActiveBroadcast() async throws -> String? {
+        let list = try await api(
+            "GET", "liveBroadcasts", query: ["part": "id,snippet", "broadcastStatus": "active", "broadcastType": "all"])
+        guard let item = (list["items"] as? [[String: Any]])?.first, let id = item["id"] as? String else { return nil }
+        let chatID = (item["snippet"] as? [String: Any])?["liveChatId"] as? String
+        appLog("youtube: active broadcast \(id)")
+        await publish {
+            $0.broadcastID = id
+            $0.liveChatID = chatID
+        }
+        return id
     }
 
     /// "스트림 키만"이면 채널의 기본 스트림, 아니면 이 앱이 만든 재사용 스트림 (없으면 만든다)

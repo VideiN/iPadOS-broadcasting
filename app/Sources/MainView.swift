@@ -16,13 +16,13 @@ struct ContentView: View {
                 HStack(spacing: 0) {
                     mainColumn
                     Divider()
-                    Sidebar(model: model, core: core).frame(width: 340)
+                    SideColumn(model: model, core: core).frame(width: 340)
                 }
             } else {
                 VStack(spacing: 0) {
                     mainColumn
                     Divider()
-                    Sidebar(model: model, core: core).frame(height: geometry.size.height * 0.45)
+                    SideColumn(model: model, core: core).frame(height: geometry.size.height * 0.45)
                 }
             }
         }
@@ -246,7 +246,32 @@ struct PreviewArea: View {
     }
 }
 
-// MARK: - 옆 패널: 장면, 소스, 오디오
+// MARK: - 옆 칸: 장면·소스·오디오, 또는 채팅 패널
+
+struct SideColumn: View {
+    @ObservedObject var model: SceneModel
+    @ObservedObject var core: Core
+    @AppStorage("sideColumnTab") private var tab = "sources"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("옆 칸", selection: $tab) {
+                Text("장면·소스").tag("sources")
+                Text("채팅").tag("chat")
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            if tab == "chat" {
+                ChatPanelView(feed: ChatFeed.shared) { tab = "sources" }
+            } else {
+                Sidebar(model: model, core: core)
+            }
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+}
 
 struct Sidebar: View {
     @ObservedObject var model: SceneModel

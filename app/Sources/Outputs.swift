@@ -222,6 +222,8 @@ final class Outputs: ObservableObject {
                     let target = try await YouTubeAccount.shared.runAutotest(base: base)
                     appLog("youtube autotest: ok (broadcast \(target.broadcastID ?? "none"))")
                     self.runOutputAutotest(seconds: seconds, path: path, server: target.server, key: target.key)
+                    // -autotest-chat <mock 주소>: 이 방송의 채팅을 직접·패널·API로 받아 본다 (P7)
+                    Task { @MainActor in await ChatFeed.shared.runAutotest() }
                 } catch {
                     appLog("youtube autotest: failed (\(error.localizedDescription))")
                     self.runOutputAutotest(seconds: seconds, path: path, server: server, key: "autotest")

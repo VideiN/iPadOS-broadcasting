@@ -330,6 +330,13 @@ final class SceneModel: ObservableObject {
         }
         appLog("chat autotest: \(chatResult)")
 
+        // YouTube 채팅 소스 (기본값): 로그인 시험 뒤 ChatFeed 시험이 mock 채팅을 여기로 보낸다. 스크린숏 왼쪽
+        if let chatType = types.first(where: { $0.id == "ios_chat_source" }), let chatName = addSource(type: chatType) {
+            core_source_update(chatName, encodeJSON(["width": .number(260), "height": .number(330)]))
+            translateSelection(by: CGSize(width: 10, height: 15))
+            appLog("youtube chat source: added")
+        }
+
         // 형식의 fps 범위 → 고를 수 있는 값
         let sampleChoices = FrameRateChoice.choices(
             in: [.init(min: 59.94, max: 59.94), .init(min: 1, max: 30)],

@@ -39,19 +39,26 @@ typedef NS_ENUM(NSInteger, ChatKind) {
 
 @interface ChatMessage : NSObject
 @property (nonatomic, copy) NSString *messageID;
-@property (nonatomic, copy) NSString *platform; /* "youtube", "twitch", "test" */
+@property (nonatomic, copy) NSString *platform; /* "youtube", "test" */
 @property (nonatomic, copy) NSString *author;
+@property (nonatomic, copy, nullable) NSString *authorID;    /* the platform's channel / user id (for bans) */
 @property (nonatomic, copy, nullable) NSString *authorColor; /* "#rrggbb" from the platform */
+@property (nonatomic, copy, nullable) NSString *accentColor; /* "#rrggbb", e.g. the Super Chat tier colour */
 @property (nonatomic) ChatRoles roles;
 @property (nonatomic) ChatKind kind;
 @property (nonatomic, copy, nullable) NSString *amount; /* Super Chat amount as the platform writes it */
 @property (nonatomic, copy) NSArray<ChatFragment *> *badges;
 @property (nonatomic, copy) NSArray<ChatFragment *> *fragments;
+@property (nonatomic) double receivedAt; /* CFAbsoluteTime, for removals that arrive while it is being drawn */
 
 /* The cleaned values the page gets: only fixed class names, checked colour and image URLs, length-limited text.
  * imageCount is set to the number of images the page should show. */
 - (NSDictionary<NSString *, id> *)payloadWithImageCount:(NSUInteger *)imageCount;
 @end
+
+/* A message from the app's chat clients ("add" event of ios_chat_push, see ios-chat.m). Only takes values of the
+ * expected types; the cleaning happens in -payloadWithImageCount: like for every other message. */
+ChatMessage *_Nullable chat_message_from_json(NSDictionary *json);
 
 /* Image URLs the page may load: https on the platforms' image hosts, or small inline data:image URLs */
 BOOL chat_image_url_allowed(NSString *url);
@@ -67,6 +74,9 @@ NSString *chat_clean_text(NSString *text, NSUInteger maxCharacters);
 @property (nonatomic) uint32_t cy;
 @property (nonatomic) float displayCX; /* size on the canvas (CSS pixels) */
 @property (nonatomic) float displayCY;
+@property (nonatomic, copy) NSString *messageID;
+@property (nonatomic, copy, nullable) NSString *authorID;
+@property (nonatomic) double receivedAt;
 @end
 
 /* Batch statistics for the log and the CI checks */
@@ -91,6 +101,8 @@ extern NSString *chat_page_script;
 - (instancetype)initWithWidth:(uint32_t)width css:(NSString *)css;
 - (void)setWidth:(uint32_t)width css:(NSString *)css;
 - (void)enqueue:(ChatMessage *)message;
+/* Drops waiting messages that were deleted (by id, or everything from those authors) */
+- (void)discardIDs:(NSSet<NSString *> *)ids authors:(NSSet<NSString *> *)authors;
 - (void)stop;
 @end
 

@@ -239,6 +239,9 @@ static BOOL is_color(NSString *value)
     if (is_color(self.authorColor)) {
         payload[@"authorColor"] = self.authorColor;
     }
+    if (is_color(self.accentColor)) {
+        payload[@"accentColor"] = self.accentColor;
+    }
     if (self.amount.length > 0) {
         payload[@"amount"] = chat_clean_text(self.amount, MAX_AMOUNT_CHARACTERS);
     }
@@ -250,3 +253,75 @@ static BOOL is_color(NSString *value)
 }
 
 @end
+
+#define MAX_ID_LENGTH 256
+#define MAX_JSON_FRAGMENTS 200
+#define MAX_JSON_BADGES 8
+
+static NSString *json_string(id value)
+{
+    return [value isKindOfClass:NSString.class] ? value : nil;
+}
+
+/* [{"text"} | {"src", "alt"}] → fragments; anything else is skipped */
+static NSArray<ChatFragment *> *json_fragments(id value, NSUInteger limit)
+{
+    NSMutableArray<ChatFragment *> *fragments = [NSMutableArray array];
+    if (![value isKindOfClass:NSArray.class]) {
+        return fragments;
+    }
+    for (id item in (NSArray *) value) {
+        if (fragments.count >= limit) {
+            break;
+        }
+        if (![item isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+        NSString *src = json_string(item[@"src"]);
+        NSString *text = json_string(item[@"text"]) ?: json_string(item[@"alt"]) ?: @"";
+        [fragments addObject:src ? [ChatFragment image:src alt:text] : [ChatFragment text:text]];
+    }
+    return fragments;
+}
+
+ChatMessage *chat_message_from_json(NSDictionary *json)
+{
+    NSString *messageID = json_string(json[@"id"]);
+    if (messageID.length == 0 || messageID.length > MAX_ID_LENGTH) {
+        return nil;
+    }
+
+    ChatMessage *message = [[ChatMessage alloc] init];
+    message.messageID = messageID;
+    message.platform = [json_string(json[@"platform"]) isEqualToString:@"youtube"] ? @"youtube" : @"other";
+    message.author = json_string(json[@"author"]) ?: @"";
+    NSString *authorID = json_string(json[@"authorId"]);
+    message.authorID = authorID.length <= MAX_ID_LENGTH ? authorID : nil;
+    message.authorColor = json_string(json[@"authorColor"]);
+    message.accentColor = json_string(json[@"accentColor"]);
+    message.amount = json_string(json[@"amount"]);
+
+    NSString *kind = json_string(json[@"kind"]);
+    message.kind = [kind isEqualToString:@"superchat"]    ? ChatKindSuperChat
+                   : [kind isEqualToString:@"membership"] ? ChatKindMembership
+                                                          : ChatKindText;
+
+    ChatRoles roles = 0;
+    NSArray *names = [json[@"roles"] isKindOfClass:NSArray.class] ? json[@"roles"] : @[];
+    for (id name in names) {
+        if ([name isEqual:@"owner"]) {
+            roles |= ChatRoleOwner;
+        } else if ([name isEqual:@"moderator"]) {
+            roles |= ChatRoleModerator;
+        } else if ([name isEqual:@"member"]) {
+            roles |= ChatRoleMember;
+        } else if ([name isEqual:@"verified"]) {
+            roles |= ChatRoleVerified;
+        }
+    }
+    message.roles = roles;
+
+    message.badges = json_fragments(json[@"badges"], MAX_JSON_BADGES);
+    message.fragments = json_fragments(json[@"parts"], MAX_JSON_FRAGMENTS);
+    return message;
+}

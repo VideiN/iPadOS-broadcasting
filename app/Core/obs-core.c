@@ -478,3 +478,40 @@ void core_get_stats(struct core_stats *stats)
 	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
 	stats->audio_peak_right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
 }
+
+#pragma mark - 채팅
+
+void core_chat_push(const char *json)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler || !json)
+		return;
+	calldata_t cd = {0};
+	calldata_set_string(&cd, "json", json);
+	proc_handler_call(handler, "ios_chat_push", &cd);
+	calldata_free(&cd);
+}
+
+void core_chat_set_status(const char *text)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler)
+		return;
+	calldata_t cd = {0};
+	calldata_set_string(&cd, "text", text ? text : "");
+	proc_handler_call(handler, "ios_chat_set_status", &cd);
+	calldata_free(&cd);
+}
+
+int core_chat_listeners(void)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler)
+		return 0;
+	calldata_t cd = {0};
+	int count = 0;
+	if (proc_handler_call(handler, "ios_chat_listeners", &cd))
+		count = (int)calldata_int(&cd, "count");
+	calldata_free(&cd);
+	return count;
+}

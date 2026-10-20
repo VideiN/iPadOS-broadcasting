@@ -461,13 +461,32 @@ static uint8_t probe_alpha(NSData *pixels, size_t width, size_t height, double x
     }
     NSUInteger images = 0;
     NSDictionary *payload = [message payloadWithImageCount:&images];
-    [_queue addObject:@{@"payload": payload, @"images": @(images)}];
+    NSMutableDictionary *entry = [@{
+        @"payload": payload,
+        @"images": @(images),
+        @"id": message.messageID,
+        @"received": @(message.receivedAt),
+    } mutableCopy];
+    if (message.authorID) {
+        entry[@"author"] = message.authorID;
+    }
+    [_queue addObject:entry];
 
     /* A flood can only make the chat fall behind; keep the newest */
     while (_queue.count > 200) {
         [_queue removeObjectAtIndex:0];
     }
     [self pump];
+}
+
+- (void)discardIDs:(NSSet<NSString *> *)ids authors:(NSSet<NSString *> *)authors
+{
+    NSIndexSet *dropped = [_queue indexesOfObjectsPassingTest:^BOOL(NSDictionary *entry, NSUInteger index, BOOL *stop) {
+        (void) index;
+        (void) stop;
+        return [ids containsObject:entry[@"id"]] || (entry[@"author"] && [authors containsObject:entry[@"author"]]);
+    }];
+    [_queue removeObjectsAtIndexes:dropped];
 }
 
 - (void)pump
@@ -530,11 +549,15 @@ static uint8_t probe_alpha(NSData *pixels, size_t width, size_t height, double x
                      }
                  }
                  stats.render_ms = (os_gettime_ns() - started) / 1e6;
-                 [strongSelf captureBatch:rects stats:stats generation:generation];
+                 [strongSelf captureBatch:rects
+                                    batch:[batch subarrayWithRange:NSMakeRange(0, rects.count)]
+                                    stats:stats
+                               generation:generation];
              }];
 }
 
 - (void)captureBatch:(NSArray<NSArray<NSNumber *> *> *)rects
+               batch:(NSArray<NSDictionary *> *)batch
                stats:(struct chat_batch_stats)stats
           generation:(NSUInteger)generation
 {
@@ -559,7 +582,8 @@ static uint8_t probe_alpha(NSData *pixels, size_t width, size_t height, double x
                  if (pixels && width && height) {
                      /* image pixels per CSS pixel (1 unless WebKit chose another size) */
                      const double scale = (double) width / cssWidth;
-                     for (NSArray<NSNumber *> *messageRect in rects) {
+                     for (NSUInteger i = 0; i < rects.count; i++) {
+                         NSArray<NSNumber *> *messageRect = rects[i];
                          const double top = messageRect[0].doubleValue;
                          const double messageHeight = messageRect[1].doubleValue;
                          const size_t y0 = MIN(height, (size_t) llround(top * scale));
@@ -575,6 +599,9 @@ static uint8_t probe_alpha(NSData *pixels, size_t width, size_t height, double x
                          image.displayCY = (float) messageHeight;
                          image.pixels = [NSData dataWithBytes:(const uint8_t *) pixels.bytes + y0 * width * 4
                                                        length:(y1 - y0) * width * 4];
+                         image.messageID = batch[i][@"id"];
+                         image.authorID = batch[i][@"author"];
+                         image.receivedAt = [batch[i][@"received"] doubleValue];
                          [result addObject:image];
                      }
                  } else {

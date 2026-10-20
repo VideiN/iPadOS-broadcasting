@@ -10,8 +10,9 @@
  *
  * 역할: role-owner(방송자) role-moderator(매니저) role-member(멤버) role-verified(인증)
  * 종류: kind-text kind-superchat kind-membership kind-system
- * 플랫폼: platform-youtube platform-twitch platform-test
+ * 플랫폼: platform-youtube platform-test
  * 플랫폼이 정한 이름 색: var(--author-color)
+ * 슈퍼챗 금액대 색 (YouTube가 정한 색): var(--accent-color)
  *
  * 메시지마다 한 장의 그림으로 찍으므로 CSS 애니메이션은 움직이지 않습니다.
  * 외부 이미지·글꼴은 https 주소만 쓸 수 있습니다. */
@@ -62,7 +63,7 @@
 }
 
 .kind-superchat {
-  background: rgba(230, 33, 23, 0.85);
+  background: var(--accent-color, rgba(230, 33, 23, 0.85));
 }
 
 .kind-superchat .amount {

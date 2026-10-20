@@ -143,19 +143,27 @@ jobs:
           chat_trap_pid=$!
 
           # YouTube 로그인 시험(P8): Google OAuth·YouTube API 흉내. 송출 주소·키를 이 흐름으로 받아 위 ffmpeg로 보낸다
-          python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2>&1 &
+          # 채팅(P7)도 같은 서버: 유튜브 웹 채팅(페이지·get_live_chat)과 공식 API liveChatMessages 흉내
+          python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2> app-run/youtube-mock-access.log &
           youtube_mock_pid=$!
 
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
+          # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
             -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
-            > app-run/app.log 2>&1 &
+            -autotest-chat http://127.0.0.1:8098 > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
             xcrun simctl io "$SIM_UDID" screenshot "app-run/simulator-${t}s.png"
           done
+          # 채팅 시험은 1분쯤 걸린다
+          for _ in $(seq 1 45); do
+            grep -q 'chat autotest: done' app-run/app.log && break
+            sleep 2
+          done
+          xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-chat.png || true
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -250,6 +258,18 @@ jobs:
           if grep -E 'ios-chat\] .*(unsafe element|blocked navigation)' app-run/app.log; then exit 1; fi
           cat app-run/chat-trap.log
           if grep -q 'evil' app-run/chat-trap.log; then echo 'chat test loaded a blocked URL'; exit 1; fi
+          # 유튜브 채팅 (P7): 직접 받기 → 패널 페이지 → (웹 형식이 바뀌면) 공식 API. 지난 메시지·중복은 보내지 않고,
+          # 지운 메시지는 채팅 소스의 쌓인 목록에서도 빠진다. 웹 채팅 요청에는 로그인 토큰이 가지 않는다
+          grep -E 'chat( panel)?: |chat autotest|ios-chat\] (youtube|removed)' app-run/app.log | sed -n '1,60p'
+          for step in 'direct ok' 'panel ok' 'api ok' 'ok (history shown 0, duplicates 0)'; do
+            grep -q "chat autotest: $step" app-run/app.log || { echo "chat autotest: missing '$step'"; exit 1; }
+          done
+          grep -qE 'ios-chat\] youtube: rendered [0-9]+ message' app-run/app.log
+          grep -qE 'ios-chat\] removed [0-9]+ deleted message' app-run/app.log
+          for step in 'chat page direct 1' 'chat direct uses the live view' 'get_live_chat d-live-4' 'chat page webkit 1' \
+            'get_live_chat p-top-3' 'chat page direct 2 (changed format)' 'api chat api-1'; do
+            grep -qF "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
+          done
           grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log
           grep -q 'ios-media-source: .*looping (play 2)' app-run/app.log
           cat app-run/app-relaunch.log

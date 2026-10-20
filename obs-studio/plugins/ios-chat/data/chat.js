@@ -42,6 +42,9 @@ function chatMessage(message, images) {
     if (typeof message.authorColor === 'string' && CHAT_SAFE_COLOR.test(message.authorColor)) {
         root.style.setProperty('--author-color', message.authorColor);
     }
+    if (typeof message.accentColor === 'string' && CHAT_SAFE_COLOR.test(message.accentColor)) {
+        root.style.setProperty('--accent-color', message.accentColor);
+    }
 
     const badges = document.createElement('span');
     badges.className = 'badges';

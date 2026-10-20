@@ -2,7 +2,8 @@
  *
  * Shows a live chat in a box of fixed size. Each message is drawn once by WebKit with the user's CSS
  * (chat-renderer.m) and becomes a texture; new messages appear at the bottom and push the older ones up with a short
- * slide, all on the GPU. Messages come from the platform clients (later steps) or from the test generator.
+ * slide, all on the GPU. Messages come from the app's chat clients (YouTube, through the proc handler
+ * "ios_chat_push", see obs_module_load) or from the test generator (CI only).
  *
  * Threads: the controller (renderer, test timer) lives on the main thread. Rendered images go through the sink to
  * video_tick, which turns them into textures; video_render only draws. */
@@ -15,6 +16,7 @@
 #include <util/platform.h>
 
 #include <math.h>
+#include <stdatomic.h>
 
 #include "chat.h"
 
@@ -33,11 +35,16 @@ static NSString *default_css = @"";
 @interface ChatSink : NSObject
 - (void)push:(NSArray<ChatImage *> *)images;
 - (void)reset;
+/* Deleted messages: taken out of what is waiting, and out of the stack on the next tick */
+- (void)removeIDs:(NSSet<NSString *> *)ids authors:(NSSet<NSString *> *)authors;
 - (NSArray<ChatImage *> *)takeReset:(BOOL *)reset;
+- (BOOL)takeRemovedIDs:(NSSet<NSString *> **)ids authors:(NSSet<NSString *> **)authors;
 @end
 
 @implementation ChatSink {
     NSMutableArray<ChatImage *> *_pending;
+    NSMutableSet<NSString *> *_removedIDs;
+    NSMutableSet<NSString *> *_removedAuthors;
     BOOL _reset;
 }
 
@@ -45,8 +52,38 @@ static NSString *default_css = @"";
 {
     if ((self = [super init])) {
         _pending = [NSMutableArray array];
+        _removedIDs = [NSMutableSet set];
+        _removedAuthors = [NSMutableSet set];
     }
     return self;
+}
+
+- (void)removeIDs:(NSSet<NSString *> *)ids authors:(NSSet<NSString *> *)authors
+{
+    @synchronized(self) {
+        NSIndexSet *gone = [_pending indexesOfObjectsPassingTest:^BOOL(ChatImage *image, NSUInteger index, BOOL *stop) {
+            (void) index;
+            (void) stop;
+            return [ids containsObject:image.messageID] || (image.authorID && [authors containsObject:image.authorID]);
+        }];
+        [_pending removeObjectsAtIndexes:gone];
+        [_removedIDs unionSet:ids];
+        [_removedAuthors unionSet:authors];
+    }
+}
+
+- (BOOL)takeRemovedIDs:(NSSet<NSString *> **)ids authors:(NSSet<NSString *> **)authors
+{
+    @synchronized(self) {
+        if (_removedIDs.count == 0 && _removedAuthors.count == 0) {
+            return NO;
+        }
+        *ids = [_removedIDs copy];
+        *authors = [_removedAuthors copy];
+        [_removedIDs removeAllObjects];
+        [_removedAuthors removeAllObjects];
+        return YES;
+    }
 }
 
 - (void)push:(NSArray<ChatImage *> *)images
@@ -88,8 +125,17 @@ static NSString *default_css = @"";
 @interface ChatController : NSObject
 - (instancetype)initWithSink:(ChatSink *)sink;
 - (void)applyWidth:(uint32_t)width css:(NSString *)css platform:(NSString *)platform testInterval:(double)interval;
+/* From the app's YouTube client (ios_chat_push) */
+- (void)receiveMessages:(NSArray<ChatMessage *> *)messages
+             removedIDs:(NSSet<NSString *> *)ids
+                authors:(NSSet<NSString *> *)authors;
 - (void)stop;
 @end
+
+/* Chat sources showing YouTube (main thread), their count for the app (any thread), and the app's status line */
+static NSHashTable<ChatController *> *youtube_controllers;
+static atomic_long youtube_listener_count;
+static NSString *youtube_status = @"";
 
 @implementation ChatController {
     ChatSink *_sink;
@@ -103,6 +149,10 @@ static NSString *default_css = @"";
     NSMutableArray<ChatMessage *> *_recent;
     BOOL _stopped;
 
+    /* deleted messages that may still be in flight (being drawn) */
+    NSMutableSet<NSString *> *_removedIDs;
+    NSMutableDictionary<NSString *, NSNumber *> *_removedAuthors; /* author → when */
+
     /* test round statistics (log and CI) */
     NSUInteger _rendered;
     NSUInteger _unsafe;
@@ -111,6 +161,7 @@ static NSString *default_css = @"";
     double _snapshotMs;
     NSUInteger _batches;
     NSUInteger _rounds;
+    NSUInteger _nextLog;
 }
 
 - (instancetype)initWithSink:(ChatSink *)sink
@@ -119,8 +170,24 @@ static NSString *default_css = @"";
         _sink = sink;
         _recent = [NSMutableArray array];
         _platform = @"";
+        _removedIDs = [NSMutableSet set];
+        _removedAuthors = [NSMutableDictionary dictionary];
+        _nextLog = 1;
     }
     return self;
+}
+
+- (void)listen:(BOOL)listen
+{
+    if (!youtube_controllers) {
+        youtube_controllers = [NSHashTable weakObjectsHashTable];
+    }
+    if (listen) {
+        [youtube_controllers addObject:self];
+    } else {
+        [youtube_controllers removeObject:self];
+    }
+    atomic_store(&youtube_listener_count, (long) youtube_controllers.allObjects.count);
 }
 
 - (void)applyWidth:(uint32_t)width css:(NSString *)css platform:(NSString *)platform testInterval:(double)interval
@@ -151,6 +218,7 @@ static NSString *default_css = @"";
         _testInterval = interval;
         [_testTimer invalidate];
         _testTimer = nil;
+        [self listen:[platform isEqualToString:@"youtube"]];
 
         if ([platform isEqualToString:@"test"]) {
             _test = _test ?: [[ChatTestGenerator alloc] init];
@@ -182,12 +250,67 @@ static NSString *default_css = @"";
     [_renderer enqueue:message];
 }
 
+- (void)receiveMessages:(NSArray<ChatMessage *> *)messages
+             removedIDs:(NSSet<NSString *> *)ids
+                authors:(NSSet<NSString *> *)authors
+{
+    if (_stopped || ![_platform isEqualToString:@"youtube"]) {
+        return;
+    }
+    if (ids.count || authors.count) {
+        [self removeIDs:ids authors:authors];
+    }
+    for (ChatMessage *message in messages) {
+        [self receive:message];
+    }
+}
+
+- (void)removeIDs:(NSSet<NSString *> *)ids authors:(NSSet<NSString *> *)authors
+{
+    /* bounded: an id only matters for the moment its message may still be in flight */
+    if (_removedIDs.count > 5000) {
+        [_removedIDs removeAllObjects];
+    }
+    if (_removedAuthors.count > 1000) {
+        [_removedAuthors removeAllObjects];
+    }
+    [_removedIDs unionSet:ids];
+    const double now = CFAbsoluteTimeGetCurrent();
+    for (NSString *author in authors) {
+        _removedAuthors[author] = @(now);
+    }
+
+    NSIndexSet *gone = [_recent indexesOfObjectsPassingTest:^BOOL(ChatMessage *message, NSUInteger index, BOOL *stop) {
+        (void) index;
+        (void) stop;
+        return [ids containsObject:message.messageID] || (message.authorID && [authors containsObject:message.authorID]);
+    }];
+    [_recent removeObjectsAtIndexes:gone];
+    [_renderer discardIDs:ids authors:authors];
+    [_sink removeIDs:ids authors:authors];
+}
+
+/* Deleted while it was being drawn, or written before its author was removed */
+- (BOOL)isRemoved:(ChatImage *)image
+{
+    if ([_removedIDs containsObject:image.messageID]) {
+        return YES;
+    }
+    NSNumber *when = image.authorID ? _removedAuthors[image.authorID] : nil;
+    return when && when.doubleValue >= image.receivedAt;
+}
+
 - (void)rendered:(NSArray<ChatImage *> *)images stats:(struct chat_batch_stats)stats
 {
     if (_stopped) {
         return;
     }
-    [_sink push:images];
+    NSIndexSet *kept = [images indexesOfObjectsPassingTest:^BOOL(ChatImage *image, NSUInteger index, BOOL *stop) {
+        (void) index;
+        (void) stop;
+        return ![self isRemoved:image];
+    }];
+    [_sink push:[images objectsAtIndexes:kept]];
 
     _rendered += stats.messages;
     _unsafe += stats.unsafe_elements;
@@ -204,6 +327,13 @@ static NSString *default_css = @"";
     if (_batches <= 3) {
         CHAT_LOG(LOG_INFO, "batch of %lu: layout %.1f ms, snapshot %.1f ms (alpha %s)", (unsigned long) stats.messages,
                  stats.render_ms, stats.snapshot_ms, _renderer.alphaMode.UTF8String);
+    }
+
+    if ([_platform isEqualToString:@"youtube"] && _rendered >= _nextLog) {
+        /* the first, then every 50th */
+        _nextLog = (_rendered / 50 + 1) * 50;
+        CHAT_LOG(LOG_INFO, "youtube: rendered %lu message(s) (unsafe %lu, image mismatches %lu)",
+                 (unsigned long) _rendered, (unsigned long) _unsafe, (unsigned long) _mismatches);
     }
 
     if ([_platform isEqualToString:@"test"] && _test && _rendered >= (_rounds + 1) * _test.roundLength) {
@@ -223,6 +353,7 @@ static NSString *default_css = @"";
 
 - (void)stop
 {
+    [self listen:NO];
     _stopped = YES;
     [_testTimer invalidate];
     _testTimer = nil;
@@ -238,6 +369,8 @@ struct chat_item {
     gs_texture_t *texture;
     float cx; /* size on the canvas */
     float cy;
+    char *message_id; /* for deletions */
+    char *author_id;
 };
 
 struct ios_chat {
@@ -318,9 +451,35 @@ static void destroy_items(struct ios_chat *context, size_t count)
     obs_enter_graphics();
     for (size_t i = 0; i < count; i++) {
         gs_texture_destroy(context->items.array[i].texture);
+        bfree(context->items.array[i].message_id);
+        bfree(context->items.array[i].author_id);
     }
     obs_leave_graphics();
     da_erase_range(context->items, 0, count);
+}
+
+/* Deleted messages leave the stack; the ones above move down into the gap */
+static void remove_items(struct ios_chat *context, NSSet<NSString *> *ids, NSSet<NSString *> *authors)
+{
+    size_t removed = 0;
+    obs_enter_graphics();
+    for (size_t i = context->items.num; i-- > 0;) {
+        struct chat_item *item = &context->items.array[i];
+        const BOOL match = (item->message_id && [ids containsObject:@(item->message_id)]) ||
+                           (item->author_id && [authors containsObject:@(item->author_id)]);
+        if (match) {
+            gs_texture_destroy(item->texture);
+            bfree(item->message_id);
+            bfree(item->author_id);
+            da_erase(context->items, i);
+            removed++;
+        }
+    }
+    obs_leave_graphics();
+
+    if (removed) {
+        CHAT_LOG(LOG_INFO, "removed %zu deleted message(s) from the stack", removed);
+    }
 }
 
 static void ios_chat_destroy(void *data)
@@ -353,12 +512,19 @@ static void ios_chat_tick(void *data, float seconds)
     struct ios_chat *context = data;
 
     @autoreleasepool {
+        ChatSink *sink = (__bridge ChatSink *) context->sink;
         BOOL reset = NO;
-        NSArray<ChatImage *> *images = [(__bridge ChatSink *) context->sink takeReset:&reset];
+        NSArray<ChatImage *> *images = [sink takeReset:&reset];
 
         if (reset) {
             destroy_items(context, context->items.num);
             context->offset = 0;
+        }
+
+        NSSet<NSString *> *removedIDs = nil;
+        NSSet<NSString *> *removedAuthors = nil;
+        if ([sink takeRemovedIDs:&removedIDs authors:&removedAuthors]) {
+            remove_items(context, removedIDs, removedAuthors);
         }
 
         if (images.count) {
@@ -370,7 +536,9 @@ static void ios_chat_tick(void *data, float seconds)
                 if (!texture) {
                     continue;
                 }
-                struct chat_item item = {texture, image.displayCX, image.displayCY};
+                struct chat_item item = {texture, image.displayCX, image.displayCY,
+                                         bstrdup(image.messageID.UTF8String),
+                                         image.authorID ? bstrdup(image.authorID.UTF8String) : NULL};
                 da_push_back(context->items, &item);
                 added += image.displayCY;
             }
@@ -475,7 +643,7 @@ static bool reset_css_clicked(obs_properties_t *props, obs_property_t *property,
 
 static void ios_chat_get_defaults(obs_data_t *settings)
 {
-    obs_data_set_default_string(settings, "platform", "test");
+    obs_data_set_default_string(settings, "platform", "youtube");
     obs_data_set_default_int(settings, "width", 400);
     obs_data_set_default_int(settings, "height", 600);
     obs_data_set_default_string(settings, "css", default_css.UTF8String);
@@ -485,12 +653,30 @@ static void ios_chat_get_defaults(obs_data_t *settings)
 
 static obs_properties_t *ios_chat_get_properties(void *data)
 {
-    UNUSED_PARAMETER(data);
+    struct ios_chat *context = data;
     obs_properties_t *props = obs_properties_create();
+
+    obs_data_t *settings = context ? obs_source_get_settings(context->source) : NULL;
+    const bool test = settings && strcmp(obs_data_get_string(settings, "platform"), "test") == 0;
+    obs_data_release(settings);
 
     obs_property_t *platform = obs_properties_add_list(props, "platform", obs_module_text("Platform"),
                                                        OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-    obs_property_list_add_string(platform, obs_module_text("Platform.Test"), "test");
+    obs_property_list_add_string(platform, obs_module_text("Platform.YouTube"), "youtube");
+    /* Fake messages are for CI: only listed for a source that already uses them */
+    if (test) {
+        obs_property_list_add_string(platform, obs_module_text("Platform.Test"), "test");
+    } else {
+        @autoreleasepool {
+            NSString *status;
+            @synchronized(ChatController.class) {
+                status = youtube_status;
+            }
+            NSString *line = [NSString stringWithFormat:@"%s: %@", obs_module_text("Status"),
+                                                        status.length ? status : @(obs_module_text("Status.None"))];
+            obs_properties_add_text(props, "status", line.UTF8String, OBS_TEXT_INFO);
+        }
+    }
 
     obs_properties_add_int(props, "width", obs_module_text("Width"), MIN_BOX_SIZE, MAX_BOX_SIZE, 1);
     obs_properties_add_int(props, "height", obs_module_text("Height"), MIN_BOX_SIZE, MAX_BOX_SIZE, 1);
@@ -501,9 +687,11 @@ static obs_properties_t *ios_chat_get_properties(void *data)
     obs_properties_add_path(props, "css_file", obs_module_text("CSSFile"), OBS_PATH_FILE, "CSS (*.css)", NULL);
     obs_properties_add_button(props, "reset_css", obs_module_text("ResetCSS"), reset_css_clicked);
 
-    obs_property_t *interval =
-        obs_properties_add_int(props, "test_interval_ms", obs_module_text("TestInterval"), 100, 10000, 100);
-    obs_property_int_set_suffix(interval, " ms");
+    if (test) {
+        obs_property_t *interval =
+            obs_properties_add_int(props, "test_interval_ms", obs_module_text("TestInterval"), 100, 10000, 100);
+        obs_property_int_set_suffix(interval, " ms");
+    }
 
     return props;
 }
@@ -536,6 +724,88 @@ static NSString *read_module_file(const char *name)
     return text;
 }
 
+#pragma mark - From the app
+
+/* ios_chat_push(json): a JSON array of events from the app's chat clients, for every source showing YouTube.
+ *   {"type": "add", "id", "platform", "author", "authorId", "authorColor", "accentColor", "roles": [...],
+ *    "kind": "text" | "superchat" | "membership", "amount", "badges": [{"src", "alt"}],
+ *    "parts": [{"text"} | {"src", "alt"}]}
+ *   {"type": "remove", "id"}   {"type": "removeAuthor", "authorId"}
+ * Main thread (the app calls it from there). */
+static void push_events(NSData *json)
+{
+    id root = [NSJSONSerialization JSONObjectWithData:json options:0 error:nil];
+    if (![root isKindOfClass:NSArray.class]) {
+        CHAT_LOG(LOG_WARNING, "push: not a JSON array");
+        return;
+    }
+
+    NSMutableArray<ChatMessage *> *messages = [NSMutableArray array];
+    NSMutableSet<NSString *> *ids = [NSMutableSet set];
+    NSMutableSet<NSString *> *authors = [NSMutableSet set];
+    const double now = CFAbsoluteTimeGetCurrent();
+    for (id event in (NSArray *) root) {
+        if (![event isKindOfClass:NSDictionary.class]) {
+            continue;
+        }
+        NSString *type = event[@"type"];
+        if ([type isEqual:@"add"]) {
+            ChatMessage *message = chat_message_from_json(event);
+            if (message) {
+                message.receivedAt = now;
+                [messages addObject:message];
+            }
+        } else if ([type isEqual:@"remove"] && [event[@"id"] isKindOfClass:NSString.class]) {
+            [ids addObject:event[@"id"]];
+        } else if ([type isEqual:@"removeAuthor"] && [event[@"authorId"] isKindOfClass:NSString.class]) {
+            [authors addObject:event[@"authorId"]];
+        }
+    }
+
+    for (ChatController *controller in youtube_controllers.allObjects) {
+        [controller receiveMessages:messages removedIDs:ids authors:authors];
+    }
+}
+
+static void push_proc(void *data, calldata_t *cd)
+{
+    UNUSED_PARAMETER(data);
+    const char *json = calldata_string(cd, "json");
+    if (!json) {
+        return;
+    }
+    NSData *bytes = [NSData dataWithBytes:json length:strlen(json)];
+    if (NSThread.isMainThread) {
+        @autoreleasepool {
+            push_events(bytes);
+        }
+    } else {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            push_events(bytes);
+        });
+    }
+}
+
+/* ios_chat_set_status(text): shown in the source's properties */
+static void status_proc(void *data, calldata_t *cd)
+{
+    UNUSED_PARAMETER(data);
+    const char *text = calldata_string(cd, "text");
+    @autoreleasepool {
+        NSString *status = text ? @(text) : @"";
+        @synchronized(ChatController.class) {
+            youtube_status = status ?: @"";
+        }
+    }
+}
+
+/* ios_chat_listeners() → count: sources showing YouTube, so the app only receives chat when something shows it */
+static void listeners_proc(void *data, calldata_t *cd)
+{
+    UNUSED_PARAMETER(data);
+    calldata_set_int(cd, "count", atomic_load(&youtube_listener_count));
+}
+
 bool obs_module_load(void)
 {
     @autoreleasepool {
@@ -544,5 +814,10 @@ bool obs_module_load(void)
         default_css = read_module_file("default.css");
     }
     obs_register_source(&ios_chat_info);
+
+    proc_handler_t *handler = obs_get_proc_handler();
+    proc_handler_add(handler, "void ios_chat_push(in string json)", push_proc, NULL);
+    proc_handler_add(handler, "void ios_chat_set_status(in string text)", status_proc, NULL);
+    proc_handler_add(handler, "void ios_chat_listeners(out int count)", listeners_proc, NULL);
     return true;
 }
