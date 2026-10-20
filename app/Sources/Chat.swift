@@ -1251,8 +1251,6 @@ final class ChatFeed: ObservableObject {
         let removedBefore = removed
         let panelOK = await wait(30) { source == .panel && count("p-") >= 2 && removed > removedBefore }
         appLog("chat autotest: panel \(panelOK ? "ok" : "failed") (sent \(count("p-")), source \(source.rawValue))")
-        // CI가 이때 패널 화면을 찍는다
-        await pause(4)
 
         // 패널을 닫으면 직접 받기로 돌아가는데, mock은 이제 형식이 바뀐 페이지를 준다 → 공식 API
         UserDefaults.standard.set("sources", forKey: "sideColumnTab")
@@ -1266,7 +1264,12 @@ final class ChatFeed: ObservableObject {
         appLog(
             "chat autotest: \(directOK && panelOK && apiOK && history == 0 && duplicates == 0 ? "ok" : "failed") "
                 + "(history shown \(history), duplicates \(duplicates))")
-        appLog("chat autotest: done")
+
+        // 끝으로 채팅 탭을 다시 띄워 둔다: CI가 패널 화면을 찍고, 다시 띄운 실행(로그인 없음)은 안내 화면을 보인다
+        UserDefaults.standard.set("chat", forKey: "sideColumnTab")
+        openPanel()
+        _ = await wait(15) { source == .panel }
+        appLog("chat autotest: done (panel tab \(source == .panel ? "receiving" : "not ready"))")
     }
 }
 

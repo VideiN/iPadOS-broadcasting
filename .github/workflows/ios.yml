@@ -153,19 +153,12 @@ jobs:
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
             -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
             -autotest-chat http://127.0.0.1:8098 > app-run/app.log 2>&1 &
-          # 채팅 시험이 옆 칸을 채팅 탭으로 바꿔 패널을 띄운 동안 한 장
-          (for _ in $(seq 1 150); do
-             if grep -q 'chat autotest: panel' app-run/app.log; then
-               sleep 1; xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-chat-panel.png; break
-             fi
-             sleep 1
-           done) &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
             xcrun simctl io "$SIM_UDID" screenshot "app-run/simulator-${t}s.png"
           done
-          # 채팅 시험은 1분쯤 걸린다
+          # 채팅 시험은 1분쯤 걸린다. 끝나면 옆 칸이 채팅 탭(패널 페이지)인 채로 찍는다
           for _ in $(seq 1 45); do
             grep -q 'chat autotest: done' app-run/app.log && break
             sleep 2
