@@ -208,6 +208,10 @@ static NSString *default_css = @"";
 
     if ([_platform isEqualToString:@"test"] && _test && _rendered >= (_rounds + 1) * _test.roundLength) {
         _rounds++;
+        /* the first round, then every tenth */
+        if (_rounds != 1 && _rounds % 10 != 0) {
+            return;
+        }
         CHAT_LOG(LOG_INFO,
                  "test round %lu done (rendered %lu, unsafe %lu, image mismatches %lu, alpha %s, "
                  "%.1f ms layout + %.1f ms snapshot per batch)",

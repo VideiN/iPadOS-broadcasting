@@ -52,9 +52,16 @@ BOOL chat_image_url_allowed(NSString *url)
            [allowed_image_hosts() containsObject:components.host.lowercaseString ?: @""];
 }
 
+/* One message is one paragraph: line breaks become spaces */
+static BOOL is_line_break(UTF32Char c)
+{
+    return c == '
+' || c == '' || c == 0x0B || c == 0x0C || c == 0x85 || c == 0x2028 || c == 0x2029;
+}
+
 static BOOL is_removed_character(UTF32Char c)
 {
-    /* control characters, line breaks included (one message is one paragraph) */
+    /* control characters */
     if (c < 0x20 || (c >= 0x7F && c < 0xA0)) {
         return YES;
     }
@@ -62,8 +69,8 @@ static BOOL is_removed_character(UTF32Char c)
     if ((c >= 0x202A && c <= 0x202E) || (c >= 0x2066 && c <= 0x2069)) {
         return YES;
     }
-    /* line and paragraph separators, byte order mark, interlinear annotation */
-    return c == 0x2028 || c == 0x2029 || c == 0xFEFF || (c >= 0xFFF9 && c <= 0xFFFB);
+    /* byte order mark, interlinear annotation */
+    return c == 0xFEFF || (c >= 0xFFF9 && c <= 0xFFFB);
 }
 
 NSString *chat_clean_text(NSString *text, NSUInteger maxCharacters)
@@ -97,7 +104,9 @@ NSString *chat_clean_text(NSString *text, NSUInteger maxCharacters)
                                       units = 2;
                                   }
 
-                                  if (!is_removed_character(c)) {
+                                  if (is_line_break(c)) {
+                                      [kept appendString:@" "];
+                                  } else if (!is_removed_character(c)) {
                                       const BOOL mark = [marks longCharacterIsMember:c];
                                       if (!mark || keptMarks++ < MAX_COMBINING_MARKS) {
                                           [kept appendString:[character substringWithRange:NSMakeRange(i, units)]];
