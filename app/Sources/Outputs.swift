@@ -16,6 +16,10 @@ final class Outputs: ObservableObject {
     @Published private(set) var streamFPS: Double = 0
     @Published private(set) var recordFPS: Double = 0
 
+    /// 방금 저장한 리플레이 파일 이름 (몇 초 동안 위쪽 막대에 보인다)
+    @Published private(set) var replayNotice: String?
+    private var lastReplaySavedCount: Int32 = 0
+
     private var timer: AnyCancellable?
     private var lastStreamBytes: UInt64 = 0
     private var lastStreamFrames: Int32 = 0
@@ -59,6 +63,18 @@ final class Outputs: ObservableObject {
         lastRecordFrames = stats.record_total_frames
         lastUpdate = now
 
+        if stats.replay_saved_count > lastReplaySavedCount {
+            lastReplaySavedCount = stats.replay_saved_count
+            if let pointer = core_replay_last_path() {
+                let name = URL(fileURLWithPath: String(cString: pointer)).lastPathComponent
+                core_free(pointer)
+                replayNotice = name
+                DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                    if self?.replayNotice == name { self?.replayNotice = nil }
+                }
+            }
+        }
+
         self.stats = stats
         recordError = Self.lastError(stream: false)
         streamError = Self.lastError(stream: true)
@@ -97,6 +113,31 @@ final class Outputs: ObservableObject {
                 self.update()
             }
         }
+    }
+
+    /// 리플레이 버퍼 켜기·끄기. 저장 위치는 앱의 Recordings 폴더 (고른 외장 폴더는 녹화에만 쓴다)
+    func toggleReplay() {
+        let active = stats.replay_active
+        let defaults = AppSettings.defaults
+        let seconds = Int32(defaults.integer(forKey: AppSettings.replaySeconds))
+        let codec = defaults.string(forKey: AppSettings.recordCodec) ?? "hevc"
+        let videoKbps = Int32(defaults.integer(forKey: AppSettings.recordBitrate))
+        let audioKbps = Int32(defaults.integer(forKey: AppSettings.recordAudioBitrate))
+        let directory = RecordingFolder.defaultFolder.path
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            if active {
+                core_replay_stop()
+            } else {
+                let ok = core_replay_start(directory, seconds, codec, videoKbps, audioKbps)
+                appLog("replay buffer start \(ok ? "requested" : "failed")")
+            }
+            DispatchQueue.main.async { self.update() }
+        }
+    }
+
+    func saveReplay() {
+        DispatchQueue.global(qos: .userInitiated).async { core_replay_save() }
     }
 
     /// 송출 서버를 아직 정하지 않았으면 false (설정을 열어야 함)
@@ -142,9 +183,12 @@ final class Outputs: ObservableObject {
         queue.asyncAfter(deadline: .now() + 3) {
             let recording = core_recording_start(path, "hevc", 20000, 192)
             let streaming = core_streaming_start(server, "autotest", "h264", 4000, 160)
-            appLog("autotest: started (recording \(recording), streaming \(streaming))")
+            // 리플레이 버퍼(10초)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5)
+            let replay = core_replay_start(RecordingFolder.defaultFolder.path, 10, "hevc", 20000, 192)
+            appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
 
             queue.asyncAfter(deadline: .now() + seconds) {
+                core_replay_save()
                 var stats = core_output_stats()
                 core_get_output_stats(&stats)
                 appLog(
@@ -161,6 +205,8 @@ final class Outputs: ObservableObject {
                 queue.asyncAfter(deadline: .now() + 10) {
                     var stats = core_output_stats()
                     core_get_output_stats(&stats)
+                    appLog("autotest: replay saved \(stats.replay_saved_count)")
+                    core_replay_stop()
                     if stats.recording || stats.streaming {
                         appLog("autotest: outputs still active after 10 s, forcing stop")
                         if stats.recording { core_recording_stop(true) }
@@ -172,6 +218,35 @@ final class Outputs: ObservableObject {
                             "autotest: done (record error '\(Self.lastError(stream: false))', stream error '\(Self.lastError(stream: true))')"
                         )
                     }
+                }
+            }
+        }
+    }
+
+    /// CI용: `-autotest-srt <초> <SRT URL>`로 띄우면 SRT 송출만 돌리고 멈춘다 (P5, obs-ffmpeg mpegts 출력)
+    func runSRTAutotestIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-autotest-srt"), index + 2 < args.count,
+            let seconds = Double(args[index + 1])
+        else { return }
+        let server = args[index + 2]
+
+        let queue = DispatchQueue.global(qos: .userInitiated)
+        queue.asyncAfter(deadline: .now() + 3) {
+            let started = core_streaming_start(server, "autotest", "h264", 3000, 160)
+            appLog("srt autotest: started \(started)")
+
+            queue.asyncAfter(deadline: .now() + seconds) {
+                var stats = core_output_stats()
+                core_get_output_stats(&stats)
+                appLog(
+                    String(
+                        format: "srt autotest: streamed %.1f s %llu bytes, dropped %d/%d", stats.streaming_seconds,
+                        stats.stream_bytes, stats.stream_dropped_frames, stats.stream_total_frames))
+                core_streaming_stop(false)
+
+                queue.asyncAfter(deadline: .now() + 5) {
+                    appLog("srt autotest: done (stream error '\(Self.lastError(stream: true))')")
                 }
             }
         }
@@ -211,6 +286,17 @@ struct OutputControls: View {
     @State private var showSettings = false
 
     var body: some View {
+        // 자리가 모자라면(세로 화면, 창 모드, 리플레이까지 켠 경우) 글자 없이 아이콘만
+        ViewThatFits(in: .horizontal) {
+            buttons(iconOnly: false).fixedSize()
+            buttons(iconOnly: true).fixedSize()
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView(core: Core.shared, outputs: outputs)
+        }
+    }
+
+    private func buttons(iconOnly: Bool) -> some View {
         HStack(spacing: 8) {
             Button {
                 outputs.toggleRecording()
@@ -231,17 +317,54 @@ struct OutputControls: View {
             }
             .tint(.blue)
 
+            if outputs.stats.replay_active {
+                Button {
+                    outputs.saveReplay()
+                } label: {
+                    Label("리플레이 저장", systemImage: "square.and.arrow.down")
+                }
+                .tint(.green)
+                Button {
+                    outputs.toggleReplay()
+                } label: {
+                    Label("리플레이 끄기", systemImage: "stop.fill")
+                        .labelStyle(.iconOnly)
+                }
+                .tint(.green)
+            } else {
+                Button {
+                    outputs.toggleReplay()
+                } label: {
+                    Label("리플레이", systemImage: "gobackward")
+                }
+                .tint(.green)
+            }
+
             Button {
                 showSettings = true
             } label: {
-                Image(systemName: "gearshape")
+                Label("설정", systemImage: "gearshape")
+                    .labelStyle(.iconOnly)
             }
             .tint(.gray)
         }
+        .labelStyle(OutputLabelStyle(iconOnly: iconOnly))
         .buttonStyle(.borderedProminent)
         .font(.system(size: 14, weight: .semibold))
-        .sheet(isPresented: $showSettings) {
-            SettingsView(core: Core.shared, outputs: outputs)
+        .lineLimit(1)
+    }
+}
+
+/// 출력 버튼의 글자를 보이거나 숨긴다
+private struct OutputLabelStyle: LabelStyle {
+    let iconOnly: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            if !iconOnly {
+                configuration.title
+            }
         }
     }
 }

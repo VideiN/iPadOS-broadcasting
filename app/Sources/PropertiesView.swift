@@ -94,13 +94,32 @@ struct FrameRateChoice: Hashable {
 /// 어떤 소스든 그 속성으로 만드는 설정 화면 (Qt 속성 창 대신)
 struct SourcePropertiesView: View {
     let sourceName: String
+    /// 소리가 있는 소스면 맨 위에 오디오 필터로 가는 줄을 둔다 (필터 자신의 설정 화면에서는 끈다)
+    var showsFilters = false
     var onChange: () -> Void = {}
 
     @State private var properties: SourceProperties?
     @State private var pickingPathFor: SourceProperty?
+    /// 이 소스의 필터 수. 소리가 없는 소스면 nil
+    @State private var filterCount: Int?
 
     var body: some View {
         Form {
+            if let filterCount {
+                Section {
+                    NavigationLink {
+                        FiltersView(sourceName: sourceName, onChange: onChange)
+                            .navigationTitle("오디오 필터")
+                            .navigationBarTitleDisplayMode(.inline)
+                    } label: {
+                        LabeledContent {
+                            Text(filterCount == 0 ? "없음" : "\(filterCount)개")
+                        } label: {
+                            Label("오디오 필터", systemImage: "waveform")
+                        }
+                    }
+                }
+            }
             if let properties {
                 let visible = properties.properties.filter(\.visible)
                 if visible.isEmpty {
@@ -118,7 +137,10 @@ struct SourcePropertiesView: View {
                 ProgressView()
             }
         }
-        .onAppear(perform: reload)
+        .onAppear {
+            reload()
+            reloadFilterCount()
+        }
         .fileImporter(
             isPresented: Binding(get: { pickingPathFor != nil }, set: { if !$0 { pickingPathFor = nil } }),
             allowedContentTypes: allowedTypes(pickingPathFor),
@@ -152,6 +174,10 @@ struct SourcePropertiesView: View {
                 Text(property.label).font(.footnote).foregroundStyle(.secondary)
             case 1:  // OBS_TEXT_PASSWORD
                 CommitTextField(label: property.label, text: value?.string ?? "", secure: true) {
+                    update(property.name, .string($0))
+                }
+            case 2:  // OBS_TEXT_MULTILINE
+                MultilineTextRow(label: property.label, text: value?.string ?? "") {
                     update(property.name, .string($0))
                 }
             default:
@@ -230,6 +256,18 @@ struct SourcePropertiesView: View {
 
     private func reload() {
         properties = decodeCoreJSON(core_source_properties_json(sourceName), as: SourceProperties.self)
+    }
+
+    /// 필터 화면에서 돌아올 때도 onAppear로 다시 센다
+    private func reloadFilterCount() {
+        guard showsFilters,
+            let types = decodeCoreJSON(core_filter_types_json(sourceName), as: FilterTypes.self)?.types,
+            !types.isEmpty
+        else {
+            filterCount = nil
+            return
+        }
+        filterCount = decodeCoreJSON(core_filters_json(sourceName), as: SourceFilters.self)?.filters.count ?? 0
     }
 
     /// 바뀐 값 하나만 보낸다. 속성 목록은 설정에 따라 바뀔 수 있어 다시 읽는다 (예: 카메라 장치 → 형식 목록)
@@ -373,6 +411,28 @@ private struct NumberRow: View {
 }
 
 /// 입력을 마칠 때(리턴) 반영하는 문자열 칸
+/// 여러 줄 글 (텍스트 소스의 글 등). 줄바꿈을 넣을 수 있게 "적용"을 눌러야 반영된다 (화면을 닫아도 반영)
+private struct MultilineTextRow: View {
+    let label: String
+    let text: String
+    let commit: (String) -> Void
+
+    @State private var editing = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+            TextEditor(text: $editing)
+                .frame(minHeight: 90)
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.3)))
+            Button("적용") { commit(editing) }
+                .disabled(editing == text)
+        }
+        .onAppear { editing = text }
+        .onDisappear { if editing != text { commit(editing) } }
+    }
+}
+
 private struct CommitTextField: View {
     let label: String
     let text: String

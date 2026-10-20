@@ -17,6 +17,12 @@ extern struct obs_output_info null_output_info;
 extern struct obs_output_info flv_output_info;
 extern struct obs_output_info mp4_output_info;
 extern struct obs_output_info mov_output_info;
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#if TARGET_OS_IOS
+extern struct obs_output_info replay_buffer_output_info; /* iOS port */
+#endif
+#endif
 
 #if defined(_WIN32) && defined(MBEDTLS_THREADING_ALT)
 void mbed_mutex_init(mbedtls_threading_mutex_t *m)
@@ -65,6 +71,9 @@ bool obs_module_load(void)
 	obs_register_output(&flv_output_info);
 	obs_register_output(&mp4_output_info);
 	obs_register_output(&mov_output_info);
+#if defined(__APPLE__) && TARGET_OS_IOS
+	obs_register_output(&replay_buffer_output_info);
+#endif
 	return true;
 }
 

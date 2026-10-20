@@ -288,9 +288,9 @@ static int libsrt_listen_connect(int eid, SRTSOCKET fd, const struct sockaddr *a
 		if (will_try_next) {
 			blog(LOG_WARNING,
 			     "[obs-ffmpeg mpegts muxer / libsrt]: Connection to %s failed (%s), trying next address",
-			     h->url, av_err2str(ret));
+			     LOG_URL(h->url), av_err2str(ret));
 		} else {
-			blog(LOG_ERROR, "[obs-ffmpeg mpegts muxer / libsrt]: Connection to %s failed: %s", h->url,
+			blog(LOG_ERROR, "[obs-ffmpeg mpegts muxer / libsrt]: Connection to %s failed: %s", LOG_URL(h->url),
 			     av_err2str(ret));
 		}
 	} else {

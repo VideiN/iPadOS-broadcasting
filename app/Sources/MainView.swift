@@ -66,6 +66,11 @@ struct TopBar: View {
             if outputs.stats.recording {
                 StatusChip(text: "REC " + formatClock(outputs.stats.recording_seconds), color: .red)
             }
+            if outputs.replayNotice != nil {
+                StatusChip(text: "리플레이 저장됨", color: .green)
+            } else if outputs.stats.replay_active {
+                StatusChip(text: "REPLAY", color: .green)
+            }
             if outputs.stats.stream_reconnecting {
                 StatusChip(text: "재연결 중", color: .orange)
             } else if outputs.stats.streaming {
@@ -111,6 +116,8 @@ struct StatusChip: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color, in: Capsule())
+            .lineLimit(1)
+            .fixedSize()
     }
 }
 
@@ -309,9 +316,15 @@ struct Sidebar: View {
                 }
             }
 
-            Section("오디오") {
+            Section {
                 AudioInputRow(core: core) {
                     filtersToEdit = EditedSource(name: String(cString: core_audio_input_name()))
+                }
+            } header: {
+                HStack {
+                    Text("오디오")
+                    Spacer()
+                    audioFiltersMenu
                 }
             }
         }
@@ -330,7 +343,7 @@ struct Sidebar: View {
         }
         .sheet(item: $sourceToEdit) { source in
             NavigationStack {
-                SourcePropertiesView(sourceName: source.name) { model.setNeedsSave() }
+                SourcePropertiesView(sourceName: source.name, showsFilters: true) { model.setNeedsSave() }
                     .navigationTitle(source.name)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -362,6 +375,31 @@ struct Sidebar: View {
         } message: {
             Text("같은 이름이 이미 있으면 바뀌지 않습니다.")
         }
+    }
+
+    /// 오디오 머리글 옆: 오디오 입력과 이 장면의 소리 있는 소스 중 골라 필터를 연다
+    private var audioFiltersMenu: some View {
+        let audioInput = String(cString: core_audio_input_name())
+        var seen: Set<String> = [audioInput]
+        let sources = model.items.filter { $0.audio && seen.insert($0.name).inserted }.map(\.name)
+
+        return Menu {
+            Button(audioInput.isEmpty ? "오디오 입력" : audioInput, systemImage: "mic") {
+                filtersToEdit = EditedSource(name: audioInput)
+            }
+            .disabled(audioInput.isEmpty)
+            if !sources.isEmpty {
+                Section("이 장면의 소스") {
+                    ForEach(sources, id: \.self) { name in
+                        Button(name) { filtersToEdit = EditedSource(name: name) }
+                    }
+                }
+            }
+        } label: {
+            Label("오디오 필터", systemImage: "waveform")
+                .font(.footnote.weight(.semibold))
+        }
+        .textCase(nil)
     }
 
     private func startRenaming(_ target: Renaming, current: String) {
@@ -412,6 +450,12 @@ struct SourceRow: View {
                 Button("속성…", systemImage: "slider.horizontal.3", action: editProperties)
                 if item.audio {
                     Button("오디오 필터…", systemImage: "waveform", action: editFilters)
+                }
+                if item.type == "ios_media_source" {
+                    Divider()
+                    Button("재생/일시정지", systemImage: "playpause") { _ = core_source_media(item.name, 0) }
+                    Button("처음부터", systemImage: "backward.end") { _ = core_source_media(item.name, 1) }
+                    Button("정지", systemImage: "stop") { _ = core_source_media(item.name, 2) }
                 }
                 Button("이름 바꾸기…", systemImage: "pencil", action: rename)
                 Divider()

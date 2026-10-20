@@ -16,6 +16,7 @@ enum AppSettings {
     static let canvasHeight = "canvasHeight"
     static let canvasFPS = "canvasFPS"
     static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
+    static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -28,6 +29,7 @@ enum AppSettings {
             canvasWidth: 1920,
             canvasHeight: 1080,
             canvasFPS: 60,
+            replaySeconds: 30,
         ])
     }
 
@@ -137,6 +139,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.recordCodec) private var recordCodec = "hevc"
     @AppStorage(AppSettings.recordBitrate) private var recordBitrate = 20000
     @AppStorage(AppSettings.recordAudioBitrate) private var recordAudioBitrate = 192
+    @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
 
     @State private var streamKey = ""
     @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
@@ -161,6 +164,7 @@ struct SettingsView: View {
             Form {
                 streamSection
                 recordSection
+                replaySection
                 canvasSection
 
                 Section("정보") {
@@ -190,7 +194,7 @@ struct SettingsView: View {
 
     private var streamSection: some View {
         Section {
-            TextField("rtmp://… 또는 rtmps://…", text: $server)
+            TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
                 .keyboardType(.URL)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -208,7 +212,7 @@ struct SettingsView: View {
             Text("송출")
         } footer: {
             Text(
-                "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
+                "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
             )
         }
         .disabled(outputs.stats.streaming)
@@ -238,6 +242,21 @@ struct SettingsView: View {
             Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다.")
         }
         .disabled(outputs.stats.recording)
+    }
+
+    private var replaySection: some View {
+        Section {
+            Picker("길이", selection: $replaySeconds) {
+                ForEach([10, 15, 30, 60, 120, 300], id: \.self) { seconds in
+                    Text(seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분").tag(seconds)
+                }
+            }
+        } header: {
+            Text("리플레이 버퍼")
+        } footer: {
+            Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 녹화 코덱·비트레이트를 같이 씁니다.")
+        }
+        .disabled(outputs.stats.replay_active)
     }
 
     private var canvasSection: some View {
@@ -351,6 +370,7 @@ struct LicensesView: View {
         Entry(file: "librtmp", title: "librtmp (obs-outputs)", license: "LGPL-2.1"),
         Entry(file: "rnnoise", title: "RNNoise (obs-filters 노이즈 억제)", license: "BSD-3-Clause"),
         Entry(file: "mbedtls", title: "Mbed TLS", license: "Apache-2.0 또는 GPL-2.0-or-later"),
+        Entry(file: "srt", title: "SRT (libsrt)", license: "MPL-2.0"),
         Entry(file: "jansson", title: "Jansson", license: "MIT"),
         Entry(file: "libcaption", title: "libcaption", license: "MIT"),
         Entry(file: "simde", title: "SIMDe", license: "MIT"),

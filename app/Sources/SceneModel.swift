@@ -23,6 +23,8 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "color_source_v3": "단색"
         case "image_source": "이미지"
         case "slideshow_v2", "slideshow": "이미지 슬라이드쇼"
+        case "ios_text_source": "텍스트"
+        case "ios_media_source": "미디어 (동영상·음악 파일)"
         default: name
         }
     }
@@ -33,6 +35,8 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "color_source_v3": "paintpalette"
         case "image_source": "photo"
         case "slideshow_v2", "slideshow": "photo.on.rectangle"
+        case "ios_text_source": "textformat"
+        case "ios_media_source": "film"
         default: "square.on.square"
         }
     }
@@ -284,6 +288,31 @@ final class SceneModel: ObservableObject {
             remove(cameraItem)
         }
 
+        // 미디어 소스: CI가 Documents/test-media.mp4(3초, 640x360, 소리 있음)를 넣어 둔다. 반복 재생으로 남긴다.
+        // 재생은 플러그인 로그("first video frame", "looping")로 CI가 확인한다.
+        let testMedia = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("test-media.mp4")
+        var mediaResult = "skipped (no test media)"
+        if FileManager.default.fileExists(atPath: testMedia.path),
+            let mediaType = types.first(where: { $0.id == "ios_media_source" }), let mediaName = addSource(type: mediaType)
+        {
+            core_source_update(mediaName, encodeJSON(["local_file": .string(testMedia.path), "looping": .bool(true)]))
+            mediaResult = "added"
+        }
+        appLog("media autotest: \(mediaResult)")
+
+        // 텍스트 소스: 만들자마자 기본 글("텍스트")을 그린 크기가 있어야 한다. 스크린숏에 보이게 한국어 두 줄을 남긴다.
+        var textResult = "no text type"
+        if let textType = types.first(where: { $0.id == "ios_text_source" }), let textName = addSource(type: textType) {
+            let box = selectionBox
+            let width = box.count == 4 ? box[1].x - box[0].x : 0
+            let height = box.count == 4 ? box[3].y - box[0].y : 0
+            core_source_update(
+                textName,
+                encodeJSON(["text": .string("안녕하세요 Broadcast\n둘째 줄"), "size": .number(64), "outline": .bool(true)]))
+            textResult = width > 0 && height > 0 ? "ok \(Int(width))x\(Int(height))" : "empty"
+        }
+
         // 형식의 fps 범위 → 고를 수 있는 값
         let sampleChoices = FrameRateChoice.choices(
             in: [.init(min: 59.94, max: 59.94), .init(min: 1, max: 30)],
@@ -352,9 +381,10 @@ final class SceneModel: ObservableObject {
         let status =
             !(changed && restored) ? "canvas change failed"
             : !cameraFrameRate.hasPrefix("ok") ? "camera frame rate property \(cameraFrameRate)"
+            : !textResult.hasPrefix("ok") ? "text source \(textResult)"
             : !choicesOK ? "frame rate choices wrong \(sampleChoices)" : "ok"
         appLog(
-            "scenes autotest: \(status) (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1), camera frame rate \(cameraFrameRate), choices \(sampleChoices))"
+            "scenes autotest: \(status) (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1), camera frame rate \(cameraFrameRate), choices \(sampleChoices), text \(textResult))"
         )
     }
 }

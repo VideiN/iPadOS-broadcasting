@@ -53,9 +53,16 @@ static void service_destroy(void *data)
 	bfree(service);
 }
 
+static bool is_srt_url(const char *url)
+{
+	return url && strncasecmp(url, "srt://", 6) == 0;
+}
+
 static const char *service_get_protocol(void *data)
 {
 	struct app_service *service = data;
+	if (is_srt_url(service->server))
+		return "SRT";
 	return service->server && strncasecmp(service->server, "rtmps://", 8) == 0 ? "RTMPS" : "RTMP";
 }
 
@@ -75,6 +82,8 @@ static const char *service_get_connect_info(void *data, uint32_t type)
 	case OBS_SERVICE_CONNECT_INFO_SERVER_URL:
 		return service_get_url(data);
 	case OBS_SERVICE_CONNECT_INFO_STREAM_KEY:
+		// SRT에서는 같은 값(OBS_SERVICE_CONNECT_INFO_STREAM_ID)이 streamid다 (비어 있으면 URL의 streamid=…).
+		// 암호는 URL의 passphrase=…
 		return service_get_key(data);
 	default:
 		return NULL;
@@ -89,8 +98,8 @@ static bool service_can_try_to_connect(void *data)
 
 static const char *service_get_output_type(void *data)
 {
-	UNUSED_PARAMETER(data);
-	return "rtmp_output";
+	struct app_service *service = data;
+	return is_srt_url(service->server) ? "ffmpeg_mpegts_muxer" : "rtmp_output";
 }
 
 static struct obs_service_info app_service_info = {
@@ -116,6 +125,7 @@ static struct {
 	obs_encoder_t *stream_audio;
 	obs_output_t *recording;
 	obs_output_t *streaming;
+	obs_output_t *replay;
 	obs_service_t *service;
 
 	pthread_mutex_t mutex; // 아래 마지막 결과
@@ -123,6 +133,8 @@ static struct {
 	int stream_stop_code;
 	char record_error[512];
 	char stream_error[512];
+	int replay_saved_count;
+	char replay_last_path[1024];
 } out = {.mutex = PTHREAD_MUTEX_INITIALIZER};
 
 void core_outputs_register(void)
@@ -298,7 +310,7 @@ static obs_encoder_t *prepare_audio_encoder(obs_encoder_t *encoder, const char *
 bool core_outputs_active(void)
 {
 	return (out.recording && obs_output_active(out.recording)) ||
-	       (out.streaming && obs_output_active(out.streaming));
+	       (out.streaming && obs_output_active(out.streaming)) || (out.replay && obs_output_active(out.replay));
 }
 
 #pragma mark - 녹화
@@ -385,8 +397,15 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 
 	out.stream_video = prepare_video_encoder(out.stream_video, codec, "Stream Video", "CBR", video_kbps);
 	out.stream_audio = prepare_audio_encoder(out.stream_audio, "Stream Audio", audio_kbps);
+
+	// RTMP/RTMPS는 rtmp_output, SRT는 obs-ffmpeg의 mpegts 출력 (P5). 프로토콜이 바뀌면 출력을 다시 만든다
+	const char *output_id = is_srt_url(server) ? "ffmpeg_mpegts_muxer" : "rtmp_output";
+	if (out.streaming && strcmp(obs_output_get_id(out.streaming), output_id) != 0) {
+		obs_output_release(out.streaming);
+		out.streaming = NULL;
+	}
 	if (!out.streaming) {
-		out.streaming = create_output("rtmp_output", "Streaming", true);
+		out.streaming = create_output(output_id, "Streaming", true);
 		if (out.streaming)
 			obs_output_set_reconnect_settings(out.streaming, 20, 5);
 	}
@@ -406,9 +425,11 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 		return false;
 	}
 
-	// 서버 주소는 남기되 스트림 키는 로그에 남기지 않는다
+	// 서버 주소는 남기되 스트림 키와 URL의 옵션(SRT passphrase 등)은 로그에 남기지 않는다
 	video_t *video = obs_encoder_video(out.stream_video);
-	blog(LOG_INFO, "[app] streaming to %s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)", server, codec, video_kbps,
+	const char *query = strchr(server, '?');
+	blog(LOG_INFO, "[app] streaming to %.*s%s (%s %d kbps at %.2f fps %ux%u, AAC %d kbps)",
+	     query ? (int)(query - server) : (int)strlen(server), server, query ? "?…" : "", codec, video_kbps,
 	     video ? video_output_get_frame_rate(video) : 0.0, obs_encoder_get_width(out.stream_video),
 	     obs_encoder_get_height(out.stream_video), audio_kbps);
 	return true;
@@ -425,6 +446,101 @@ void core_streaming_stop(bool force)
 	} else {
 		obs_output_stop(out.streaming);
 	}
+}
+
+#pragma mark - 리플레이 버퍼
+
+// obs-outputs의 ios_replay_buffer: 마지막 몇 초의 인코딩된 패킷을 메모리에 두었다가 저장하면 MP4로 쓴다.
+// 녹화 인코더를 같이 쓴다 (녹화와 리플레이를 함께 켜도 하드웨어 인코더 세션이 늘지 않는다).
+
+static void replay_saved(void *param, calldata_t *cd)
+{
+	UNUSED_PARAMETER(param);
+	const char *path = calldata_string(cd, "path");
+	blog(LOG_INFO, "[app] replay saved: %s", path ? path : "");
+
+	pthread_mutex_lock(&out.mutex);
+	out.replay_saved_count++;
+	snprintf(out.replay_last_path, sizeof(out.replay_last_path), "%s", path ? path : "");
+	pthread_mutex_unlock(&out.mutex);
+}
+
+static void replay_stopped(void *param, calldata_t *cd)
+{
+	UNUSED_PARAMETER(param);
+	const int code = (int)calldata_int(cd, "code");
+	blog(code == OBS_OUTPUT_SUCCESS ? LOG_INFO : LOG_WARNING, "[app] replay buffer stopped: %s (%d)",
+	     stop_code_text(code), code);
+}
+
+static bool start_replay_with(const char *codec, const char *directory, int seconds, int video_kbps, int audio_kbps)
+{
+	out.record_video = prepare_video_encoder(out.record_video, codec, "Record Video", "ABR", video_kbps);
+	out.record_audio = prepare_audio_encoder(out.record_audio, "Record Audio", audio_kbps);
+	if (!out.replay) {
+		out.replay = obs_output_create("ios_replay_buffer", "Replay Buffer", NULL, NULL);
+		if (out.replay) {
+			signal_handler_t *handler = obs_output_get_signal_handler(out.replay);
+			signal_handler_connect(handler, "saved", replay_saved, NULL);
+			signal_handler_connect(handler, "stop", replay_stopped, NULL);
+		}
+	}
+	if (!out.replay || !out.record_video || !out.record_audio)
+		return false;
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_string(settings, "directory", directory);
+	obs_data_set_int(settings, "max_time_sec", seconds);
+	obs_output_update(out.replay, settings);
+	obs_data_release(settings);
+
+	obs_output_set_video_encoder(out.replay, out.record_video);
+	obs_output_set_audio_encoder(out.replay, out.record_audio, 0);
+
+	if (obs_output_start(out.replay)) {
+		blog(LOG_INFO, "[app] replay buffer: last %d s to %s (%s)", seconds, directory,
+		     obs_encoder_get_codec(out.record_video));
+		return true;
+	}
+
+	const char *error = obs_output_get_last_error(out.replay);
+	blog(LOG_WARNING, "[app] replay buffer failed to start with %s: %s", codec, error ? error : "unknown error");
+	return false;
+}
+
+bool core_replay_start(const char *directory, int seconds, const char *codec, int video_kbps, int audio_kbps)
+{
+	if (out.replay && obs_output_active(out.replay))
+		return true;
+	if (start_replay_with(codec, directory, seconds, video_kbps, audio_kbps))
+		return true;
+	// 녹화와 같이 그 코덱을 쓸 수 없으면 H.264로
+	if (strcmp(codec, "h264") != 0)
+		return start_replay_with("h264", directory, seconds, video_kbps, audio_kbps);
+	return false;
+}
+
+void core_replay_stop(void)
+{
+	if (out.replay)
+		obs_output_stop(out.replay);
+}
+
+void core_replay_save(void)
+{
+	if (!out.replay || !obs_output_active(out.replay))
+		return;
+	calldata_t cd = {0};
+	proc_handler_call(obs_output_get_proc_handler(out.replay), "save", &cd);
+	calldata_free(&cd);
+}
+
+char *core_replay_last_path(void)
+{
+	pthread_mutex_lock(&out.mutex);
+	char *path = bstrdup(out.replay_last_path);
+	pthread_mutex_unlock(&out.mutex);
+	return path;
 }
 
 #pragma mark - 상태 조회
@@ -453,6 +569,11 @@ void core_get_output_stats(struct core_output_stats *stats)
 		stats->stream_congestion = obs_output_get_congestion(out.streaming);
 	}
 
+	if (out.replay) {
+		stats->replay_active = obs_output_active(out.replay);
+		stats->replay_bytes = obs_output_get_total_bytes(out.replay);
+	}
+
 	video_t *video = obs_get_video();
 	stats->encoder_skipped_frames = video ? video_output_get_skipped_frames(video) : 0;
 	stats->video_total_frames = video ? video_output_get_total_frames(video) : 0;
@@ -460,6 +581,7 @@ void core_get_output_stats(struct core_output_stats *stats)
 	pthread_mutex_lock(&out.mutex);
 	stats->record_stop_code = out.record_stop_code;
 	stats->stream_stop_code = out.stream_stop_code;
+	stats->replay_saved_count = out.replay_saved_count;
 	pthread_mutex_unlock(&out.mutex);
 }
 

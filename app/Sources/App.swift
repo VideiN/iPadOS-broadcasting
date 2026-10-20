@@ -127,6 +127,7 @@ final class Core: ObservableObject {
                 SceneModel.shared.refresh()
                 SceneModel.shared.runAutotestIfRequested()
                 Outputs.shared.runAutotestIfRequested()
+                Outputs.shared.runSRTAutotestIfRequested()
             }
         }
     }

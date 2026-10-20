@@ -112,7 +112,7 @@ jobs:
           mkdir -p app-run
 
           # 라이선스 화면에 쓰는 파일이 번들에 들어갔는지 (계획 10.1)
-          for license in app obs-studio ffmpeg librtmp rnnoise mbedtls jansson libcaption simde uthash; do
+          for license in app obs-studio ffmpeg librtmp rnnoise srt mbedtls jansson libcaption simde uthash; do
             test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
           done
 
@@ -124,6 +124,15 @@ jobs:
           # 출력 시험 (P3): 앱이 입력 소스가 준비된 뒤 녹화와 RTMP 송출을 20초 동안 함께 돌린다.
           # 송출은 로컬 ffmpeg가 받는다 (시뮬레이터는 호스트와 네트워크를 같이 쓴다).
           command -v ffmpeg > /dev/null || brew install ffmpeg
+
+          # 미디어 소스 시험 (P5): 3초짜리 H.264+AAC 파일을 앱의 Documents에 넣어 둔다 (씬 자동 시험이 반복 재생)
+          ffmpeg -nostdin -hide_banner -loglevel error -y -f lavfi -i testsrc2=size=640x360:rate=30 \
+            -f lavfi -i sine=frequency=440:sample_rate=48000 -t 3 -c:v libx264 -preset ultrafast -pix_fmt yuv420p \
+            -c:a aac -b:a 128k -shortest app-run/test-media.mp4
+          media_dir=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/Documents
+          mkdir -p "$media_dir"
+          cp app-run/test-media.mp4 "$media_dir/"
+
           ffmpeg -nostdin -hide_banner -listen 1 -timeout 150 -i rtmp://127.0.0.1:1935/live/autotest \
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
           ffmpeg_pid=$!
@@ -149,21 +158,38 @@ jobs:
           if [ -n "$data_dir" ]; then
             cp "$data_dir/Documents/broadcast.log" app-run/ || true
             cp "$data_dir/Documents/Recordings/autotest.mp4" app-run/ || true
+            # 리플레이 버퍼가 저장한 파일 (P5)
+            for replay in "$data_dir"/Documents/Recordings/Replay*.mp4; do
+              if [ -f "$replay" ]; then cp "$replay" app-run/replay.mp4; fi
+            done
           fi
 
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
 
           # 씬 구성 저장·불러오기: 다시 띄우면 기본 씬과 "시험 장면", 2개를 불러와야 한다
+          # 이번에는 SRT 송출(P5)을 10초 돌린다. 러너의 ffmpeg에는 SRT가 없어 받는 쪽은 libsrt의
+          # srt-live-transmit listener (받은 MPEG-TS를 그대로 파일로, 송출이 끊기면 끝남)
+          brew list srt > /dev/null 2>&1 || brew install srt
+          srt-live-transmit -a:no -t:120 'srt://:9000?mode=listener' file://con \
+            > app-run/received-srt.ts 2> app-run/ffmpeg-srt.log &
+          ffmpeg_srt_pid=$!
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
-            > app-run/app-relaunch.log 2>&1 &
+            -autotest-srt 10 srt://127.0.0.1:9000 > app-run/app-relaunch.log 2>&1 &
           for _ in $(seq 1 60); do
             grep -q 'capture started' app-run/app-relaunch.log && break
             sleep 2
           done
           xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-relaunch.png || true
+          for _ in $(seq 1 30); do
+            grep -q 'srt autotest: done' app-run/app-relaunch.log && break
+            sleep 2
+          done
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
+          (sleep 5; kill "$ffmpeg_srt_pid" 2> /dev/null) &
+          wait "$ffmpeg_srt_pid" || true
+          cat app-run/ffmpeg-srt.log
 
           # 송출이 끝나면 ffmpeg도 끝난다. 연결조차 안 됐으면 기다리지 않고 끝낸다
           (sleep 5; kill "$ffmpeg_pid" 2> /dev/null) &
@@ -188,23 +214,35 @@ jobs:
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
           grep -q 'filters autotest: ok' app-run/app.log
+          # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
+          grep -q 'media autotest: added' app-run/app.log
+          grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log
+          grep -q 'ios-media-source: .*looping (play 2)' app-run/app.log
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
 
-          # 녹화 파일(Hybrid MP4)과 받은 송출(FLV)을 ffprobe로 확인: 비디오·오디오 코덱과 길이 10초 이상
+          # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {
-            local file=$1 video=$2
+            local file=$1 video=$2 min=${3:-10} max=${4:-100000}
             ffprobe -v error -show_entries stream=codec_type,codec_name,width,height:format=duration \
               -of default=noprint_wrappers=1 "$file" | tee "$file.txt"
             grep -Eq "codec_name=($video)" "$file.txt"
             grep -q 'codec_name=aac' "$file.txt"
-            awk -F= '/^duration=/ { found = 1; if ($2 + 0 < 10) exit 1 } END { if (!found) exit 1 }' "$file.txt"
+            awk -F= -v min="$min" -v max="$max" \
+              '/^duration=/ { found = 1; if ($2 + 0 < min || $2 + 0 > max) exit 1 } END { if (!found) exit 1 }' "$file.txt"
           }
           check_media app-run/autotest.mp4 'hevc|h264'
           check_media app-run/received.flv 'h264'
+          # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
+          grep -q '\[app\] replay saved: ' app-run/app.log
+          check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
+          # SRT 송출 10초 (P5)
+          grep -q 'srt autotest: started true' app-run/app-relaunch.log
+          grep -q "srt autotest: done (stream error '')" app-run/app-relaunch.log
+          check_media app-run/received-srt.ts 'h264' 7
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
-          rm -f app-run/autotest.mp4 app-run/received.flv
+          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

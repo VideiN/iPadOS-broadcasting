@@ -571,7 +571,9 @@ int64_t core_scene_add_source(const char *type_id, const char *name)
 	if (!item)
 		return -1;
 
-	fit_item_to_canvas(item);
+	// 텍스트는 글자 크기 그대로 둔다 (캔버스에 맞추면 짧은 글이 크게 늘어난다)
+	if (strcmp(type_id, "ios_text_source") != 0)
+		fit_item_to_canvas(item);
 	blog(LOG_INFO, "[app] added source '%s' (%s)", obs_source_get_name(source), type_id);
 	return obs_sceneitem_get_id(item);
 }
@@ -863,6 +865,41 @@ bool core_source_muted(const char *source_name)
 	bool muted = source ? obs_source_muted(source) : false;
 	obs_source_release(source);
 	return muted;
+}
+
+#pragma mark - 미디어 조작
+
+// action: 0 재생/일시정지 전환, 1 처음부터, 2 정지. 돌려주는 값은 조작 뒤 상태 (enum obs_media_state)
+int core_source_media(const char *source_name, int action)
+{
+	obs_source_t *source = obs_get_source_by_name(source_name);
+	if (!source)
+		return OBS_MEDIA_STATE_NONE;
+
+	switch (action) {
+	case 0: {
+		const enum obs_media_state state = obs_source_media_get_state(source);
+		if (state == OBS_MEDIA_STATE_PLAYING)
+			obs_source_media_play_pause(source, true);
+		else if (state == OBS_MEDIA_STATE_PAUSED)
+			obs_source_media_play_pause(source, false);
+		else
+			obs_source_media_restart(source);
+		break;
+	}
+	case 1:
+		obs_source_media_restart(source);
+		break;
+	case 2:
+		obs_source_media_stop(source);
+		break;
+	default:
+		break;
+	}
+
+	const enum obs_media_state state = obs_source_media_get_state(source);
+	obs_source_release(source);
+	return state;
 }
 
 #pragma mark - 필터

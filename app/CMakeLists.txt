@@ -40,10 +40,13 @@ target_link_libraries(
     OBS::image-source
     OBS::avcapture
     OBS::ios-audio-input
+    OBS::ios-text
+    OBS::ios-media-source
     OBS::mac-videotoolbox
     OBS::coreaudio-encoder
     OBS::outputs
     OBS::filters
+    OBS::ffmpeg
 )
 set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
@@ -106,6 +109,12 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-audio-input/data"
     "${bundle_dir}/obs-plugins/ios-audio-input"
   COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-text/data"
+    "${bundle_dir}/obs-plugins/ios-text"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-media-source/data"
+    "${bundle_dir}/obs-plugins/ios-media-source"
+  COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-videotoolbox/data"
     "${bundle_dir}/obs-plugins/mac-videotoolbox"
   COMMAND
@@ -117,6 +126,9 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-filters/data"
     "${bundle_dir}/obs-plugins/obs-filters"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/data"
+    "${bundle_dir}/obs-plugins/obs-ffmpeg"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
   # 라이선스 화면용 (계획 10.1): 이 앱·OBS Studio(GPLv2+), OBS가 함께 넣은 코드, 의존성(ios/deps/build-deps.sh가 모음)
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${bundle_dir}/licenses"

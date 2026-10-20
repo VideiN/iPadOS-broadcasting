@@ -29,6 +29,9 @@ CMOCKA_SHA256=58435b558766d7f4c729ba163bdf3aec38bed3bc766dab684e3526ed0aa7c780
 # RTMPS (obs-outputs). 릴리스 tarball에는 생성 파일과 framework가 들어 있어 GEN_FILES=OFF로 빌드된다.
 MBEDTLS_VERSION=3.6.4
 MBEDTLS_SHA256=ec35b18a6c593cf98c3e30db8b98ff93e8940a8c4e690e66b41dfc011d678110
+# SRT 송출 (obs-ffmpeg의 mpegts 출력, P5). 암호화는 위 mbedtls로 한다. MPL-2.0
+SRT_VERSION=1.5.7
+SRT_SHA256=017cd1e437ef2073a4dd10ddf7b55e86bc3d6ebac0393d13bd22f6a57055d32b
 
 platform=${1:?usage: build-deps.sh <iphoneos|iphonesimulator> [prefix]}
 case "$platform" in
@@ -141,6 +144,26 @@ cmake_ios "$work_dir/mbedtls" "$work_dir/mbedtls/build" \
   -DGEN_FILES=OFF
 echo "::endgroup::"
 
+echo "::group::SRT $SRT_VERSION"
+fetch "srt-$SRT_VERSION.tar.gz" \
+  "https://github.com/Haivision/srt/archive/refs/tags/v$SRT_VERSION.tar.gz" "$SRT_SHA256"
+unpack "$src_dir/srt-$SRT_VERSION.tar.gz" "$work_dir/srt"
+install_license srt "$work_dir/srt/LICENSE"
+# mbedtls 위치를 직접 넘겨 호스트(macOS)의 라이브러리를 찾지 않게 한다
+cmake_ios "$work_dir/srt" "$work_dir/srt/build" \
+  -DENABLE_APPS=OFF \
+  -DENABLE_SHARED=OFF \
+  -DENABLE_STATIC=ON \
+  -DENABLE_UNITTESTS=OFF \
+  -DENABLE_TESTING=OFF \
+  -DENABLE_EXAMPLES=OFF \
+  -DENABLE_ENCRYPTION=ON \
+  -DUSE_ENCLIB=mbedtls \
+  -DSSL_INCLUDE_DIRS="$prefix/include" \
+  -DSSL_LIBRARY_DIRS="$prefix/lib" \
+  -DSSL_LIBRARIES="mbedtls;mbedx509;mbedcrypto"
+echo "::endgroup::"
+
 echo "::group::cmocka $CMOCKA_VERSION (unit tests)"
 fetch "cmocka-$CMOCKA_VERSION.tar.xz" \
   "https://cmocka.org/files/1.1/cmocka-$CMOCKA_VERSION.tar.xz" "$CMOCKA_SHA256"
@@ -181,6 +204,8 @@ mkdir -p "$work_dir/ffmpeg/build"
     --disable-avdevice \
     --disable-avfilter \
     --enable-protocol=file \
+    --enable-muxer=mpegts \
+    --enable-bsf=h264_mp4toannexb,hevc_mp4toannexb,aac_adtstoasc \
     --enable-demuxer=image2,image_png_pipe,image_jpeg_pipe,image_webp_pipe,image_bmp_pipe,image_gif_pipe,gif \
     --enable-decoder=png,mjpeg,gif,webp,bmp,targa
   make -j"$jobs"
@@ -193,6 +218,7 @@ cat > "$prefix/VERSIONS" <<EOF
 ffmpeg $FFMPEG_VERSION
 jansson $JANSSON_VERSION
 mbedtls $MBEDTLS_VERSION
+srt $SRT_VERSION
 simde $SIMDE_VERSION
 uthash $UTHASH_VERSION
 cmocka $CMOCKA_VERSION
