@@ -168,6 +168,7 @@ struct SettingsView: View {
                 canvasSection
 
                 Section("정보") {
+                    BuildInfoRows()
                     NavigationLink("진단과 로그") { DiagnosticsView() }
                     NavigationLink("오픈소스 라이선스") { LicensesView() }
                     LabeledContent("버전", value: appVersion)
