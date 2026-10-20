@@ -142,10 +142,15 @@ jobs:
           python3 -m http.server 8099 --bind 127.0.0.1 --directory chat-trap > app-run/chat-trap.log 2>&1 &
           chat_trap_pid=$!
 
+          # YouTube 로그인 시험(P8): Google OAuth·YouTube API 흉내. 송출 주소·키를 이 흐름으로 받아 위 ffmpeg로 보낸다
+          python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2>&1 &
+          youtube_mock_pid=$!
+
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
-            -autotest-output 20 rtmp://127.0.0.1:1935/live > app-run/app.log 2>&1 &
+            -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
+            > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -219,6 +224,20 @@ jobs:
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
           grep -q 'filters autotest: ok' app-run/app.log
+          # YouTube 로그인 (P8): 인증 주소 → 콜백 → PKCE 교환, 만료된 토큰 갱신, 스트림·방송 만들기·연결
+          kill "$youtube_mock_pid" 2> /dev/null || true
+          cat app-run/youtube-mock.log
+          grep -q 'youtube autotest: ok (broadcast mockBroadcast1)' app-run/app.log
+          for step in 'auth ok' 'pkce ok' 'channels ok' 'refresh ok' 'stream created' 'broadcast ok' 'bind ok'; do
+            grep -q "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
+          done
+          if grep -q '^FAIL' app-run/youtube-mock.log; then exit 1; fi
+          # 교환 때 받은 토큰으로 채널을 조회하고, 그 토큰이 만료되자(401) 갱신해서 다시 보내야 한다
+          awk '/^channels ok/ { s = 1 } s == 1 && /^401 GET \/youtube\/v3\/liveStreams/ { s = 2 }
+               s == 2 && /^refresh ok/ { s = 3 } s == 3 && /^liveStreams list/ { s = 4 }
+               END { exit s == 4 ? 0 : 1 }' app-run/youtube-mock.log
+          # 토큰은 로그에 남지 않아야 한다
+          if grep -E 'mock-(access|refresh)|mock-code' app-run/app.log; then echo 'token in app log'; exit 1; fi
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
