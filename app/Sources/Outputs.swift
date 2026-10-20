@@ -351,6 +351,9 @@ struct OutputControls: View {
         .sheet(isPresented: $showSettings) {
             SettingsView(core: Core.shared, outputs: outputs)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .autotestSheet)) { note in
+            showSettings = note.object as? String == "settings"
+        }
     }
 
     private func buttons(iconOnly: Bool) -> some View {
