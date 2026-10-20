@@ -6,8 +6,36 @@
 set(APP_DISPLAY_NAME "Broadcast")
 set(APP_EXECUTABLE "Broadcast")
 set(APP_BUNDLE_ID "io.github.videin.broadcast")
-set(APP_VERSION "0.1.0")
 set(APP_BUILD_NUMBER "${OBS_BUILD_NUMBER}")
+
+# 빌드 정보: 설치한 앱이 어느 CI 실행에서 나왔는지 LiveContainer 목록·설정·오버레이·로그에서 알아보게 한다 (BuildInfo.swift).
+# 실행 번호는 GitHub Actions 목록의 "#번호". LiveContainer 목록은 CFBundleShortVersionString을 보여 주므로 버전 끝자리에 넣는다.
+if(DEFINED ENV{GITHUB_RUN_NUMBER})
+  set(APP_BUILD_RUN "$ENV{GITHUB_RUN_NUMBER}")
+  set(APP_BUILD_RUN_ID "$ENV{GITHUB_RUN_ID}")
+  set(APP_BUILD_REPOSITORY "$ENV{GITHUB_REPOSITORY}")
+  set(APP_BUILD_COMMIT "$ENV{GITHUB_SHA}")
+  # PR이면 GITHUB_REF_NAME이 "<번호>/merge"라서 PR의 브랜치를 쓴다
+  if(NOT "$ENV{GITHUB_HEAD_REF}" STREQUAL "")
+    set(APP_BUILD_BRANCH "$ENV{GITHUB_HEAD_REF}")
+  else()
+    set(APP_BUILD_BRANCH "$ENV{GITHUB_REF_NAME}")
+  endif()
+else()
+  set(APP_BUILD_RUN "0")
+  set(APP_BUILD_RUN_ID "")
+  set(APP_BUILD_REPOSITORY "")
+  set(APP_BUILD_COMMIT "")
+  set(APP_BUILD_BRANCH "")
+endif()
+string(TIMESTAMP APP_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
+# Info.plist에 그대로 들어가므로 XML 특수 문자를 바꾼다
+foreach(_var IN ITEMS APP_BUILD_BRANCH APP_BUILD_REPOSITORY)
+  string(REPLACE "&" "&amp;" ${_var} "${${_var}}")
+  string(REPLACE "<" "&lt;" ${_var} "${${_var}}")
+  string(REPLACE ">" "&gt;" ${_var} "${${_var}}")
+endforeach()
+set(APP_VERSION "0.1.${APP_BUILD_RUN}")
 
 if(OBS_IOS_SDK_PATH MATCHES "[Ss]imulator")
   set(APP_SUPPORTED_PLATFORM "iPhoneSimulator")
@@ -56,6 +84,7 @@ add_executable(
   app
   MACOSX_BUNDLE
   Sources/App.swift
+  Sources/BuildInfo.swift
   Sources/ContentView.swift
   Sources/PreviewView.swift
   Sources/Outputs.swift
