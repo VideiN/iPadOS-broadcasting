@@ -670,11 +670,13 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         webView.isUserInteractionEnabled = true
         container.addSubview(webView)
+        appLog("chat panel: on screen")
     }
 
     func hide(from container: UIView) {
         guard let webView, webView.superview === container else { return }
         park(webView)
+        appLog("chat panel: behind the window")
     }
 
     /// 창 맨 뒤 (그려지지만 보이지 않음): 탭을 숨겨도 페이지가 멈추지 않게
@@ -1243,12 +1245,17 @@ final class ChatFeed: ObservableObject {
         let directOK = await wait(30) { source == .direct && count("d-") >= 5 && removed >= 2 }
         appLog("chat autotest: direct \(directOK ? "ok" : "failed") (sent \(count("d-")), removals \(removed))")
 
+        // 사용자가 옆 칸의 채팅 탭을 누른 것처럼 (탭 화면이 패널을 열고 웹 화면을 붙인다)
+        UserDefaults.standard.set("chat", forKey: "sideColumnTab")
         openPanel()
         let removedBefore = removed
         let panelOK = await wait(30) { source == .panel && count("p-") >= 2 && removed > removedBefore }
         appLog("chat autotest: panel \(panelOK ? "ok" : "failed") (sent \(count("p-")), source \(source.rawValue))")
+        // CI가 이때 패널 화면을 찍는다
+        await pause(4)
 
         // 패널을 닫으면 직접 받기로 돌아가는데, mock은 이제 형식이 바뀐 페이지를 준다 → 공식 API
+        UserDefaults.standard.set("sources", forKey: "sideColumnTab")
         closePanel()
         let apiOK = await wait(45) { source == .api && count("a-") >= 2 }
         appLog("chat autotest: api \(apiOK ? "ok" : "failed") (sent \(count("a-")), source \(source.rawValue))")
