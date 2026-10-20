@@ -735,9 +735,9 @@ enum UIAutotest {
         await shot("4-landscape")
 
         await sheet("add source", shot: "5-add-source")
-        // 채팅 소스(상태 줄이 있는 속성)가 있으면 그것을, 없으면 첫 소스
+        // 맨 위 채팅 소스(장면 시험이 마지막에 넣은 YouTube 채팅, 속성에 상태 줄이 있다)가 있으면 그것을, 없으면 맨 위 소스
         let items = SceneModel.shared.items
-        if let item = items.last(where: { $0.type == "ios_chat_source" }) ?? items.first {
+        if let item = items.first(where: { $0.type == "ios_chat_source" }) ?? items.first {
             await sheet("properties:\(item.name)", shot: "6-properties")
         }
         UserDefaults.standard.set("chat", forKey: "sideColumnTab")
