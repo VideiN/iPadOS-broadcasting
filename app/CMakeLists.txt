@@ -17,6 +17,21 @@ else()
   set(APP_PLATFORM_NAME "iphoneos")
 endif()
 
+# 유튜브 로그인(P8)의 Google OAuth 클라이언트 ID (iOS 유형). Google API 약관상 오픈 소스 코드에는 넣지 않고,
+# CI가 저장소 비밀값(YOUTUBE_CLIENT_ID)으로 넘긴다. Info.plist에는 16진수로 넣는다 (번들을 글자로 훑어서는 안 보이게).
+# 비어 있으면 앱 설정에서 사용자가 자기 클라이언트 ID를 넣는다.
+set(APP_YOUTUBE_CLIENT_ID "" CACHE STRING "Google OAuth iOS client ID for YouTube login")
+string(STRIP "${APP_YOUTUBE_CLIENT_ID}" _youtube_client_id)
+set(APP_YOUTUBE_CLIENT_HEX "")
+if(_youtube_client_id)
+  # 값은 찍지 않는다
+  if(NOT _youtube_client_id MATCHES "^[0-9]+-[0-9A-Za-z_]+\\.apps\\.googleusercontent\\.com$")
+    message(FATAL_ERROR "APP_YOUTUBE_CLIENT_ID is not an iOS OAuth client ID (...apps.googleusercontent.com)")
+  endif()
+  string(HEX "${_youtube_client_id}" APP_YOUTUBE_CLIENT_HEX)
+  message(STATUS "YouTube client ID: built in")
+endif()
+
 # libobs 호출을 모은 C 브리지
 add_library(
   app-core

@@ -4,9 +4,9 @@ import SwiftUI
 
 /// 유튜브 계정 (P8): 로그인해서 스트림 키를 받고, 송출할 때 새 방송을 만든다.
 ///
-/// OAuth 2.0 + PKCE, 비밀값이 없는 iOS 유형 클라이언트. 클라이언트 ID는 사용자가 자기 Google Cloud 프로젝트에서
-/// 만들어 넣는다 (PC OBS의 ID는 OBS 프로젝트 것이라 쓸 수 없고, 공개 저장소의 빌드에 ID를 넣지 않는다).
-/// 갱신 토큰은 Keychain, 액세스 토큰은 메모리에만 둔다. 토큰은 로그에 남기지 않는다.
+/// OAuth 2.0 + PKCE, 비밀값이 없는 iOS 유형 클라이언트. 클라이언트 ID는 CI가 저장소 비밀값으로 기기용 빌드에 넣고
+/// (공개 저장소의 코드에는 없다), 빌드에 없으면 사용자가 자기 Google Cloud 프로젝트에서 만들어 넣는다.
+/// 갱신 토큰은 Keychain, 액세스 토큰은 메모리에만 둔다. 토큰과 클라이언트 ID는 로그에 남기지 않는다.
 final class YouTubeAccount: ObservableObject {
     static let shared = YouTubeAccount()
 
@@ -65,8 +65,27 @@ final class YouTubeAccount: ObservableObject {
                       Thread.isMainThread ? "yes" : "no"))
     }
 
-    var clientID: String {
+    /// 빌드에 들어 있는 클라이언트 ID (app/CMakeLists.txt: Info.plist에 16진수로). 없으면 ""
+    static let builtInClientID: String = {
+        let hex = Array((Bundle.main.object(forInfoDictionaryKey: "BroadcastYouTubeClient") as? String ?? "").utf8)
+        guard hex.count % 2 == 0 else { return "" }
+        let bytes = stride(from: 0, to: hex.count, by: 2).compactMap {
+            UInt8(String(decoding: hex[$0..<$0 + 2], as: UTF8.self), radix: 16)
+        }
+        let id = String(decoding: bytes, as: UTF8.self)
+        return YouTubeAccount.isValidClientID(id) ? id : ""
+    }()
+
+    private var settingsClientID: String {
         (AppSettings.defaults.string(forKey: AppSettings.youtubeClientID) ?? "").trimmingCharacters(in: .whitespaces)
+    }
+
+    /// 새로 로그인할 때 쓰는 클라이언트: 빌드에 들어 있으면 그것, 없으면 설정에 넣은 것
+    var clientID: String { Self.builtInClientID.isEmpty ? settingsClientID : Self.builtInClientID }
+
+    /// 갱신 토큰을 받은 클라이언트 (토큰은 받은 클라이언트로만 갱신된다). 이 값을 저장하기 전의 로그인은 설정에 넣은 ID로 했다
+    private var tokenClientID: String {
+        AppSettings.defaults.string(forKey: AppSettings.youtubeTokenClientID) ?? settingsClientID
     }
 
     /// iOS 유형 클라이언트 ID: "<숫자>-<영숫자>.apps.googleusercontent.com"
@@ -99,6 +118,7 @@ final class YouTubeAccount: ObservableObject {
         let redirectURI = "\(scheme):/oauth2redirect"
         let verifier = Self.randomString(64)
         let state = Self.randomString(24)
+        appLog("youtube: login with the \(Self.builtInClientID.isEmpty ? "settings" : "built-in") client")
 
         var components = URLComponents(url: endpoints.auth, resolvingAgainstBaseURL: false)!
         components.queryItems = [
@@ -134,6 +154,7 @@ final class YouTubeAccount: ObservableObject {
             throw YouTubeError("Google이 갱신 토큰을 주지 않았습니다. 클라이언트 유형이 iOS인지 확인하세요.")
         }
         refreshToken = refresh
+        AppSettings.defaults.set(request.clientID, forKey: AppSettings.youtubeTokenClientID)
         if let access = token["access_token"] as? String {
             accessToken = access
             accessExpiry = Date().addingTimeInterval((token["expires_in"] as? Double) ?? 3600)
@@ -150,6 +171,7 @@ final class YouTubeAccount: ObservableObject {
         accessExpiry = .distantPast
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeChannelTitle)
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeStreamID)
+        AppSettings.defaults.removeObject(forKey: AppSettings.youtubeTokenClientID)
         loggedIn = false
         channelTitle = ""
         message = ""
@@ -287,7 +309,7 @@ final class YouTubeAccount: ObservableObject {
         guard !refresh.isEmpty else { throw YouTubeError("YouTube에 로그인하세요.") }
 
         let token = try await tokenRequest([
-            "grant_type": "refresh_token", "refresh_token": refresh, "client_id": clientID,
+            "grant_type": "refresh_token", "refresh_token": refresh, "client_id": tokenClientID,
         ])
         guard let access = token["access_token"] as? String else { throw YouTubeError("토큰 응답이 올바르지 않습니다.") }
         accessToken = access
@@ -437,7 +459,7 @@ struct YouTubeError: LocalizedError {
 
 // MARK: - 설정 화면
 
-/// 송출 칸의 "YouTube 계정" 부분: 클라이언트 ID, 로그인/로그아웃
+/// 송출 칸의 "YouTube 계정" 부분: 클라이언트 ID (빌드에 없을 때만), 로그인/로그아웃
 struct YouTubeAccountRows: View {
     @ObservedObject var account: YouTubeAccount
     @AppStorage(AppSettings.youtubeClientID) private var clientID = ""
@@ -448,11 +470,13 @@ struct YouTubeAccountRows: View {
             LabeledContent("채널", value: account.channelTitle.isEmpty ? "확인 중…" : account.channelTitle)
             Button("로그아웃", role: .destructive) { account.logout() }
         } else {
-            TextField("OAuth 클라이언트 ID (…apps.googleusercontent.com)", text: $clientID)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .font(.footnote.monospaced())
-            NavigationLink("설정 방법") { YouTubeSetupGuide() }
+            if YouTubeAccount.builtInClientID.isEmpty {
+                TextField("OAuth 클라이언트 ID (…apps.googleusercontent.com)", text: $clientID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.footnote.monospaced())
+                NavigationLink("설정 방법") { YouTubeSetupGuide() }
+            }
             Button {
                 login()
             } label: {
@@ -464,7 +488,14 @@ struct YouTubeAccountRows: View {
                     }
                 }
             }
-            .disabled(account.busy || !YouTubeAccount.isValidClientID(clientID.trimmingCharacters(in: .whitespaces)))
+            .disabled(
+                account.busy
+                    || (YouTubeAccount.builtInClientID.isEmpty
+                        && !YouTubeAccount.isValidClientID(clientID.trimmingCharacters(in: .whitespaces))))
+            if !YouTubeAccount.builtInClientID.isEmpty {
+                Text("\"Google에서 확인하지 않은 앱\" 경고가 나오면 \"고급\" → \"(앱 이름)(으)로 이동\"을 누릅니다.")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
         }
         if !account.message.isEmpty {
             Text(account.message).font(.footnote).foregroundStyle(.red)
