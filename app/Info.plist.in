@@ -20,6 +20,21 @@
 	<string>@APP_VERSION@</string>
 	<key>CFBundleVersion</key>
 	<string>@APP_BUILD_NUMBER@</string>
+	<key>BroadcastBuild</key>
+	<dict>
+		<key>Run</key>
+		<string>@APP_BUILD_RUN@</string>
+		<key>RunID</key>
+		<string>@APP_BUILD_RUN_ID@</string>
+		<key>Branch</key>
+		<string>@APP_BUILD_BRANCH@</string>
+		<key>Commit</key>
+		<string>@APP_BUILD_COMMIT@</string>
+		<key>Repository</key>
+		<string>@APP_BUILD_REPOSITORY@</string>
+		<key>Time</key>
+		<string>@APP_BUILD_TIME@</string>
+	</dict>
 	<key>CFBundleSupportedPlatforms</key>
 	<array>
 		<string>@APP_SUPPORTED_PLATFORM@</string>

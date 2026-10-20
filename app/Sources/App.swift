@@ -17,7 +17,14 @@ struct BroadcastApp: App {
         core_log_open(documents.appendingPathComponent("broadcast.log").path)
 
         appLog("init")
+        appLog("build: \(BuildInfo.current.logLine)")
         Core.shared.start()
+
+        // 같은 브랜치에 더 새 빌드가 있는지 (오버레이·설정에 보인다). 시작 작업이 끝난 뒤에
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            await BuildCheck.shared.check()
+        }
     }
 
     var body: some Scene {

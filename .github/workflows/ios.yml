@@ -276,6 +276,8 @@ jobs:
 
           cat app-run/app.log
           grep -q 'core started' app-run/app.log
+          # 빌드 정보 (BuildInfo.swift): 로그 첫머리에 이 실행의 번호
+          grep -q "build: #$GITHUB_RUN_NUMBER " app-run/app.log
           grep -q '\[stats\]' app-run/app.log
           grep -q 'capture started (camera: yes, audio input: yes)' app-run/app.log
           # 시뮬레이터 마이크(CI에서는 무음)로도 버퍼가 libobs까지 오는지 본다
@@ -403,20 +405,34 @@ jobs:
           # 유튜브 클라이언트 ID가 들어갔는지 (값은 찍지 않는다)
           if [ -n "$(/usr/libexec/PlistBuddy -c 'Print :BroadcastYouTubeClient' "$app/Info.plist")" ]; then
             echo "YouTube client ID: built in"
+            youtube_client="들어감"
           else
             echo "::notice::YouTube client ID is not built in (no YOUTUBE_CLIENT_ID secret). Users enter their own in the app."
+            youtube_client="없음 (앱 설정에서 입력)"
           fi
+          # 어느 실행의 빌드인지 파일 이름과 LiveContainer 목록(버전 0.1.<실행 번호>)에서 알아보게 (app/CMakeLists.txt)
+          branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          test "$version" = "0.1.$GITHUB_RUN_NUMBER"
+          ipa="$name-$GITHUB_RUN_NUMBER-${branch//\//-}-${GITHUB_SHA::7}.ipa"
           mkdir -p dist/ipa/Payload
           cp -R "$app" dist/ipa/Payload/
-          (cd dist/ipa && zip -qry "../$name.ipa" Payload)
+          (cd dist/ipa && zip -qry "../$ipa" Payload)
           dsymutil "$app/$name" -o "dist/$name.app.dSYM"
           codesign -dv "$app" 2>&1 | grep -E 'Identifier|Signature'
           ls -la dist
+          {
+            echo "### 기기용 IPA: 빌드 #$GITHUB_RUN_NUMBER"
+            echo "- 브랜치 \`$branch\`, 커밋 \`${GITHUB_SHA::7}\`"
+            echo "- 아티팩트 \`app-ipa-$GITHUB_RUN_NUMBER\`, 파일 \`$ipa\`"
+            echo "- LiveContainer 목록에는 버전 \`$version\`, 앱 오버레이와 설정 › 정보에는 \`#$GITHUB_RUN_NUMBER $branch\`"
+            echo "- YouTube 클라이언트 ID: $youtube_client"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         if: matrix.platform == 'iphoneos'
         with:
-          name: app-ipa
+          name: app-ipa-${{ github.run_number }}
           path: |
             dist/*.ipa
             dist/*.dSYM
