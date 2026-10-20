@@ -147,11 +147,17 @@ PAGE_SCRIPT = r"""
       var item = action.addChatItemAction && action.addChatItemAction.item;
       if (item) {
         var name = Object.keys(item)[0];
+        var renderer = item[name];
         var element = document.createElement('yt-' + name.replace(/[A-Z]/g, function (c) { return '-' + c.toLowerCase(); }));
-        element.id = item[name].id;
-        element.textContent = 'message';
+        element.id = renderer.id;
+        var runs = (renderer.message && renderer.message.runs) || [];
+        element.textContent = ((renderer.authorName && renderer.authorName.simpleText) || '') + '  ' +
+          runs.map(function (run) { return run.text || (run.emoji && run.emoji.emojiId) || ''; }).join('');
         list.appendChild(element);
       }
+      var deleted = action.markChatItemAsDeletedAction || action.removeChatItemAction;
+      var gone = deleted && document.getElementById(deleted.targetItemId);
+      if (gone) gone.textContent = '(메시지 삭제됨)';
     });
   }
   show(data.actions);
@@ -176,6 +182,9 @@ PAGE_SCRIPT = r"""
 def chat_page(session):
     initial = json.dumps(initial_data(session), ensure_ascii=False)
     return ("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>live chat mock</title>"
+            "<meta name=\"viewport\" content=\"width=device-width\">"
+            "<style>body { margin: 0; padding: 8px 12px; background: #0f0f0f; color: #f1f1f1;"
+            " font: 15px -apple-system, sans-serif; } #items > * { display: block; padding: 4px 0; }</style>"
             "<script>var ytcfg = {set: function () {}}; ytcfg.set({\"INNERTUBE_CLIENT_VERSION\":\""
             + CLIENT_VERSION + "\"});</script></head><body><div id=\"items\"></div>"
             "<script>window[\"ytInitialData\"] = " + initial + ";</script>"

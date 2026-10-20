@@ -58,8 +58,11 @@ final class YouTubeAccount: ObservableObject {
     private var accessExpiry = Date.distantPast
 
     private init() {
+        let started = Date()
         loggedIn = !refreshToken.isEmpty
         channelTitle = AppSettings.defaults.string(forKey: AppSettings.youtubeChannelTitle) ?? ""
+        appLog(String(format: "youtube: account loaded in %.0f ms (main thread: %@)", Date().timeIntervalSince(started) * 1000,
+                      Thread.isMainThread ? "yes" : "no"))
     }
 
     var clientID: String {

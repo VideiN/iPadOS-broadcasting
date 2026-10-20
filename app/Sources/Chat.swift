@@ -602,7 +602,8 @@ final class APIChatClient {
 final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private(set) var webView: WKWebView?
     private var hiddenHost: UIView?
-    private let world = WKContentWorld.world(name: "broadcast-chat")
+    /// WebKit은 패널을 처음 열 때 쓴다 (앱을 켤 때 메인 스레드를 잡지 않게)
+    private lazy var world = WKContentWorld.world(name: "broadcast-chat")
     private(set) var videoID: String?
     private var base = URL(string: "https://www.youtube.com")!
     /// 지금 영상의 채팅 페이지가 떴고 채팅 데이터를 넘기기 시작했는지 (ChatFeed가 정한다)
@@ -958,6 +959,8 @@ final class ChatFeed: ObservableObject {
     private var autotestIDs: [String]?
 
     private init() {
+        let started = Date()
+        defer { appLog(String(format: "chat: feed ready in %.0f ms", Date().timeIntervalSince(started) * 1000)) }
         // CI는 처음부터 mock 서버로 (진짜 유튜브에 요청하지 않게)
         let args = ProcessInfo.processInfo.arguments
         if let index = args.firstIndex(of: "-autotest-chat"), index + 1 < args.count, let base = URL(string: args[index + 1]) {
