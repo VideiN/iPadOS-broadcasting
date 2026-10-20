@@ -38,6 +38,8 @@ struct SourceProperty: Decodable, Identifiable {
     let format: String?
     let items: [ListItem]?
     let fps_ranges: [FrameRateRange]?
+    /// editable_list: 0 문자열, 1 파일, 2 파일과 URL
+    let list_type: Int?
 
     var id: String { name }
 }
@@ -127,10 +129,15 @@ struct SourcePropertiesView: View {
                 }
                 ForEach(groups(visible), id: \.name) { group in
                     Section(group.name) {
-                        ForEach(group.properties) { property in
+                        ForEach(group.properties.filter { $0.type != "editable_list" }) { property in
                             row(property, settings: properties.settings)
                                 .disabled(!property.enabled)
                         }
+                    }
+                    // 목록(슬라이드쇼의 이미지 파일 등)은 따로 한 칸
+                    ForEach(group.properties.filter { $0.type == "editable_list" }) { property in
+                        editableList(property, value: properties.settings[property.name])
+                            .disabled(!property.enabled)
                     }
                 }
             } else {
@@ -144,10 +151,14 @@ struct SourcePropertiesView: View {
         .fileImporter(
             isPresented: Binding(get: { pickingPathFor != nil }, set: { if !$0 { pickingPathFor = nil } }),
             allowedContentTypes: allowedTypes(pickingPathFor),
-            allowsMultipleSelection: false
+            allowsMultipleSelection: pickingPathFor?.type == "editable_list"
         ) { result in
-            guard let property = pickingPathFor, case .success(let urls) = result, let url = urls.first else { return }
-            if let copy = Self.importFile(url) {
+            guard let property = pickingPathFor, case .success(let urls) = result, !urls.isEmpty else { return }
+            let images = allowedTypes(property) == [.image]
+            let copies = urls.compactMap { images ? Self.importImage($0) : Self.importFile($0) }
+            if property.type == "editable_list" {
+                appendToList(property, copies)
+            } else if let copy = copies.first {
                 update(property.name, .string(copy.path))
             }
         }
@@ -195,8 +206,15 @@ struct SourcePropertiesView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if allowedTypes(property) == [.image] {
+                    PhotoImportButton(title: "사진 선택…", multiple: false) { urls in
+                        update(property.name, .string(urls[0].path))
+                    }
+                }
                 Button("파일 선택…") { pickingPathFor = property }
             }
+            // 버튼이 둘이라 줄 전체가 한 버튼처럼 눌리지 않게
+            .buttonStyle(.borderless)
 
         case "list":
             Picker(
@@ -250,6 +268,85 @@ struct SourcePropertiesView: View {
                 Text("앱에서 아직 바꿀 수 없음").font(.footnote).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// 편집 가능한 목록. 값은 [{"value": 경로, "hidden", "selected"}] (obs_data 배열)
+    @ViewBuilder
+    private func editableList(_ property: SourceProperty, value: JSONValue?) -> some View {
+        let entries = Self.listEntries(value)
+        let files = (property.list_type ?? 0) != 0
+
+        Section {
+            if entries.isEmpty {
+                Text("비어 있음").foregroundStyle(.secondary)
+            }
+            ForEach(Array(entries.enumerated()), id: \.offset) { index, entry in
+                let path = Self.listPath(entry)
+                HStack {
+                    Text(files ? URL(fileURLWithPath: path).lastPathComponent : path).lineLimit(1)
+                    Spacer()
+                    if files && !FileManager.default.fileExists(atPath: path) {
+                        Text("파일 없음").font(.footnote).foregroundStyle(.red)
+                    }
+                }
+                .contextMenu {
+                    Button("위로", systemImage: "chevron.up") { moveInList(property, entries, index, by: -1) }
+                        .disabled(index == 0)
+                    Button("아래로", systemImage: "chevron.down") { moveInList(property, entries, index, by: 1) }
+                        .disabled(index == entries.count - 1)
+                    Divider()
+                    Button("삭제", systemImage: "trash", role: .destructive) {
+                        var remaining = entries
+                        remaining.remove(at: index)
+                        update(property.name, .array(remaining))
+                    }
+                }
+            }
+            .onDelete { offsets in
+                var remaining = entries
+                remaining.remove(atOffsets: offsets)
+                update(property.name, .array(remaining))
+            }
+
+            if files {
+                HStack {
+                    if allowedTypes(property) == [.image] {
+                        PhotoImportButton(title: "사진 추가…", multiple: true) { appendToList(property, $0) }
+                    }
+                    Spacer()
+                    Button("파일 추가…") { pickingPathFor = property }
+                }
+                .buttonStyle(.borderless)
+            }
+        } header: {
+            Text(property.label)
+        } footer: {
+            Text(files ? "위에서부터 차례로 나옵니다. 밀어서 지우고, 길게 눌러 순서를 바꿉니다." : "앱에서는 항목을 지우거나 순서만 바꿀 수 있습니다.")
+        }
+    }
+
+    private static func listEntries(_ value: JSONValue?) -> [JSONValue] {
+        if case .array(let entries) = value { return entries }
+        return []
+    }
+
+    private static func listPath(_ entry: JSONValue) -> String {
+        if case .object(let object) = entry { return object["value"]?.string ?? "" }
+        return entry.string ?? ""
+    }
+
+    private func appendToList(_ property: SourceProperty, _ urls: [URL]) {
+        let settings = properties?.settings ?? [:]
+        let added = urls.map { JSONValue.object(["value": .string($0.path), "hidden": .bool(false), "selected": .bool(false)]) }
+        update(property.name, .array(Self.listEntries(settings[property.name]) + added))
+    }
+
+    private func moveInList(_ property: SourceProperty, _ entries: [JSONValue], _ index: Int, by offset: Int) {
+        let target = index + offset
+        guard entries.indices.contains(target) else { return }
+        var moved = entries
+        moved.swapAt(index, target)
+        update(property.name, .array(moved))
     }
 
     // MARK: 동작
@@ -310,17 +407,7 @@ struct SourcePropertiesView: View {
         let accessing = url.startAccessingSecurityScopedResource()
         defer { if accessing { url.stopAccessingSecurityScopedResource() } }
 
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        let directory = documents.appendingPathComponent("Media", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-
-        var destination = directory.appendingPathComponent(url.lastPathComponent)
-        var counter = 2
-        while FileManager.default.fileExists(atPath: destination.path) {
-            let base = url.deletingPathExtension().lastPathComponent
-            destination = directory.appendingPathComponent("\(base) \(counter)").appendingPathExtension(url.pathExtension)
-            counter += 1
-        }
+        let destination = MediaFolder.uniqueURL(base: url.deletingPathExtension().lastPathComponent, ext: url.pathExtension)
 
         do {
             try FileManager.default.copyItem(at: url, to: destination)
@@ -330,6 +417,18 @@ struct SourcePropertiesView: View {
             appLog("import failed: \(error.localizedDescription)")
             return nil
         }
+    }
+
+    /// 이미지 파일은 사진 보관함과 같은 길로 (HEIC 등은 JPEG/PNG로 바꿔 저장)
+    static func importImage(_ url: URL) -> URL? {
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+
+        guard let data = try? Data(contentsOf: url) else {
+            appLog("import failed: cannot read \(url.lastPathComponent)")
+            return nil
+        }
+        return PhotoImport.save(data, base: url.deletingPathExtension().lastPathComponent)
     }
 
     // MARK: 색 (libobs는 0xAABBGGRR)

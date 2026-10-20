@@ -214,6 +214,8 @@ jobs:
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
           grep -q 'filters autotest: ok' app-run/app.log
+          # 사진 가져오기 (D14): 돌려 찍은 P3 HEIC → 바로 세운 sRGB JPEG, 투명 PNG는 그대로, 이미지 소스·슬라이드쇼 목록
+          grep -q 'photos autotest: ok' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log

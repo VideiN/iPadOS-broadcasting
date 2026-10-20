@@ -1,5 +1,7 @@
 import Combine
+import ImageIO
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// 현재 씬의 항목 (Core/scenes.c의 core_scene_items_json)
 struct SceneItem: Identifiable, Decodable, Hashable {
@@ -368,6 +370,8 @@ final class SceneModel: ObservableObject {
         appLog("filters autotest: \(filterResult)")
         saveNow()
 
+        photoAutotest(types: types)
+
         // 미리보기 끄기·켜기: 디스플레이가 없어졌다가 다시 생겨야 하고, 그동안에도 출력용 캔버스는 돈다
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             UserDefaults.standard.set(false, forKey: AppSettings.previewEnabled)
@@ -386,5 +390,97 @@ final class SceneModel: ObservableObject {
         appLog(
             "scenes autotest: \(status) (scenes \(scenes), items \(items.map(\.name)), box \(box.map { "\(Int($0.x)),\(Int($0.y))" }), hit \(hit.map(String.init) ?? "none"), properties \(properties?.properties.count ?? -1), camera frame rate \(cameraFrameRate), choices \(sampleChoices), text \(textResult))"
         )
+    }
+
+    /// 사진 가져오기 (D14): 방향 6(90° 돌려 보여야 함)이 붙은 640x360 P3 HEIC(시뮬레이터가 HEIC를 못 쓰면 TIFF)는
+    /// 바로 세운 360x640 JPEG로, 반투명 sRGB PNG는 그대로 저장돼야 한다. 그 파일로 이미지 소스와 슬라이드쇼를 만든다.
+    /// 소스 설정은 다음 비디오 틱에 반영되므로 크기는 조금 뒤에 본다. 확인한 뒤 두 소스는 지운다.
+    private func photoAutotest(types: [SourceType]) {
+        func encode(_ image: CGImage, as type: UTType, properties: [CFString: Any] = [:]) -> Data? {
+            let data = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(data, type.identifier as CFString, 1, nil) else {
+                return nil
+            }
+            CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+            return CGImageDestinationFinalize(destination) ? data as Data : nil
+        }
+
+        func draw(_ width: Int, _ height: Int, space: CGColorSpace?, alpha: CGImageAlphaInfo, _ paint: (CGContext) -> Void)
+            -> CGImage?
+        {
+            guard let space,
+                let context = CGContext(
+                    data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: space,
+                    bitmapInfo: alpha.rawValue)
+            else { return nil }
+            paint(context)
+            return context.makeImage()
+        }
+
+        let photo = draw(640, 360, space: CGColorSpace(name: CGColorSpace.displayP3), alpha: .noneSkipLast) { context in
+            context.setFillColor(CGColor(red: 0.1, green: 0.5, blue: 0.9, alpha: 1))
+            context.fill(CGRect(x: 0, y: 0, width: 640, height: 360))
+            context.setFillColor(CGColor(red: 1, green: 0.8, blue: 0, alpha: 1))
+            context.fill(CGRect(x: 0, y: 300, width: 640, height: 60))
+        }
+        let overlay = draw(200, 100, space: CGColorSpace(name: CGColorSpace.sRGB), alpha: .premultipliedLast) { context in
+            context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 0.5))
+            context.fill(CGRect(x: 0, y: 0, width: 200, height: 100))
+        }
+        let encodable = CGImageDestinationCopyTypeIdentifiers() as? [String] ?? []
+        let photoType: UTType = encodable.contains(UTType.heic.identifier) ? .heic : .tiff
+
+        guard let photo, let overlay,
+            let photoData = encode(photo, as: photoType, properties: [kCGImagePropertyOrientation: 6]),
+            let overlayData = encode(overlay, as: .png),
+            let converted = PhotoImport.save(photoData, base: "autotest-photo"),
+            let kept = PhotoImport.save(overlayData, base: "autotest-overlay")
+        else {
+            appLog("photos autotest: could not make or save test images (\(photoType.identifier))")
+            return
+        }
+
+        guard let imageType = types.first(where: { $0.id == "image_source" }),
+            let slideshowType = types.first(where: { $0.id == "slideshow_v2" }),
+            let imageName = addSource(type: imageType), let imageItem = selectedItem
+        else {
+            appLog("photos autotest: no image or slideshow source type (types: \(types.map(\.id)))")
+            return
+        }
+        core_source_update(imageName, encodeJSON(["file": .string(converted.path)]))
+
+        guard let slideshowName = addSource(type: slideshowType), let slideshowItem = selectedItem else {
+            appLog("photos autotest: could not add a slideshow")
+            return
+        }
+        let files = [converted, kept].map {
+            JSONValue.object(["value": .string($0.path), "hidden": .bool(false), "selected": .bool(false)])
+        }
+        core_source_update(slideshowName, encodeJSON(["files": .array(files)]))
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [self] in
+            func size(_ name: String) -> String {
+                var width: UInt32 = 0
+                var height: UInt32 = 0
+                core_source_size(name, &width, &height)
+                return "\(width)x\(height)"
+            }
+
+            let imageSize = size(imageName)
+            let slideshow = decodeCoreJSON(core_source_properties_json(slideshowName), as: SourceProperties.self)
+            let list = slideshow?.properties.first { $0.name == "files" }
+            var listCount = -1
+            if case .array(let entries) = slideshow?.settings["files"] { listCount = entries.count }
+            let slideshowSize = size(slideshowName)
+
+            let ok =
+                converted.pathExtension == "jpg" && kept.pathExtension == "png" && imageSize == "360x640"
+                && list?.type == "editable_list" && list?.list_type == 1 && listCount == 2 && slideshowSize != "0x0"
+            appLog(
+                "photos autotest: \(ok ? "ok" : "failed") (\(photoType.identifier) → \(converted.lastPathComponent), png → \(kept.lastPathComponent), image \(imageSize), slideshow list \(list?.type ?? "missing")/\(list?.list_type ?? -1) \(listCount) file(s), slideshow \(slideshowSize))"
+            )
+            remove(imageItem)
+            remove(slideshowItem)
+        }
     }
 }

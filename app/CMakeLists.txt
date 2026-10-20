@@ -63,6 +63,7 @@ add_executable(
   Sources/SceneModel.swift
   Sources/PropertiesView.swift
   Sources/FiltersView.swift
+  Sources/PhotoImport.swift
   Sources/MainView.swift
   Sources/Settings.swift
 )

@@ -719,6 +719,11 @@ static void add_properties(obs_data_array_t *array, obs_properties_t *props, con
 		case OBS_PROPERTY_FRAME_RATE:
 			add_frame_rate_ranges(entry, property);
 			break;
+		case OBS_PROPERTY_EDITABLE_LIST:
+			// 0 문자열, 1 파일, 2 파일과 URL (enum obs_editable_list_type)
+			obs_data_set_int(entry, "list_type", obs_property_editable_list_type(property));
+			obs_data_set_string(entry, "filter", obs_property_editable_list_filter(property));
+			break;
 		default:
 			break;
 		}
@@ -755,6 +760,16 @@ char *core_source_properties_json(const char *source_name)
 	obs_properties_destroy(props);
 	obs_source_release(source);
 	return json_from(root);
+}
+
+// 소스의 지금 크기 (CI 시험용)
+bool core_source_size(const char *source_name, uint32_t *width, uint32_t *height)
+{
+	obs_source_t *source = find_source(source_name);
+	*width = source ? obs_source_get_width(source) : 0;
+	*height = source ? obs_source_get_height(source) : 0;
+	obs_source_release(source);
+	return source != NULL;
 }
 
 // 바뀐 설정만 담은 JSON을 소스 설정에 덮어쓴다. 카메라 장치가 바뀌면 캔버스에 맞는 형식도 다시 고른다.

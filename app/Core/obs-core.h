@@ -80,6 +80,7 @@ char *core_source_properties_json(const char *source_name);
 // 바뀐 설정만 담은 JSON을 덮어쓴다 (카메라 장치를 바꾸면 형식도 다시 고름)
 void core_source_update(const char *source_name, const char *changes_json);
 void core_source_press_button(const char *source_name, const char *property_name);
+bool core_source_size(const char *source_name, uint32_t *width, uint32_t *height);
 bool core_source_rename(const char *source_name, const char *new_name);
 void core_source_set_volume(const char *source_name, float multiplier);
 void core_source_set_muted(const char *source_name, bool muted);
