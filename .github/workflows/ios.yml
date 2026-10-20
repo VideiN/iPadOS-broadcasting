@@ -150,36 +150,55 @@ jobs:
           python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2> app-run/youtube-mock-access.log &
           youtube_mock_pid=$!
 
-          # 스크린숏. 앱이 창을 가로로 돌려도 시뮬레이터 화면은 세로 그대로라, 앱 로그의 마지막 배치가 가로면 사진을 돌려 세운다
+          # 가로 화면 (iPad는 대부분 가로로 두고 쓴다): simctl에는 기기를 돌리는 명령이 없어 Simulator 앱의 기기 메뉴를 누른다.
+          # 안 되면(손쉬운 사용 권한 등) 앱의 -orientation과 화면 시험이 창 방향을 바꿔 달라고 한다
+          # (배치는 같지만 기기가 세로라 가로 창이 세로 화면 안에 줄어 보인다)
+          open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID"
+          sleep 5
+          device_landscape=0
+          rotate_device() {
+            local item="Rotate Left" want=1
+            if [ "$1" = portrait ]; then item="Rotate Right"; want=0; fi
+            [ "$device_landscape" = "$want" ] && return 0
+            if osascript -e 'tell application "Simulator" to activate' \
+              -e "tell application \"System Events\" to click menu item \"$item\" of menu \"Device\" of menu bar 1 of process \"Simulator\""; then
+              device_landscape=$want
+              echo "simulator device: $1"
+            else
+              echo "::warning::could not rotate the simulator device ($1)"
+            fi
+            sleep 2
+          }
+          # 스크린숏. 기기를 가로로 돌렸는데 사진이 시뮬레이터 화면의 원래 방향(세로)으로 나오면 돌려 세운다
           shoot() {
             xcrun simctl io "$SIM_UDID" screenshot "$1" > /dev/null 2>&1 || return 0
-            local layout width height
-            layout=$(grep -oE 'layout: [0-9]+x[0-9]+' "$2" | tail -1 | grep -oE '[0-9]+x[0-9]+' || true)
+            local width height
             width=$(sips -g pixelWidth "$1" | awk '/pixelWidth/ { print $2 }')
             height=$(sips -g pixelHeight "$1" | awk '/pixelHeight/ { print $2 }')
-            if [ -n "$layout" ] && [ "${layout%x*}" -gt "${layout#*x}" ] && [ "$width" -lt "$height" ]; then
+            if [ "$device_landscape" = 1 ] && [ "$width" -lt "$height" ]; then
               sips -r 270 "$1" > /dev/null
             fi
           }
 
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
-          # -orientation landscape: iPad는 대부분 가로로 두고 쓰므로 처음 실행은 가로로 띄운다
+          # 처음 실행은 기기를 가로로 두고 띄운다
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
           # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
+          rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
             -autotest-chat http://127.0.0.1:8098 > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
-            shoot "app-run/simulator-${t}s.png" app-run/app.log
+            shoot "app-run/simulator-${t}s.png"
           done
           # 채팅 시험은 1분쯤 걸린다. 끝나면 옆 칸이 채팅 탭(패널 페이지)인 채로 찍는다
           for _ in $(seq 1 45); do
             grep -q 'chat autotest: done' app-run/app.log && break
             sleep 2
           done
-          shoot app-run/simulator-chat.png app-run/app.log
+          shoot app-run/simulator-chat.png
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -208,21 +227,29 @@ jobs:
           srt-live-transmit -a:no -t:120 'srt://:9000?mode=listener' file://con \
             > app-run/received-srt.ts 2> app-run/ffmpeg-srt.log &
           ffmpeg_srt_pid=$!
-          # 화면 시험(-autotest-ui)도 함께: 세로로 띄워 송출 중에 가로로 돌리고, 가로에서 시트를 하나씩 연 뒤 다시 세로로
+          # 화면 시험(-autotest-ui)도 함께: 세로로 띄워 송출 중에 설정 시트를 연 채로 가로로 돌리고,
+          # 가로에서 시트를 하나씩 연 뒤 다시 세로로
+          rotate_device portrait
+          app_tmp=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/tmp
+          mkdir -p "$app_tmp"
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation portrait \
             -autotest-srt 10 srt://127.0.0.1:9000 -autotest-ui > app-run/app-relaunch.log 2>&1 &
           for _ in $(seq 1 60); do
             grep -q 'capture started' app-run/app-relaunch.log && break
             sleep 2
           done
-          shoot app-run/simulator-relaunch.png app-run/app-relaunch.log
-          # 앱이 "ui autotest: shot <이름>"을 남기고 3초 기다리는 동안 찍는다
-          for shot in 1-portrait 2-landscape 3-settings 4-add-source 5-properties 6-chat 7-portrait; do
+          # 앱이 "ui autotest: shot <이름>"을 남기면 찍고 tmp/autotest-shot을 만든다(앱은 그때까지 기다린다).
+          # "ui autotest: rotate …"면 기기를 돌린다
+          for event in 'shot 1-portrait' 'shot 2-settings' 'rotate landscape' 'shot 3-settings-landscape' 'shot 4-landscape' \
+            'shot 5-add-source' 'shot 6-properties' 'shot 7-chat' 'rotate portrait' 'shot 8-portrait'; do
             for _ in $(seq 1 60); do
-              grep -q "ui autotest: shot $shot" app-run/app-relaunch.log && break
+              grep -q "ui autotest: $event" app-run/app-relaunch.log && break
               sleep 0.5
             done
-            shoot "app-run/ui-$shot.png" app-run/app-relaunch.log
+            case $event in
+              rotate*) rotate_device "${event#rotate }" ;;
+              shot*) shoot "app-run/ui-${event#shot }.png"; touch "$app_tmp/autotest-shot" ;;
+            esac
           done
           for _ in $(seq 1 30); do
             grep -q 'srt autotest: done' app-run/app-relaunch.log && grep -q 'ui autotest: done' app-run/app-relaunch.log && break
@@ -303,15 +330,25 @@ jobs:
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
           # 화면 방향: 처음 실행은 가로(옆 칸이 오른쪽)로 떴고, 다시 띄운 실행은 세로 → 가로 → 세로로 돌 때마다
-          # 배치가 바뀌고 프리뷰 디스플레이도 그 크기로 바뀐다
-          grep -E 'orientation: |layout: |display (created|resized)|ui autotest' app-run/app.log app-run/app-relaunch.log
+          # 배치만 바뀌고 프리뷰 디스플레이는 그대로 크기만 바뀐다. 열어 둔 설정 시트도 돌린 뒤에 남아 있다
+          grep -E 'orientation: |layout: |display (created|resized|destroyed)|ui autotest|settings sheet' \
+            app-run/app.log app-run/app-relaunch.log
           if grep 'orientation: request failed' app-run/app.log app-run/app-relaunch.log; then exit 1; fi
+          if grep 'ui autotest: no screenshot ack' app-run/app-relaunch.log; then exit 1; fi
+          if grep -q 'ui autotest: the device did not rotate' app-run/app-relaunch.log; then
+            echo '::warning::the simulator device did not rotate; the app asked for the window orientation instead'
+          fi
           grep -q 'layout: .* (side column)' app-run/app.log
-          awk '/ui autotest: start/ { s = 1 } s == 1 && /orientation: requesting landscape/ { s = 2 }
-               s == 2 && /layout: .*side column/ { s = 3 } s == 3 && /display resized/ { s = 4 }
-               s == 4 && /orientation: requesting portrait/ { s = 5 } s == 5 && /layout: .*stacked/ { s = 6 }
-               s == 6 && /display resized/ { s = 7 } s == 7 && /ui autotest: done/ { s = 8 }
-               END { exit s == 8 ? 0 : 1 }' app-run/app-relaunch.log
+          awk '/ui autotest: start/ { s = 1 } s == 1 && /ui autotest: rotate landscape/ { s = 2 }
+               s == 2 && /layout: .*side column/ { wide = 1 } s == 2 && /display resized/ { resized = 1 }
+               s == 2 && /ui autotest: rotate portrait/ { s = 3 }
+               s == 3 && /layout: .*stacked/ { narrow = 1 } s == 3 && /display resized/ { resized_back = 1 }
+               s == 3 && /ui autotest: done/ { s = 4 }
+               s >= 1 && s < 4 && /display destroyed/ { bad = 1 }
+               END { exit s == 4 && wide && resized && narrow && resized_back && !bad ? 0 : 1 }' app-run/app-relaunch.log
+          awk '/ui autotest: shot 2-settings/ { s = 1 } s == 1 && /settings sheet: closed/ { bad = 1 }
+               s == 1 && /ui autotest: shot 3-settings-landscape/ { s = 2 }
+               END { exit s == 2 && !bad ? 0 : 1 }' app-run/app-relaunch.log
 
           # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {

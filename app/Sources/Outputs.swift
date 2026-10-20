@@ -350,6 +350,9 @@ struct OutputControls: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(core: Core.shared, outputs: outputs)
+                // 가로·세로를 돌려도 열린 시트가 남는지 CI가 이 줄로 본다
+                .onAppear { appLog("settings sheet: shown") }
+                .onDisappear { appLog("settings sheet: closed") }
         }
         .onReceive(NotificationCenter.default.publisher(for: .autotestSheet)) { note in
             showSettings = note.object as? String == "settings"
