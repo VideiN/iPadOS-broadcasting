@@ -765,8 +765,8 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         if navigationAction.targetFrame?.isMainFrame != true { return .allow }
         if isAllowed(url.host) { return .allow }
         if navigationAction.navigationType == .linkActivated, ["http", "https"].contains(url.scheme ?? "") {
-            // 채팅 속 링크는 Safari로
-            UIApplication.shared.open(url)
+            // 채팅 속 링크는 Safari로 (기다리지 않는다)
+            UIApplication.shared.open(url, options: [:], completionHandler: nil)
         } else {
             appLog("chat panel: kept out \(url.scheme ?? "?")://\(url.host ?? "")")
         }
