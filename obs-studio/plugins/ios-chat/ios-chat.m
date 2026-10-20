@@ -672,7 +672,8 @@ static obs_properties_t *ios_chat_get_properties(void *data)
             @synchronized(ChatController.class) {
                 status = youtube_status;
             }
-            NSString *line = [NSString stringWithFormat:@"%s: %@", obs_module_text("Status"),
+            // %s는 UTF-8이 아니라 시스템 인코딩(MacRoman)으로 읽어 한국어가 깨진다 → NSString으로 넘긴다
+            NSString *line = [NSString stringWithFormat:@"%@: %@", @(obs_module_text("Status")),
                                                         status.length ? status : @(obs_module_text("Status.None"))];
             obs_properties_add_text(props, "status", line.UTF8String, OBS_TEXT_INFO);
         }
