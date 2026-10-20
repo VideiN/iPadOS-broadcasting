@@ -55,8 +55,7 @@ BOOL chat_image_url_allowed(NSString *url)
 /* One message is one paragraph: line breaks become spaces */
 static BOOL is_line_break(UTF32Char c)
 {
-    return c == '
-' || c == '' || c == 0x0B || c == 0x0C || c == 0x85 || c == 0x2028 || c == 0x2029;
+    return c == 0x0A || c == 0x0D || c == 0x0B || c == 0x0C || c == 0x85 || c == 0x2028 || c == 0x2029;
 }
 
 static BOOL is_removed_character(UTF32Char c)
