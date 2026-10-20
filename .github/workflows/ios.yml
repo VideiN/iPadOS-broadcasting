@@ -64,10 +64,18 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Configure
+        env:
+          # 유튜브 로그인 클라이언트 ID (P8): 저장소 비밀값에만 두고 기기용 빌드(IPA)에만 넣는다.
+          # 포크에서 온 PR처럼 비밀값이 없으면 빈 값 → 앱 설정에서 사용자가 넣는다
+          YOUTUBE_CLIENT_ID: ${{ matrix.platform == 'iphoneos' && secrets.YOUTUBE_CLIENT_ID || '' }}
         run: |
           extra_args=()
           if [ "${{ matrix.platform }}" = iphonesimulator ]; then
             extra_args+=(-DENABLE_UNIT_TESTS=ON "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/bash;$PWD/ios/scripts/sim-run.sh")
+            # 시뮬레이터는 가짜 ID로 "빌드에 들어 있는 클라이언트로 로그인"을 mock 시험한다
+            extra_args+=(-DAPP_YOUTUBE_CLIENT_ID=123456-builtin.apps.googleusercontent.com)
+          elif [ -n "$YOUTUBE_CLIENT_ID" ]; then
+            extra_args+=("-DAPP_YOUTUBE_CLIENT_ID=$YOUTUBE_CLIENT_ID")
           fi
 
           export PKG_CONFIG_LIBDIR="$DEPS_DIR/lib/pkgconfig"
@@ -223,6 +231,9 @@ jobs:
           kill "$youtube_mock_pid" 2> /dev/null || true
           cat app-run/youtube-mock.log
           grep -q 'youtube autotest: ok (broadcast mockBroadcast1)' app-run/app.log
+          # 설정에 넣은 ID가 있어도 빌드에 들어 있는 ID로 로그인한다
+          grep -q 'youtube: login with the built-in client' app-run/app.log
+          grep -q 'auth ok (client 123456-builtin.apps.googleusercontent.com)' app-run/youtube-mock.log
           for step in 'auth ok' 'pkce ok' 'channels ok' 'refresh ok' 'stream created' 'broadcast ok' 'bind ok'; do
             grep -q "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
           done
@@ -279,6 +290,12 @@ jobs:
           # 번들 안에 dSYM이 있으면 LiveContainer가 설치할 때 서명에 실패한다 (app/CMakeLists.txt 참고)
           if find "$app" -name '*.dSYM' | grep -q .; then
             echo "dSYM inside the app bundle:"; find "$app" -name '*.dSYM'; exit 1
+          fi
+          # 유튜브 클라이언트 ID가 들어갔는지 (값은 찍지 않는다)
+          if [ -n "$(/usr/libexec/PlistBuddy -c 'Print :BroadcastYouTubeClient' "$app/Info.plist")" ]; then
+            echo "YouTube client ID: built in"
+          else
+            echo "::notice::YouTube client ID is not built in (no YOUTUBE_CLIENT_ID secret). Users enter their own in the app."
           fi
           mkdir -p dist/ipa/Payload
           cp -R "$app" dist/ipa/Payload/

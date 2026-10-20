@@ -77,7 +77,7 @@ class Handler(BaseHTTPRequestHandler):
             STATE.update(challenge=query["code_challenge"], client_id=client_id, redirect_uri=expected_redirect)
             callback = expected_redirect + "?" + urllib.parse.urlencode(
                 {"state": query["state"], "code": "mock-code", "scope": query["scope"]})
-            log("auth ok")
+            log(f"auth ok (client {client_id})")
             return self.reply(200, callback, "text/plain")
 
         if not self.authorized():
@@ -115,6 +115,10 @@ class Handler(BaseHTTPRequestHandler):
             if grant == "refresh_token":
                 if form.get("refresh_token") != "mock-refresh":
                     return self.reply(400, {"error": "invalid_grant"})
+                # 갱신 토큰은 그것을 받은 클라이언트로만 갱신된다
+                if form.get("client_id") != STATE["client_id"]:
+                    log("FAIL token: refresh with another client_id")
+                    return self.reply(400, {"error": "unauthorized_client"})
                 log("refresh ok")
                 return self.reply(200, {"access_token": "mock-access-2", "expires_in": 3599, "token_type": "Bearer"})
             return self.reply(400, {"error": "unsupported_grant_type"})

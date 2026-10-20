@@ -19,6 +19,7 @@ enum AppSettings {
     static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
     static let streamMode = "streamMode"  // "manual"(서버·스트림 키 직접 입력) | "youtube"(계정, P8)
     static let youtubeClientID = "youtubeClientID"  // 사용자가 만든 Google OAuth 클라이언트 (iOS 유형)
+    static let youtubeTokenClientID = "youtubeTokenClientID"  // 갱신 토큰을 받은 클라이언트 (빌드에 든 것 또는 위의 것)
     static let youtubeChannelTitle = "youtubeChannelTitle"  // 로그인한 채널 이름 (화면 표시용)
     static let youtubeBroadcastMode = "youtubeBroadcastMode"  // "new"(새 방송 만들기) | "key"(스트림 키만)
     static let youtubeTitle = "youtubeTitle"
