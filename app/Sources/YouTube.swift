@@ -130,6 +130,10 @@ final class YouTubeAccount: ObservableObject {
             throw YouTubeError("Google이 갱신 토큰을 주지 않았습니다. 클라이언트 유형이 iOS인지 확인하세요.")
         }
         refreshToken = refresh
+        if let access = token["access_token"] as? String {
+            accessToken = access
+            accessExpiry = Date().addingTimeInterval((token["expires_in"] as? Double) ?? 3600)
+        }
         appLog("youtube: logged in")
         await publish { $0.loggedIn = true }
         try await refreshChannel()
