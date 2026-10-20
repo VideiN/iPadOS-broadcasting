@@ -137,6 +137,11 @@ jobs:
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
           ffmpeg_pid=$!
 
+          # 채팅 소스 시험(P7)의 함정 서버: 시험 메시지에 이 주소의 "evil" 이미지·링크를 넣는다. 한 번도 요청되면 안 된다
+          mkdir -p chat-trap
+          python3 -m http.server 8099 --bind 127.0.0.1 --directory chat-trap > app-run/chat-trap.log 2>&1 &
+          chat_trap_pid=$!
+
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
@@ -216,6 +221,16 @@ jobs:
           grep -q 'filters autotest: ok' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
+          # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
+          kill "$chat_trap_pid" 2> /dev/null || true
+          grep -q 'chat autotest: added' app-run/app.log
+          { grep -E 'ios-chat\] (snapshot alpha|batch of|test round)' app-run/app.log || true; } | sed -n '1,25p'
+          grep -qE 'ios-chat\] snapshot alpha (preserved|dual)' app-run/app.log
+          grep -qE 'ios-chat\] test round 1 done \(rendered [0-9]+, unsafe 0, image mismatches 0,' app-run/app.log
+          # set -e는 "! 명령"으로 뒤집은 실패를 보지 않으므로 if로 확인한다
+          if grep -E 'ios-chat\] .*(unsafe element|blocked navigation)' app-run/app.log; then exit 1; fi
+          cat app-run/chat-trap.log
+          if grep -q 'evil' app-run/chat-trap.log; then echo 'chat test loaded a blocked URL'; exit 1; fi
           grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log
           grep -q 'ios-media-source: .*looping (play 2)' app-run/app.log
           cat app-run/app-relaunch.log
