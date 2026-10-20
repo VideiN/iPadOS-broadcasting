@@ -65,6 +65,7 @@ add_executable(
   Sources/FiltersView.swift
   Sources/MainView.swift
   Sources/Settings.swift
+  Sources/YouTube.swift
 )
 target_link_libraries(app PRIVATE app-core)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
