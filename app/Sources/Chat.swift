@@ -764,9 +764,17 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         -> WKNavigationActionPolicy
     {
         guard let url = navigationAction.request.url else { return .cancel }
+        // .allow면 WebKit이 유니버설 링크를 맡은 앱으로 넘길 수 있다: Google 로그인을 마치고 youtube.com/signin으로
+        // 갈 때 유튜브 앱이 열리고 패널은 빈 화면으로 남았다 (기기 시험). 패널 안에서만 연다
         // 페이지 안의 틀(로그인 화면의 보안 확인 등)은 막지 않는다
-        if navigationAction.targetFrame?.isMainFrame != true { return .allow }
-        if isAllowed(url.host) { return .allow }
+        if navigationAction.targetFrame?.isMainFrame != true { return .allowWithoutTryingAppLink }
+        if isAllowed(url.host) {
+            if !url.path.hasPrefix("/live_chat") {
+                // 로그인 흐름을 볼 수 있게 (쿼리에는 로그인 정보가 있을 수 있어 뺀다)
+                appLog("chat panel: open \(url.host ?? "")\(url.path)")
+            }
+            return .allowWithoutTryingAppLink
+        }
         if navigationAction.navigationType == .linkActivated, ["http", "https"].contains(url.scheme ?? "") {
             // 채팅 속 링크는 Safari로 (기다리지 않는다)
             UIApplication.shared.open(url, options: [:], completionHandler: nil)
