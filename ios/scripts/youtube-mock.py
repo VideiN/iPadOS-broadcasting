@@ -6,6 +6,7 @@
 - /token: 코드 교환(PKCE 확인)과 토큰 갱신
 - /youtube/v3/...: channels, liveStreams, liveBroadcasts, liveBroadcasts/bind
 첫 액세스 토큰은 채널 조회 뒤 만료된 것으로 다뤄(401) 앱이 갱신하는지 본다.
+그다음 첫 스트림 조회에는 500을 한 번 줘서 앱이 잠시 뒤 다시 보내는지 본다.
 수신 주소는 러너의 ffmpeg RTMP 수신(rtmp://127.0.0.1:1935/live, 키 autotest).
 
 채팅 (P7, 앱 인자 `-autotest-chat <이 주소>`): 유튜브 웹 채팅과 공식 API의 형식을 흉내 낸다.
@@ -28,7 +29,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-STATE = {"challenge": None, "client_id": None, "redirect_uri": None, "streams": [], "expired": set()}
+STATE = {"challenge": None, "client_id": None, "redirect_uri": None, "streams": [], "expired": set(),
+         "server_error_sent": False}
 CHAT = {"direct_pages": 0, "webkit_pages": 0}
 CLIENT_VERSION = "2.20261019.01.00"
 EVIL = "http://127.0.0.1:8099/"
@@ -317,6 +319,13 @@ class Handler(BaseHTTPRequestHandler):
             log("channels ok")
             return self.reply(200, {"items": [{"id": "UCmock", "snippet": {"title": "시험 채널"}}]})
         if url.path == "/youtube/v3/liveStreams":
+            # 진짜 서버도 가끔 이렇게 답한다 (기기 시험에서 봄): 조회는 잠시 뒤 다시 보내야 한다
+            if not STATE["server_error_sent"]:
+                STATE["server_error_sent"] = True
+                log("500 GET /youtube/v3/liveStreams (once)")
+                return self.reply(500, {"error": {"code": 500, "message": "Internal error encountered.", "errors": [
+                    {"message": "Internal error encountered.", "domain": "global", "reason": "backendError"}],
+                    "status": "INTERNAL"}})
             log(f"liveStreams list ({len(STATE['streams'])})")
             return self.reply(200, {"items": STATE["streams"]})
         if url.path == "/youtube/v3/liveBroadcasts":

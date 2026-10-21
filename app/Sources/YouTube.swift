@@ -342,12 +342,15 @@ final class YouTubeAccount: ObservableObject {
         return json
     }
 
-    /// YouTube Data API 호출. 401이면 토큰을 한 번 새로 받아 다시 보낸다
+    /// YouTube Data API 호출. 401이면 토큰을 한 번 새로 받아 다시 보낸다.
+    /// 조회(GET)가 5xx(Google 쪽 일시 오류)면 2초, 4초 뒤 다시 보낸다. 만들기(POST)는 두 번 만들어질 수 있어 안 한다
     @discardableResult
     func api(_ method: String, _ path: String, query: [String: String], body: [String: Any]? = nil) async throws
         -> [String: Any]
     {
-        for attempt in 0..<2 {
+        var refreshed = false
+        var serverRetries = 0
+        while true {
             let token = try await validAccessToken()
             var components = URLComponents(
                 url: endpoints.api.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
@@ -362,24 +365,45 @@ final class YouTubeAccount: ObservableObject {
 
             let (data, response) = try await URLSession.shared.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-            appLog("youtube: \(method) \(path) \(status)")
             let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+            if (200..<300).contains(status) {
+                appLog("youtube: \(method) \(path) \(status)")
+            } else {
+                // 이유와 메시지는 Google이 준 그대로 (토큰은 들어 있지 않다)
+                let (reasons, message) = Self.errorDetails(status: status, json: json)
+                appLog("youtube: \(method) \(path) \(status) (\(reasons.joined(separator: ",")): \(message))")
+            }
 
-            if status == 401 && attempt == 0 {
+            if status == 401 && !refreshed {
+                refreshed = true
                 accessToken = ""
+                continue
+            }
+            if status >= 500 && method == "GET" && serverRetries < 2 {
+                serverRetries += 1
+                try await Task.sleep(for: .seconds(2 * serverRetries))
                 continue
             }
             guard (200..<300).contains(status) else { throw Self.apiError(status: status, json: json) }
             return json
         }
-        throw YouTubeError("YouTube 로그인이 만료되었습니다. 다시 로그인하세요.")
+    }
+
+    private static func errorDetails(status: Int, json: [String: Any]) -> (reasons: [String], message: String) {
+        let error = json["error"] as? [String: Any]
+        let reasons = ((error?["errors"] as? [[String: Any]]) ?? []).compactMap { $0["reason"] as? String }
+        return (reasons, error?["message"] as? String ?? "HTTP \(status)")
     }
 
     private static func apiError(status: Int, json: [String: Any]) -> YouTubeError {
-        let error = json["error"] as? [String: Any]
-        let reasons = ((error?["errors"] as? [[String: Any]]) ?? []).compactMap { $0["reason"] as? String }
-        let message = error?["message"] as? String ?? "HTTP \(status)"
+        let (reasons, message) = errorDetails(status: status, json: json)
 
+        if status == 401 {
+            return YouTubeError("YouTube 로그인이 만료되었습니다. 다시 로그인하세요.")
+        }
+        if status >= 500 {
+            return YouTubeError("YouTube 서버 오류 (\(status)): \(message) 잠시 뒤 다시 시도하세요.")
+        }
         if reasons.contains("liveStreamingNotEnabled") {
             return YouTubeError("이 채널은 라이브 스트리밍이 켜져 있지 않습니다. YouTube Studio에서 사용 설정하세요 (처음엔 최대 24시간 걸림).")
         }
