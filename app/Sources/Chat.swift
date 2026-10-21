@@ -906,6 +906,12 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         """#
 }
 
+extension WKNavigationActionPolicy {
+    /// WebKit의 _WKNavigationActionPolicyAllowWithoutTryingAppLink (WKNavigationDelegatePrivate.h, allow + 2).
+    /// 공개 SDK에는 없다. 허용하되 유니버설 링크로 다른 앱을 열지 않는다 (Firefox iOS도 같은 값을 쓴다)
+    static let allowWithoutTryingAppLink = WKNavigationActionPolicy(rawValue: WKNavigationActionPolicy.allow.rawValue + 2)!
+}
+
 /// WKUserContentController가 처리기를 강하게 잡아서 패널을 놓아주지 않으므로 약하게 잡는다
 @MainActor
 private final class WeakMessageHandler: NSObject, WKScriptMessageHandler {
