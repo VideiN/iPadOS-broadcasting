@@ -22,6 +22,7 @@ extern const struct obs_static_module obs_static_module_mac_avcapture;
 extern const struct obs_static_module obs_static_module_ios_audio_input;
 extern const struct obs_static_module obs_static_module_ios_text;
 extern const struct obs_static_module obs_static_module_ios_media_source;
+extern const struct obs_static_module obs_static_module_ios_chat;
 extern const struct obs_static_module obs_static_module_mac_videotoolbox;
 extern const struct obs_static_module obs_static_module_coreaudio_encoder;
 extern const struct obs_static_module obs_static_module_obs_outputs;
@@ -144,6 +145,7 @@ static bool load_modules(const char *resource_path)
 	load_module(resource_path, "ios-audio-input", &obs_static_module_ios_audio_input);
 	load_module(resource_path, "ios-text", &obs_static_module_ios_text);
 	load_module(resource_path, "ios-media-source", &obs_static_module_ios_media_source);
+	load_module(resource_path, "ios-chat", &obs_static_module_ios_chat);
 	load_module(resource_path, "mac-videotoolbox", &obs_static_module_mac_videotoolbox);
 	load_module(resource_path, "coreaudio-encoder", &obs_static_module_coreaudio_encoder);
 	load_module(resource_path, "obs-outputs", &obs_static_module_obs_outputs);
@@ -475,4 +477,41 @@ void core_get_stats(struct core_stats *stats)
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
 	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
 	stats->audio_peak_right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
+}
+
+#pragma mark - 채팅
+
+void core_chat_push(const char *json)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler || !json)
+		return;
+	calldata_t cd = {0};
+	calldata_set_string(&cd, "json", json);
+	proc_handler_call(handler, "ios_chat_push", &cd);
+	calldata_free(&cd);
+}
+
+void core_chat_set_status(const char *text)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler)
+		return;
+	calldata_t cd = {0};
+	calldata_set_string(&cd, "text", text ? text : "");
+	proc_handler_call(handler, "ios_chat_set_status", &cd);
+	calldata_free(&cd);
+}
+
+int core_chat_listeners(void)
+{
+	proc_handler_t *handler = obs_get_proc_handler();
+	if (!handler)
+		return 0;
+	calldata_t cd = {0};
+	int count = 0;
+	if (proc_handler_call(handler, "ios_chat_listeners", &cd))
+		count = (int)calldata_int(&cd, "count");
+	calldata_free(&cd);
+	return count;
 }

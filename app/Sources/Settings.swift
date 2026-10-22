@@ -17,6 +17,16 @@ enum AppSettings {
     static let canvasFPS = "canvasFPS"
     static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
     static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
+    static let streamMode = "streamMode"  // "manual"(서버·스트림 키 직접 입력) | "youtube"(계정, P8)
+    static let youtubeClientID = "youtubeClientID"  // 사용자가 만든 Google OAuth 클라이언트 (iOS 유형)
+    static let youtubeTokenClientID = "youtubeTokenClientID"  // 갱신 토큰을 받은 클라이언트 (빌드에 든 것 또는 위의 것)
+    static let youtubeChannelTitle = "youtubeChannelTitle"  // 로그인한 채널 이름 (화면 표시용)
+    static let youtubeBroadcastMode = "youtubeBroadcastMode"  // "new"(새 방송 만들기) | "key"(스트림 키만)
+    static let youtubeTitle = "youtubeTitle"
+    static let youtubeDescription = "youtubeDescription"
+    static let youtubePrivacy = "youtubePrivacy"  // "public" | "unlisted" | "private"
+    static let youtubeLatency = "youtubeLatency"  // "normal" | "low" | "ultraLow"
+    static let youtubeStreamID = "youtubeStreamID"  // 이 앱이 만든 재사용 스트림
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -30,18 +40,23 @@ enum AppSettings {
             canvasHeight: 1080,
             canvasFPS: 60,
             replaySeconds: 30,
+            streamMode: "manual",
+            youtubeBroadcastMode: "new",
+            youtubeTitle: "라이브 방송",
+            youtubePrivacy: "unlisted",
+            youtubeLatency: "normal",
         ])
     }
 
     static var defaults: UserDefaults { .standard }
 }
 
-/// 스트림 키는 Keychain에 둔다. LiveContainer 게스트에서 Keychain을 못 쓰면 UserDefaults에 둔다.
-enum StreamKeyStore {
-    private static let service = "io.github.videin.broadcast.stream-key"
-    private static let fallbackKey = "streamKey"
+/// 비밀값 하나를 Keychain에 둔다. LiveContainer 게스트에서 Keychain을 못 쓰면 UserDefaults에 둔다.
+struct SecretItem {
+    let service: String
+    let fallbackKey: String
 
-    static func load() -> String {
+    func load() -> String {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -55,22 +70,34 @@ enum StreamKeyStore {
         return UserDefaults.standard.string(forKey: fallbackKey) ?? ""
     }
 
-    static func save(_ key: String) {
+    func save(_ value: String) {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service]
         SecItemDelete(base as CFDictionary)
+        guard !value.isEmpty else {
+            UserDefaults.standard.removeObject(forKey: fallbackKey)
+            return
+        }
 
         var item = base
-        item[kSecValueData as String] = Data(key.utf8)
+        item[kSecValueData as String] = Data(value.utf8)
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         let status = SecItemAdd(item as CFDictionary, nil)
 
         if status == errSecSuccess {
             UserDefaults.standard.removeObject(forKey: fallbackKey)
         } else {
-            appLog("keychain unavailable (\(status)), stream key kept in app settings")
-            UserDefaults.standard.set(key, forKey: fallbackKey)
+            appLog("keychain unavailable (\(status)), \(fallbackKey) kept in app settings")
+            UserDefaults.standard.set(value, forKey: fallbackKey)
         }
     }
+}
+
+/// 스트림 키는 Keychain에 둔다
+enum StreamKeyStore {
+    private static let item = SecretItem(service: "io.github.videin.broadcast.stream-key", fallbackKey: "streamKey")
+
+    static func load() -> String { item.load() }
+    static func save(_ key: String) { item.save(key) }
 }
 
 /// 녹화 폴더: 기본은 Documents/Recordings, 고르면 그 폴더(외장 SSD 등)를 보안 범위 북마크로 기억한다
@@ -133,6 +160,8 @@ struct SettingsView: View {
     @ObservedObject var outputs: Outputs
 
     @AppStorage(AppSettings.streamServer) private var server = ""
+    @AppStorage(AppSettings.streamMode) private var streamMode = "manual"
+    @ObservedObject private var youtube = YouTubeAccount.shared
     @AppStorage(AppSettings.streamCodec) private var streamCodec = "h264"
     @AppStorage(AppSettings.streamBitrate) private var streamBitrate = 6000
     @AppStorage(AppSettings.streamAudioBitrate) private var streamAudioBitrate = 160
@@ -163,6 +192,10 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 streamSection
+                if streamMode == "youtube" && youtube.loggedIn {
+                    YouTubeBroadcastSection()
+                        .disabled(outputs.stats.streaming)
+                }
                 recordSection
                 replaySection
                 canvasSection
@@ -195,12 +228,20 @@ struct SettingsView: View {
 
     private var streamSection: some View {
         Section {
-            TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
-                .keyboardType(.URL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            SecureField("스트림 키", text: $streamKey)
-                .onChange(of: streamKey) { _, key in StreamKeyStore.save(key) }
+            Picker("방식", selection: $streamMode) {
+                Text("서버·스트림 키 입력").tag("manual")
+                Text("YouTube 계정").tag("youtube")
+            }
+            if streamMode == "youtube" {
+                YouTubeAccountRows(account: youtube)
+            } else {
+                TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
+                    .keyboardType(.URL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("스트림 키", text: $streamKey)
+                    .onChange(of: streamKey) { _, key in StreamKeyStore.save(key) }
+            }
             Picker("코덱", selection: $streamCodec) {
                 Text("H.264").tag("h264")
                 Text("HEVC (Enhanced RTMP)").tag("hevc")
@@ -212,9 +253,13 @@ struct SettingsView: View {
         } header: {
             Text("송출")
         } footer: {
-            Text(
-                "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
-            )
+            if streamMode == "youtube" {
+                Text("YouTube 계정으로 로그인하면 송출할 때 스트림 키를 자동으로 받습니다. 로그인 정보는 Keychain에 저장합니다. HEVC는 YouTube가 받습니다 (Enhanced RTMP).")
+            } else {
+                Text(
+                    "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
+                )
+            }
         }
         .disabled(outputs.stats.streaming)
     }

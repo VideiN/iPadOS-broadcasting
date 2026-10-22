@@ -12,6 +12,10 @@ final class Outputs: ObservableObject {
     /// 중지를 눌렀지만 아직 멈추지 않은 상태. 이때 한 번 더 누르면 강제로 멈춘다
     @Published private(set) var recordStopping = false
     @Published private(set) var streamStopping = false
+    /// YouTube 계정 송출: 방송을 만들고 스트림 키를 받는 중 (P8)
+    @Published private(set) var streamPreparing = false
+    /// 방송 준비 실패 이유 (다음 송출 시도까지 보인다)
+    @Published private(set) var streamPrepareError = ""
 
     @Published private(set) var streamFPS: Double = 0
     @Published private(set) var recordFPS: Double = 0
@@ -140,32 +144,64 @@ final class Outputs: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { core_replay_save() }
     }
 
-    /// 송출 서버를 아직 정하지 않았으면 false (설정을 열어야 함)
+    /// 송출 서버를 아직 정하지 않았거나 YouTube에 로그인하지 않았으면 false (설정을 열어야 함)
     @discardableResult
     func toggleStreaming() -> Bool {
+        guard !streamPreparing else { return true }
         let active = stats.streaming
         let defaults = AppSettings.defaults
+        let youtube = defaults.string(forKey: AppSettings.streamMode) == "youtube"
         let server = defaults.string(forKey: AppSettings.streamServer) ?? ""
+
+        if !active && youtube {
+            // YouTube 계정: 방송을 만들고 받은 주소·키로 보낸다
+            guard YouTubeAccount.shared.loggedIn else { return false }
+            streamPreparing = true
+            streamPrepareError = ""
+            Task {
+                do {
+                    let target = try await YouTubeAccount.shared.prepareStream()
+                    await MainActor.run { self.startStreaming(server: target.server, key: target.key) }
+                } catch {
+                    appLog("youtube: stream preparation failed: \(error.localizedDescription)")
+                    await MainActor.run {
+                        self.streamPreparing = false
+                        self.streamPrepareError = error.localizedDescription
+                    }
+                }
+            }
+            return true
+        }
+
         guard active || !server.isEmpty else { return false }
+        if active {
+            let force = streamStopping
+            streamStopping = true
+            DispatchQueue.global(qos: .userInitiated).async {
+                core_streaming_stop(force)
+                DispatchQueue.main.async { self.update() }
+            }
+        } else {
+            streamPrepareError = ""
+            startStreaming(server: server, key: StreamKeyStore.load())
+        }
+        return true
+    }
 
-        let force = streamStopping
-        if active { streamStopping = true }
-
-        let key = StreamKeyStore.load()
+    private func startStreaming(server: String, key: String) {
+        let defaults = AppSettings.defaults
         let codec = defaults.string(forKey: AppSettings.streamCodec) ?? "h264"
         let videoKbps = Int32(defaults.integer(forKey: AppSettings.streamBitrate))
         let audioKbps = Int32(defaults.integer(forKey: AppSettings.streamAudioBitrate))
 
         DispatchQueue.global(qos: .userInitiated).async {
-            if active {
-                core_streaming_stop(force)
-            } else {
-                let ok = core_streaming_start(server, key, codec, videoKbps, audioKbps)
-                appLog("streaming start \(ok ? "requested" : "failed")")
+            let ok = core_streaming_start(server, key, codec, videoKbps, audioKbps)
+            appLog("streaming start \(ok ? "requested" : "failed")")
+            DispatchQueue.main.async {
+                self.streamPreparing = false
+                self.update()
             }
-            DispatchQueue.main.async { self.update() }
         }
-        return true
     }
 
     /// CI용: `-autotest-output <초> <RTMP 서버 URL>`로 띄우면 입력 소스가 준비된 뒤
@@ -178,11 +214,32 @@ final class Outputs: ObservableObject {
         let server = args[index + 2]
         let path = RecordingFolder.defaultFolder.appendingPathComponent("autotest.mp4").path
 
+        // -autotest-youtube <mock 주소>: 송출 주소·키를 YouTube 로그인·방송 만들기 흐름으로 받는다 (P8)
+        if let youtubeIndex = args.firstIndex(of: "-autotest-youtube"), youtubeIndex + 1 < args.count {
+            let base = args[youtubeIndex + 1]
+            Task {
+                do {
+                    let target = try await YouTubeAccount.shared.runAutotest(base: base)
+                    appLog("youtube autotest: ok (broadcast \(target.broadcastID ?? "none"))")
+                    self.runOutputAutotest(seconds: seconds, path: path, server: target.server, key: target.key)
+                    // -autotest-chat <mock 주소>: 이 방송의 채팅을 직접·패널·API로 받아 본다 (P7)
+                    Task { @MainActor in await ChatFeed.shared.runAutotest() }
+                } catch {
+                    appLog("youtube autotest: failed (\(error.localizedDescription))")
+                    self.runOutputAutotest(seconds: seconds, path: path, server: server, key: "autotest")
+                }
+            }
+        } else {
+            runOutputAutotest(seconds: seconds, path: path, server: server, key: "autotest")
+        }
+    }
+
+    private func runOutputAutotest(seconds: Double, path: String, server: String, key: String) {
         appLog("autotest: recording and streaming for \(seconds) s to \(server)")
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
             let recording = core_recording_start(path, "hevc", 20000, 192)
-            let streaming = core_streaming_start(server, "autotest", "h264", 4000, 160)
+            let streaming = core_streaming_start(server, key, "h264", 4000, 160)
             // 리플레이 버퍼(10초)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5)
             let replay = core_replay_start(RecordingFolder.defaultFolder.path, 10, "hevc", 20000, 192)
             appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
@@ -293,6 +350,12 @@ struct OutputControls: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(core: Core.shared, outputs: outputs)
+                // 가로·세로를 돌려도 열린 시트가 남는지 CI가 이 줄로 본다
+                .onAppear { appLog("settings sheet: shown") }
+                .onDisappear { appLog("settings sheet: closed") }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .autotestSheet)) { note in
+            showSettings = note.object as? String == "settings"
         }
     }
 
@@ -308,14 +371,17 @@ struct OutputControls: View {
             .tint(.red)
 
             Button {
-                // 송출 서버를 정하지 않았으면 설정을 연다
+                // 송출 서버를 정하지 않았거나 YouTube에 로그인하지 않았으면 설정을 연다
                 if !outputs.toggleStreaming() { showSettings = true }
             } label: {
                 Label(
-                    outputs.streamStopping ? "멈추는 중 (누르면 강제)" : outputs.stats.streaming ? "송출 중지" : "송출",
+                    outputs.streamPreparing
+                        ? "방송 준비 중…"
+                        : outputs.streamStopping ? "멈추는 중 (누르면 강제)" : outputs.stats.streaming ? "송출 중지" : "송출",
                     systemImage: outputs.stats.streaming ? "stop.circle.fill" : "dot.radiowaves.left.and.right")
             }
             .tint(.blue)
+            .disabled(outputs.streamPreparing)
 
             if outputs.stats.replay_active {
                 Button {
@@ -401,6 +467,12 @@ struct OutputStatusLines: View {
             return String(
                 format: "● %@  %.0f kbps  %.1f fps  드롭 %d/%d", clock(stats.streaming_seconds), outputs.streamKbps, outputs.streamFPS,
                 stats.stream_dropped_frames, stats.stream_total_frames)
+        }
+        if outputs.streamPreparing {
+            return "YouTube 방송 준비 중…"
+        }
+        if !outputs.streamPrepareError.isEmpty {
+            return "오류: \(outputs.streamPrepareError)"
         }
         if !outputs.streamError.isEmpty {
             return "오류: \(outputs.streamError)"

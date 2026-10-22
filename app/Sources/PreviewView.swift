@@ -21,6 +21,7 @@ final class MetalPreviewView: UIView {
     override class var layerClass: AnyClass { CAMetalLayer.self }
 
     private var display: UnsafeMutableRawPointer?
+    private var displaySize: (UInt32, UInt32) = (0, 0)
 
     override func didMoveToWindow() {
         super.didMoveToWindow()
@@ -39,8 +40,14 @@ final class MetalPreviewView: UIView {
 
         if let display {
             core_display_resize(display, width, height)
+            // 가로·세로를 돌리면 프리뷰 크기가 바뀐다 (CI 방향 시험이 이 줄을 본다)
+            if displaySize != (width, height) {
+                displaySize = (width, height)
+                appLog("display resized \(width)x\(height)")
+            }
         } else if window != nil, Core.shared.isRunning, bounds.width > 0, bounds.height > 0 {
             display = core_display_create(Unmanaged.passUnretained(self).toOpaque(), width, height)
+            displaySize = (width, height)
             appLog("display created \(width)x\(height): \(display != nil)")
         }
     }

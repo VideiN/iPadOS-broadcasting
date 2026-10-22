@@ -135,6 +135,11 @@ final class Core: ObservableObject {
                 SceneModel.shared.runAutotestIfRequested()
                 Outputs.shared.runAutotestIfRequested()
                 Outputs.shared.runSRTAutotestIfRequested()
+                // 유튜브 채팅 받기 (P7): 채팅 소스나 패널이 있고 로그인돼 있으면 받는다
+                MainActor.assumeIsolated {
+                    ChatFeed.shared.tick()
+                    UIAutotest.runIfRequested()
+                }
             }
         }
     }

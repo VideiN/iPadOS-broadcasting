@@ -27,6 +27,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "slideshow_v2", "slideshow": "이미지 슬라이드쇼"
         case "ios_text_source": "텍스트"
         case "ios_media_source": "미디어 (동영상·음악 파일)"
+        case "ios_chat_source": "채팅"
         default: name
         }
     }
@@ -39,6 +40,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "slideshow_v2", "slideshow": "photo.on.rectangle"
         case "ios_text_source": "textformat"
         case "ios_media_source": "film"
+        case "ios_chat_source": "bubble.left.and.text.bubble.right"
         default: "square.on.square"
         }
     }
@@ -313,6 +315,28 @@ final class SceneModel: ObservableObject {
                 textName,
                 encodeJSON(["text": .string("안녕하세요 Broadcast\n둘째 줄"), "size": .number(64), "outline": .bool(true)]))
             textResult = width > 0 && height > 0 ? "ok \(Int(width))x\(Int(height))" : "empty"
+        }
+
+        // 채팅 소스 (P7): 시험 모드로 가짜 메시지(위험한 입력 포함)를 빠르게 보낸다. 결과는 플러그인 로그로 CI가 본다
+        // ("snapshot alpha …", "test round 1 done … unsafe 0, image mismatches 0"). 스크린숏 오른쪽에 보이게 둔다.
+        var chatResult = "no chat type"
+        if let chatType = types.first(where: { $0.id == "ios_chat_source" }), let chatName = addSource(type: chatType) {
+            core_source_update(
+                chatName,
+                encodeJSON([
+                    "platform": .string("test"), "width": .number(260), "height": .number(330),
+                    "test_interval_ms": .number(400),
+                ]))
+            translateSelection(by: CGSize(width: 370, height: 15))
+            chatResult = "added"
+        }
+        appLog("chat autotest: \(chatResult)")
+
+        // YouTube 채팅 소스 (기본값): 로그인 시험 뒤 ChatFeed 시험이 mock 채팅을 여기로 보낸다. 스크린숏 왼쪽
+        if let chatType = types.first(where: { $0.id == "ios_chat_source" }), let chatName = addSource(type: chatType) {
+            core_source_update(chatName, encodeJSON(["width": .number(260), "height": .number(330)]))
+            translateSelection(by: CGSize(width: 10, height: 15))
+            appLog("youtube chat source: added")
         }
 
         // 형식의 fps 범위 → 고를 수 있는 값

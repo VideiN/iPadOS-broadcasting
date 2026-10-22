@@ -9,22 +9,16 @@ struct ContentView: View {
     @StateObject private var diagnostics = Diagnostics()
     @AppStorage("showDiagnostics") private var showDiagnostics = true
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
-            if geometry.size.width >= 900 {
-                HStack(spacing: 0) {
-                    mainColumn
-                    Divider()
-                    Sidebar(model: model, core: core).frame(width: 340)
+            layout(geometry.size)
+                // 가로·세로를 돌리면 배치가 바뀐다 (CI가 이 줄로 방향 시험을 확인한다)
+                .onChange(of: geometry.size, initial: true) { _, size in
+                    ScreenOrientation.windowSize = size
+                    appLog("layout: \(Int(size.width))x\(Int(size.height)) (\(size.width >= 900 ? "side column" : "stacked"))")
                 }
-            } else {
-                VStack(spacing: 0) {
-                    mainColumn
-                    Divider()
-                    Sidebar(model: model, core: core).frame(height: geometry.size.height * 0.45)
-                }
-            }
         }
         .background(Color.black.ignoresSafeArea())
         .preferredColorScheme(.dark)
@@ -32,10 +26,28 @@ struct ContentView: View {
             appLog("content appeared")
             // 방송 중 화면 자동 잠금을 막는다 (계획 5.4)
             UIApplication.shared.isIdleTimerDisabled = true
+            ScreenOrientation.applyLaunchArgument()
         }
         .onChange(of: scenePhase) { _, phase in
             // 백그라운드로 가거나 끝나기 전에 씬 구성을 저장한다
             if phase != .active && core.isRunning { model.saveNow() }
+        }
+    }
+
+    /// 창이 넓으면(가로 화면) 옆 칸을 오른쪽에, 좁으면(세로 화면·창 모드) 아래에 둔다.
+    /// HStack/VStack을 if로 나누면 돌릴 때마다 화면 전체가 새로 만들어져 프리뷰 디스플레이를 다시 만들고 열린 시트가 닫힌다.
+    /// AnyLayout은 배치만 바꾸고 안의 뷰는 그대로 둔다.
+    private func layout(_ size: CGSize) -> some View {
+        let wide = size.width >= 900
+        let stack = wide ? AnyLayout(HStackLayout(spacing: 0)) : AnyLayout(VStackLayout(spacing: 0))
+        return stack {
+            mainColumn
+            // Divider는 AnyLayout 안에서 방향을 모르므로 선을 직접 그린다
+            Rectangle()
+                .fill(Color(uiColor: .separator))
+                .frame(width: wide ? 1 / displayScale : nil, height: wide ? nil : 1 / displayScale)
+            SideColumn(model: model, core: core)
+                .frame(width: wide ? 340 : nil, height: wide ? nil : size.height * 0.45)
         }
     }
 
@@ -246,7 +258,32 @@ struct PreviewArea: View {
     }
 }
 
-// MARK: - 옆 패널: 장면, 소스, 오디오
+// MARK: - 옆 칸: 장면·소스·오디오, 또는 채팅 패널
+
+struct SideColumn: View {
+    @ObservedObject var model: SceneModel
+    @ObservedObject var core: Core
+    @AppStorage("sideColumnTab") private var tab = "sources"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("옆 칸", selection: $tab) {
+                Text("장면·소스").tag("sources")
+                Text("채팅").tag("chat")
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            if tab == "chat" {
+                ChatPanelView(feed: ChatFeed.shared) { tab = "sources" }
+            } else {
+                Sidebar(model: model, core: core)
+            }
+        }
+        .background(Color(uiColor: .systemGroupedBackground))
+    }
+}
 
 struct Sidebar: View {
     @ObservedObject var model: SceneModel
@@ -364,6 +401,11 @@ struct Sidebar: View {
                         }
                     }
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .autotestSheet)) { note in
+            let sheet = note.object as? String ?? ""
+            addingSource = sheet == "add source"
+            sourceToEdit = sheet.hasPrefix("properties:") ? EditedSource(name: String(sheet.dropFirst(11))) : nil
         }
         .alert(
             "이름 바꾸기",
@@ -592,5 +634,118 @@ struct AudioInputRow: View {
         let multiplier = core_source_volume(sourceName)
         volumeDB = multiplier > 0 ? max(-60, 20 * log10(Double(multiplier))) : -60
         muted = core_source_muted(sourceName)
+    }
+}
+
+// MARK: - 화면 방향과 화면 시험 (CI)
+
+/// CI는 시뮬레이터 기기를 Simulator 앱의 메뉴로 돌린다(simctl에는 돌리는 명령이 없다). 그게 안 되면 앱이 창의 방향을 바꿔 달라고
+/// 한다: 화면 배치는 같지만 기기는 세로라 가로 창이 세로 화면 안에 줄어 보인다. 카메라 방향은 기기 센서를 따르므로 실기기에서 본다.
+enum ScreenOrientation {
+    /// 지금 창 크기 (ContentView가 바뀔 때마다 넣는다)
+    @MainActor static var windowSize = CGSize.zero
+
+    /// `-orientation landscape|portrait`: 기기가 그 방향이 아니면 창 방향을 바꿔 달라고 한다
+    @MainActor
+    static func applyLaunchArgument() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-orientation"), index + 1 < args.count else { return }
+        request(landscape: args[index + 1] == "landscape")
+    }
+
+    @MainActor
+    static func request(landscape: Bool) {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else {
+            appLog("orientation: no window scene")
+            return
+        }
+        if scene.effectiveGeometry.interfaceOrientation.isLandscape == landscape {
+            appLog("orientation: already \(landscape ? "landscape" : "portrait")")
+            return
+        }
+        appLog("orientation: requesting \(landscape ? "landscape" : "portrait")")
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: landscape ? .landscapeRight : .portrait)) { error in
+            appLog("orientation: request failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+extension Notification.Name {
+    /// 화면 시험이 시트를 연다: "settings", "add source", "properties:<소스 이름>". 그 밖의 값(nil)이면 닫는다
+    static let autotestSheet = Notification.Name("autotestSheet")
+}
+
+/// CI (`-autotest-ui`, 다시 띄운 실행): 세로로 뜬 화면에서 설정 시트를 연 채로 가로로 돌리고(시트가 남아야 한다),
+/// 가로에서 소스 추가·소스 속성 시트와 채팅 탭을 하나씩 연 뒤 다시 세로로 돌린다.
+/// "ui autotest: shot <이름>"을 남기면 CI가 스크린숏을 찍고 tmp/autotest-shot 파일을 만든다. 그때까지 기다린다.
+/// "ui autotest: rotate …"를 남기면 CI가 시뮬레이터 기기를 돌린다.
+@MainActor
+enum UIAutotest {
+    static func runIfRequested() {
+        guard ProcessInfo.processInfo.arguments.contains("-autotest-ui") else { return }
+        Task { await run() }
+    }
+
+    private static func run() async {
+        func pause(_ seconds: Double) async { try? await Task.sleep(for: .seconds(seconds)) }
+        func wait(_ seconds: Double, until condition: () -> Bool) async -> Bool {
+            let deadline = Date().addingTimeInterval(seconds)
+            while !condition() && Date() < deadline { await pause(0.25) }
+            return condition()
+        }
+
+        let ack = FileManager.default.temporaryDirectory.appendingPathComponent("autotest-shot")
+        // 돌리거나 시트를 연 애니메이션이 끝나게 기다렸다가 알린다
+        func shot(_ name: String) async {
+            await pause(1.5)
+            try? FileManager.default.removeItem(at: ack)
+            appLog("ui autotest: shot \(name)")
+            let acked = await wait(20) { FileManager.default.fileExists(atPath: ack.path) }
+            if !acked { appLog("ui autotest: no screenshot ack for \(name)") }
+        }
+        func sheet(_ sheet: String, shot name: String) async {
+            NotificationCenter.default.post(name: .autotestSheet, object: sheet)
+            await shot(name)
+            NotificationCenter.default.post(name: .autotestSheet, object: nil)
+            await pause(1)
+        }
+        func rotate(landscape: Bool) async {
+            func rotated() -> Bool {
+                let size = ScreenOrientation.windowSize
+                return (size.width > size.height) == landscape
+            }
+            appLog("ui autotest: rotate \(landscape ? "landscape" : "portrait")")
+            if await wait(10, until: rotated) { return }
+            appLog("ui autotest: the device did not rotate")
+            ScreenOrientation.request(landscape: landscape)
+            _ = await wait(5, until: rotated)
+        }
+
+        appLog("ui autotest: start")
+        UserDefaults.standard.set("sources", forKey: "sideColumnTab")
+        await shot("1-portrait")
+
+        // 시트를 연 채로 돌린다. 돌릴 때 화면이 새로 만들어지면 시트가 닫힌다
+        NotificationCenter.default.post(name: .autotestSheet, object: "settings")
+        await shot("2-settings")
+        await rotate(landscape: true)
+        await shot("3-settings-landscape")
+        NotificationCenter.default.post(name: .autotestSheet, object: nil)
+        await pause(1)
+        await shot("4-landscape")
+
+        await sheet("add source", shot: "5-add-source")
+        // 맨 위 채팅 소스(장면 시험이 마지막에 넣은 YouTube 채팅, 속성에 상태 줄이 있다)가 있으면 그것을, 없으면 맨 위 소스
+        let items = SceneModel.shared.items
+        if let item = items.first(where: { $0.type == "ios_chat_source" }) ?? items.first {
+            await sheet("properties:\(item.name)", shot: "6-properties")
+        }
+        UserDefaults.standard.set("chat", forKey: "sideColumnTab")
+        await shot("7-chat")
+
+        UserDefaults.standard.set("sources", forKey: "sideColumnTab")
+        await rotate(landscape: false)
+        await shot("8-portrait")
+        appLog("ui autotest: done")
     }
 }
