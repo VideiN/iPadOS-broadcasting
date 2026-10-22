@@ -70,8 +70,8 @@ struct ContentView: View {
             StatusBar(outputs: outputs, diagnostics: diagnostics)
                 .studioPart(.status)
         }
-        // 칸 사이 틈으로 보이는 선
-        .background(Color(white: 0.22))
+        // 칸 사이 틈으로 보이는 선 (홈 표시줄 자리까지 칠하지 않게)
+        .background(Color(white: 0.22), ignoresSafeAreaEdges: [])
     }
 }
 
@@ -919,19 +919,21 @@ struct ControlsDock: View {
                         control("리플레이 시작", "gobackward", .green) { outputs.toggleReplay() }
                     }
 
-                    control(previewEnabled ? "미리보기 끄기" : "미리보기 켜기", previewEnabled ? "eye.slash" : "eye", .gray) {
-                        previewEnabled.toggle()
+                    // 화면 켜고 끄기와 설정은 작게 2×2 (가로 화면의 독 높이에 다 들어가게). 켜져 있으면 파랗게
+                    Grid(horizontalSpacing: 6, verticalSpacing: 6) {
+                        GridRow {
+                            smallButton("미리보기", previewEnabled ? "eye" : "eye.slash", on: previewEnabled) {
+                                previewEnabled.toggle()
+                            }
+                            smallButton("계측", "gauge.with.dots.needle.67percent", on: showDiagnostics) {
+                                showDiagnostics.toggle()
+                            }
+                        }
+                        GridRow {
+                            smallButton("채팅", "bubble.left.and.text.bubble.right", on: chatShown) { chatShown.toggle() }
+                            smallButton("설정", "gearshape", on: false) { sheets.settings = true }
+                        }
                     }
-                    control(
-                        showDiagnostics ? "계측 숨기기" : "계측 보기",
-                        showDiagnostics ? "gauge.with.dots.needle.0percent" : "gauge.with.dots.needle.67percent", .gray
-                    ) {
-                        showDiagnostics.toggle()
-                    }
-                    control(chatShown ? "채팅 패널 숨기기" : "채팅 패널 보기", "bubble.left.and.text.bubble.right", .gray) {
-                        chatShown.toggle()
-                    }
-                    control("설정", "gearshape", .gray) { sheets.settings = true }
                 }
                 .padding(8)
             }
@@ -966,6 +968,20 @@ struct ControlsDock: View {
         } else {
             button.buttonStyle(.bordered)
         }
+    }
+
+    /// 작은 버튼: 아이콘 위, 글자 아래
+    private func smallButton(_ title: String, _ icon: String, on: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 2) {
+                Image(systemName: icon).font(.system(size: 15, weight: .semibold))
+                Text(title).font(.caption2.weight(.semibold)).lineLimit(1).minimumScaleFactor(0.7)
+            }
+            .frame(maxWidth: .infinity, minHeight: 34)
+        }
+        .buttonStyle(.bordered)
+        .tint(on ? Color.accentColor : Color.gray)
+        .accessibilityValue(on ? "켬" : "끔")
     }
 }
 
@@ -1123,12 +1139,13 @@ enum UIAutotest {
         }
 
         let ack = FileManager.default.temporaryDirectory.appendingPathComponent("autotest-shot")
-        // 돌리거나 시트를 연 애니메이션이 끝나게 기다렸다가 알린다
+        // 돌리거나 시트를 연 애니메이션이 끝나게 기다렸다가 알린다.
+        // 느린 러너에서 simctl 스크린숏 한 장이 20초를 넘은 일이 있어(#83, #86) 넉넉히 기다린다
         func shot(_ name: String) async {
             await pause(1.5)
             try? FileManager.default.removeItem(at: ack)
             appLog("ui autotest: shot \(name)")
-            let acked = await wait(20) { FileManager.default.fileExists(atPath: ack.path) }
+            let acked = await wait(45) { FileManager.default.fileExists(atPath: ack.path) }
             if !acked { appLog("ui autotest: no screenshot ack for \(name)") }
         }
         func sheet(_ sheet: String, shot name: String) async {
