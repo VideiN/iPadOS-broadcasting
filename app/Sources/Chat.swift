@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 import WebKit
 
-/// 유튜브 채팅 (P7): 로그인한 계정의 지금 방송 채팅을 받아 채팅 소스(plugins/ios-chat)에 넘기고, 옆 칸의 채팅 패널에 보인다.
+/// 유튜브 채팅 (P7): 로그인한 계정의 지금 방송 채팅을 받아 채팅 소스(plugins/ios-chat)에 넘기고, 오른쪽 채팅 패널에 보인다.
 ///
 /// 받는 길은 셋이고 앞의 것이 되면 뒤의 것은 쓰지 않는다.
 /// 1. 채팅 패널(유튜브 채팅 팝업 페이지)을 열었으면 그 페이지가 받아 오는 데이터를 그대로 읽는다 (요청이 늘지 않음)
@@ -593,7 +593,7 @@ final class APIChatClient {
 // MARK: - 채팅 패널 (웹 페이지)
 
 /// 유튜브 채팅 팝업 페이지. PC OBS의 채팅 독처럼 보고, 패널 안에서 유튜브에 로그인해 채팅도 한다.
-/// 페이지가 받아 오는 채팅 데이터를 스크립트로 복사해 채팅 소스에도 쓴다. 탭을 숨겨도 창 뒤에 붙여 계속 돌린다.
+/// 페이지가 받아 오는 채팅 데이터를 스크립트로 복사해 채팅 소스에도 쓴다. 패널을 숨겨도 창 뒤에 붙여 계속 돌린다.
 ///
 /// 스크립트 둘: 페이지 쪽(fetch/XHR 응답과 ytInitialData를 복사해 window.postMessage)과 앱 쪽 콘텐츠 월드(그것을
 /// 앱으로 넘기고, 페이지에 보이는 메시지 id를 알려 데이터가 빠지지 않는지 맞춰 본다). 앱의 메시지 처리기는 앱 쪽
@@ -602,7 +602,7 @@ final class APIChatClient {
 final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private(set) var webView: WKWebView?
     private var hiddenHost: UIView?
-    /// 채팅 탭의 자리. 탭 화면이 웹 화면보다 먼저 생기므로(탭이 보인 뒤에 패널을 연다) 기다렸다가 붙인다
+    /// 채팅 칸의 자리. 칸이 웹 화면보다 먼저 생기므로(칸이 보인 뒤에 패널을 연다) 기다렸다가 붙인다
     private weak var container: UIView?
     /// WebKit은 패널을 처음 열 때 쓴다 (앱을 켤 때 메인 스레드를 잡지 않게)
     private lazy var world = WKContentWorld.world(name: "broadcast-chat")
@@ -667,7 +667,7 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
     }
 
-    /// 웹 화면이 아직 없으면 자리만 기억했다가 만들 때 붙인다 (기기: 송출 중에 채팅 탭을 열면 패널이 빈 채로 남았다)
+    /// 웹 화면이 아직 없으면 자리만 기억했다가 만들 때 붙인다 (기기: 송출 중에 채팅 칸을 열면 패널이 빈 채로 남았다)
     func show(in container: UIView) {
         self.container = container
         guard let webView, webView.superview !== container else { return }
@@ -685,13 +685,13 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         appLog("chat panel: behind the window")
     }
 
-    /// 지금 화면의 채팅 탭에 붙어 있는지 (CI)
+    /// 지금 화면의 채팅 칸에 붙어 있는지 (CI)
     var isOnScreen: Bool {
         guard let webView, let superview = webView.superview else { return false }
         return superview === container && superview.window != nil
     }
 
-    /// 채팅 탭이 있으면 거기에 (아직 창에 붙기 전일 수도 있다), 아니면 창 뒤에
+    /// 채팅 칸이 있으면 거기에 (아직 창에 붙기 전일 수도 있다), 아니면 창 뒤에
     private func place(_ webView: WKWebView) {
         if let container {
             show(in: container)
@@ -700,7 +700,7 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
     }
 
-    /// 창 맨 뒤 (그려지지만 보이지 않음): 탭을 숨겨도 페이지가 멈추지 않게
+    /// 창 맨 뒤 (그려지지만 보이지 않음): 칸을 숨겨도 페이지가 멈추지 않게
     private func park(_ webView: WKWebView) {
         guard let window = Self.window() else {
             webView.removeFromSuperview()
@@ -965,7 +965,7 @@ final class ChatFeed: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var source = Source.none
     @Published private(set) var videoID: String?
-    /// 패널을 열었는지. 연 뒤로는 탭을 숨겨도 페이지를 유지한다 (닫기를 누를 때까지)
+    /// 패널을 열었는지. 연 뒤로는 칸을 숨겨도 페이지를 유지한다 (닫기를 누를 때까지)
     @Published private(set) var panelOpened = false
 
     let panel = ChatPanelWeb()
@@ -1020,7 +1020,7 @@ final class ChatFeed: ObservableObject {
 
     // MARK: 패널
 
-    /// 옆 칸의 채팅 탭이 보일 때
+    /// 오른쪽 채팅 칸이 보일 때
     func openPanel() {
         if !panelOpened {
             panelOpened = true
@@ -1297,8 +1297,8 @@ final class ChatFeed: ObservableObject {
         let directOK = await wait(30) { source == .direct && count("d-") >= 5 && removed >= 2 }
         appLog("chat autotest: direct \(directOK ? "ok" : "failed") (sent \(count("d-")), removals \(removed))")
 
-        // 사용자가 옆 칸의 채팅 탭을 누른 것처럼 (탭 화면이 패널을 열고 웹 화면을 붙인다)
-        UserDefaults.standard.set("chat", forKey: "sideColumnTab")
+        // 사용자가 채팅 패널을 보이게 한 것처럼 (칸이 패널을 열고 웹 화면을 붙인다)
+        UserDefaults.standard.set(true, forKey: AppSettings.chatPanelShown)
         openPanel()
         let removedBefore = removed
         // mock 페이지는 글 하나를 보내고 그 응답으로 그린다 (그 글은 받는 데이터에 오지 않는다)
@@ -1310,7 +1310,7 @@ final class ChatFeed: ObservableObject {
                 + "\(count("p-sent-")), source \(source.rawValue))")
 
         // 패널을 닫으면 직접 받기로 돌아가는데, mock은 이제 형식이 바뀐 페이지를 준다 → 공식 API
-        UserDefaults.standard.set("sources", forKey: "sideColumnTab")
+        UserDefaults.standard.set(false, forKey: AppSettings.chatPanelShown)
         closePanel()
         let apiOK = await wait(45) { source == .api && count("a-") >= 2 }
         appLog("chat autotest: api \(apiOK ? "ok" : "failed") (sent \(count("a-")), source \(source.rawValue))")
@@ -1322,9 +1322,9 @@ final class ChatFeed: ObservableObject {
             "chat autotest: \(directOK && panelOK && apiOK && history == 0 && duplicates == 0 ? "ok" : "failed") "
                 + "(history shown \(history), duplicates \(duplicates))")
 
-        // 끝으로 채팅 탭을 다시 띄워 둔다: CI가 패널 화면을 찍고, 다시 띄운 실행(로그인 없음)은 안내 화면을 보인다.
-        // 이번에는 사용자처럼 탭만 바꾼다 (패널은 탭 화면이 연다: 웹 화면이 탭 화면보다 늦게 생긴다)
-        UserDefaults.standard.set("chat", forKey: "sideColumnTab")
+        // 끝으로 채팅 패널을 다시 띄워 둔다: CI가 패널 화면을 찍고, 다시 띄운 실행(로그인 없음)은 안내 화면을 보인다.
+        // 이번에는 사용자처럼 보이게만 한다 (패널은 칸이 연다: 웹 화면이 칸보다 늦게 생긴다)
+        UserDefaults.standard.set(true, forKey: AppSettings.chatPanelShown)
         _ = await wait(15) { source == .panel && panel.isOnScreen }
         appLog(
             "chat autotest: done (panel tab \(source == .panel ? "receiving" : "not ready"), "
@@ -1334,7 +1334,7 @@ final class ChatFeed: ObservableObject {
 
 // MARK: - 패널 화면
 
-/// 옆 칸의 "채팅" 탭
+/// 오른쪽 채팅 칸 (제어 독이나 ⋯ 메뉴로 숨긴다)
 struct ChatPanelView: View {
     @ObservedObject var feed: ChatFeed
     @ObservedObject private var account = YouTubeAccount.shared
@@ -1361,7 +1361,7 @@ struct ChatPanelView: View {
                 }
             }
             .padding(.horizontal, 12)
-            .padding(.bottom, 6)
+            .padding(.vertical, 6)
 
             if !account.loggedIn {
                 placeholder("YouTube 계정으로 로그인하면 내 방송의 채팅이 여기에 나옵니다.", "설정 › 송출 › 방식에서 YouTube 계정을 고르세요.")

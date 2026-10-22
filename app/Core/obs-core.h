@@ -85,6 +85,9 @@ void core_source_set_volume(const char *source_name, float multiplier);
 void core_source_set_muted(const char *source_name, bool muted);
 float core_source_volume(const char *source_name);
 bool core_source_muted(const char *source_name);
+// 오디오 믹서: 소스의 최근 피크 L/R (dBFS, 1초 넘게 소리가 없으면 -inf). 처음 부를 때 그 소스에 볼륨미터를 붙인다.
+// 소스가 없으면 false. 메인 스레드에서 부른다
+bool core_mixer_peak(const char *source_name, float *left_db, float *right_db);
 
 // 미디어 소스 조작. action: 0 재생/일시정지 전환, 1 처음부터, 2 정지. 조작 뒤 상태(enum obs_media_state)를 돌려준다
 int core_source_media(const char *source_name, int action);

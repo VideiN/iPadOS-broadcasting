@@ -27,6 +27,7 @@ enum AppSettings {
     static let youtubePrivacy = "youtubePrivacy"  // "public" | "unlisted" | "private"
     static let youtubeLatency = "youtubeLatency"  // "normal" | "low" | "ultraLow"
     static let youtubeStreamID = "youtubeStreamID"  // 이 앱이 만든 재사용 스트림
+    static let chatPanelShown = "chatPanelShown"  // 오른쪽 채팅 패널 (숨겨도 패널 페이지는 창 뒤에서 계속 돈다)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -45,6 +46,7 @@ enum AppSettings {
             youtubeTitle: "라이브 방송",
             youtubePrivacy: "unlisted",
             youtubeLatency: "normal",
+            chatPanelShown: true,
         ])
     }
 

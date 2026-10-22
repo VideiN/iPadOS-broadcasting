@@ -18,6 +18,10 @@ struct BroadcastApp: App {
 
         appLog("init")
         appLog("build: \(BuildInfo.current.logLine)")
+        // CI 채팅 시험은 직접 받기부터 보므로 채팅 패널을 숨긴 채 띄운다 (시험이 차례로 보였다 숨긴다)
+        if ProcessInfo.processInfo.arguments.contains("-autotest-chat") {
+            UserDefaults.standard.set(false, forKey: AppSettings.chatPanelShown)
+        }
         Core.shared.start()
 
         // 같은 브랜치에 더 새 빌드가 있는지 (오버레이·설정에 보인다). 시작 작업이 끝난 뒤에
