@@ -11,6 +11,7 @@ struct DiagnosticsOverlay: View {
         let stats = diagnostics.stats
 
         VStack(alignment: .leading, spacing: 2) {
+            BuildOverlayLine()
             Text(String(format: "FPS   %5.1f / %.0f", stats.active_fps, stats.target_fps))
             Text(String(format: "렌더  %5.2f ms", stats.frame_time_ms))
             Text(String(format: "GPU   %5.2f ms/프레임", diagnostics.gpuMillisecondsPerFrame))

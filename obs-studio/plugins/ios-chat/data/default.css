@@ -1,0 +1,76 @@
+/* 채팅 소스 기본 CSS
+ *
+ * 메시지 하나의 구조:
+ *   <div class="chat-message platform-youtube role-moderator kind-text">
+ *     <span class="badges"><img class="badge"></span>
+ *     <span class="author">이름</span>
+ *     <span class="amount">₩10,000</span>        (슈퍼챗만)
+ *     <span class="text">글 <img class="emote"> 글</span>
+ *   </div>
+ *
+ * 역할: role-owner(방송자) role-moderator(매니저) role-member(멤버) role-verified(인증)
+ * 종류: kind-text kind-superchat kind-membership kind-system
+ * 플랫폼: platform-youtube platform-test
+ * 플랫폼이 정한 이름 색: var(--author-color)
+ * 슈퍼챗 금액대 색 (YouTube가 정한 색): var(--accent-color)
+ *
+ * 메시지마다 한 장의 그림으로 찍으므로 CSS 애니메이션은 움직이지 않습니다.
+ * 외부 이미지·글꼴은 https 주소만 쓸 수 있습니다. */
+
+.chat-message {
+  margin: 4px 0;
+  padding: 6px 10px;
+  border-radius: 10px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #ffffff;
+  font-family: -apple-system, "Apple SD Gothic Neo", sans-serif;
+  font-size: 22px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.badges:empty {
+  display: none;
+}
+
+.badge {
+  height: 1em;
+  margin-right: 4px;
+  vertical-align: -0.12em;
+}
+
+.author {
+  margin-right: 6px;
+  font-weight: 700;
+  color: var(--author-color, #9ecbff);
+}
+
+.emote {
+  height: 1.4em;
+  vertical-align: -0.35em;
+}
+
+.role-owner .author {
+  color: #ffd600;
+}
+
+.role-moderator .author {
+  color: #7f9cff;
+}
+
+.role-member .author {
+  color: #4cd964;
+}
+
+.kind-superchat {
+  background: var(--accent-color, rgba(230, 33, 23, 0.85));
+}
+
+.kind-superchat .amount {
+  display: block;
+  font-weight: 700;
+}
+
+.kind-membership {
+  background: rgba(15, 157, 88, 0.85);
+}

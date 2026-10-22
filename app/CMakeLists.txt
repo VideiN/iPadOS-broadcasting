@@ -6,8 +6,36 @@
 set(APP_DISPLAY_NAME "Broadcast")
 set(APP_EXECUTABLE "Broadcast")
 set(APP_BUNDLE_ID "io.github.videin.broadcast")
-set(APP_VERSION "0.1.0")
 set(APP_BUILD_NUMBER "${OBS_BUILD_NUMBER}")
+
+# 빌드 정보: 설치한 앱이 어느 CI 실행에서 나왔는지 LiveContainer 목록·설정·오버레이·로그에서 알아보게 한다 (BuildInfo.swift).
+# 실행 번호는 GitHub Actions 목록의 "#번호". LiveContainer 목록은 CFBundleShortVersionString을 보여 주므로 버전 끝자리에 넣는다.
+if(DEFINED ENV{GITHUB_RUN_NUMBER})
+  set(APP_BUILD_RUN "$ENV{GITHUB_RUN_NUMBER}")
+  set(APP_BUILD_RUN_ID "$ENV{GITHUB_RUN_ID}")
+  set(APP_BUILD_REPOSITORY "$ENV{GITHUB_REPOSITORY}")
+  set(APP_BUILD_COMMIT "$ENV{GITHUB_SHA}")
+  # PR이면 GITHUB_REF_NAME이 "<번호>/merge"라서 PR의 브랜치를 쓴다
+  if(NOT "$ENV{GITHUB_HEAD_REF}" STREQUAL "")
+    set(APP_BUILD_BRANCH "$ENV{GITHUB_HEAD_REF}")
+  else()
+    set(APP_BUILD_BRANCH "$ENV{GITHUB_REF_NAME}")
+  endif()
+else()
+  set(APP_BUILD_RUN "0")
+  set(APP_BUILD_RUN_ID "")
+  set(APP_BUILD_REPOSITORY "")
+  set(APP_BUILD_COMMIT "")
+  set(APP_BUILD_BRANCH "")
+endif()
+string(TIMESTAMP APP_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
+# Info.plist에 그대로 들어가므로 XML 특수 문자를 바꾼다
+foreach(_var IN ITEMS APP_BUILD_BRANCH APP_BUILD_REPOSITORY)
+  string(REPLACE "&" "&amp;" ${_var} "${${_var}}")
+  string(REPLACE "<" "&lt;" ${_var} "${${_var}}")
+  string(REPLACE ">" "&gt;" ${_var} "${${_var}}")
+endforeach()
+set(APP_VERSION "0.1.${APP_BUILD_RUN}")
 
 if(OBS_IOS_SDK_PATH MATCHES "[Ss]imulator")
   set(APP_SUPPORTED_PLATFORM "iPhoneSimulator")
@@ -15,6 +43,21 @@ if(OBS_IOS_SDK_PATH MATCHES "[Ss]imulator")
 else()
   set(APP_SUPPORTED_PLATFORM "iPhoneOS")
   set(APP_PLATFORM_NAME "iphoneos")
+endif()
+
+# 유튜브 로그인(P8)의 Google OAuth 클라이언트 ID (iOS 유형). Google API 약관상 오픈 소스 코드에는 넣지 않고,
+# CI가 저장소 비밀값(YOUTUBE_CLIENT_ID)으로 넘긴다. Info.plist에는 16진수로 넣는다 (번들을 글자로 훑어서는 안 보이게).
+# 비어 있으면 앱 설정에서 사용자가 자기 클라이언트 ID를 넣는다.
+set(APP_YOUTUBE_CLIENT_ID "" CACHE STRING "Google OAuth iOS client ID for YouTube login")
+string(STRIP "${APP_YOUTUBE_CLIENT_ID}" _youtube_client_id)
+set(APP_YOUTUBE_CLIENT_HEX "")
+if(_youtube_client_id)
+  # 값은 찍지 않는다
+  if(NOT _youtube_client_id MATCHES "^[0-9]+-[0-9A-Za-z_]+\\.apps\\.googleusercontent\\.com$")
+    message(FATAL_ERROR "APP_YOUTUBE_CLIENT_ID is not an iOS OAuth client ID (...apps.googleusercontent.com)")
+  endif()
+  string(HEX "${_youtube_client_id}" APP_YOUTUBE_CLIENT_HEX)
+  message(STATUS "YouTube client ID: built in")
 endif()
 
 # libobs 호출을 모은 C 브리지
@@ -42,6 +85,7 @@ target_link_libraries(
     OBS::ios-audio-input
     OBS::ios-text
     OBS::ios-media-source
+    OBS::ios-chat
     OBS::mac-videotoolbox
     OBS::coreaudio-encoder
     OBS::outputs
@@ -56,6 +100,7 @@ add_executable(
   app
   MACOSX_BUNDLE
   Sources/App.swift
+  Sources/BuildInfo.swift
   Sources/ContentView.swift
   Sources/PreviewView.swift
   Sources/Outputs.swift
@@ -65,6 +110,8 @@ add_executable(
   Sources/FiltersView.swift
   Sources/MainView.swift
   Sources/Settings.swift
+  Sources/YouTube.swift
+  Sources/Chat.swift
 )
 target_link_libraries(app PRIVATE app-core)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
@@ -114,6 +161,9 @@ add_custom_command(
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-media-source/data"
     "${bundle_dir}/obs-plugins/ios-media-source"
+  COMMAND
+    "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/ios-chat/data"
+    "${bundle_dir}/obs-plugins/ios-chat"
   COMMAND
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/mac-videotoolbox/data"
     "${bundle_dir}/obs-plugins/mac-videotoolbox"

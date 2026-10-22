@@ -571,8 +571,8 @@ int64_t core_scene_add_source(const char *type_id, const char *name)
 	if (!item)
 		return -1;
 
-	// 텍스트는 글자 크기 그대로 둔다 (캔버스에 맞추면 짧은 글이 크게 늘어난다)
-	if (strcmp(type_id, "ios_text_source") != 0)
+	// 텍스트는 글자 크기 그대로 둔다 (캔버스에 맞추면 짧은 글이 크게 늘어난다). 채팅도 설정한 상자 크기 그대로
+	if (strcmp(type_id, "ios_text_source") != 0 && strcmp(type_id, "ios_chat_source") != 0)
 		fit_item_to_canvas(item);
 	blog(LOG_INFO, "[app] added source '%s' (%s)", obs_source_get_name(source), type_id);
 	return obs_sceneitem_get_id(item);

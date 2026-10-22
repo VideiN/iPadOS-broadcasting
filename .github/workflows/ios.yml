@@ -64,10 +64,18 @@ jobs:
           fail-on-cache-miss: true
 
       - name: Configure
+        env:
+          # 유튜브 로그인 클라이언트 ID (P8): 저장소 비밀값에만 두고 기기용 빌드(IPA)에만 넣는다.
+          # 포크에서 온 PR처럼 비밀값이 없으면 빈 값 → 앱 설정에서 사용자가 넣는다
+          YOUTUBE_CLIENT_ID: ${{ matrix.platform == 'iphoneos' && secrets.YOUTUBE_CLIENT_ID || '' }}
         run: |
           extra_args=()
           if [ "${{ matrix.platform }}" = iphonesimulator ]; then
             extra_args+=(-DENABLE_UNIT_TESTS=ON "-DCMAKE_CROSSCOMPILING_EMULATOR=/bin/bash;$PWD/ios/scripts/sim-run.sh")
+            # 시뮬레이터는 가짜 ID로 "빌드에 들어 있는 클라이언트로 로그인"을 mock 시험한다
+            extra_args+=(-DAPP_YOUTUBE_CLIENT_ID=123456-builtin.apps.googleusercontent.com)
+          elif [ -n "$YOUTUBE_CLIENT_ID" ]; then
+            extra_args+=("-DAPP_YOUTUBE_CLIENT_ID=$YOUTUBE_CLIENT_ID")
           fi
 
           export PKG_CONFIG_LIBDIR="$DEPS_DIR/lib/pkgconfig"
@@ -93,8 +101,11 @@ jobs:
           import json, sys
           devices = json.load(sys.stdin)["devices"]
           ios = sorted(((runtime, d) for runtime, ds in devices.items() if ".iOS-" in runtime for d in ds), key=lambda t: t[0])
-          ipads = [d for _, d in ios if d["name"].startswith("iPad")] or [d for _, d in ios]
-          print(ipads[-1]["udid"])
+          ipads = [(r, d) for r, d in ios if d["name"].startswith("iPad")] or ios
+          newest = [d for r, d in ipads if r == ipads[-1][0]]
+          # 실기기(iPad Pro 11형)와 화면 크기가 같은 것을 먼저 고른다
+          pro11 = [d for d in newest if d["name"].startswith("iPad Pro 11-inch")]
+          print((pro11 or newest)[-1]["udid"])
           ')
           xcrun simctl list devices | grep "$udid"
           xcrun simctl bootstatus "$udid" -b
@@ -137,15 +148,65 @@ jobs:
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
           ffmpeg_pid=$!
 
+          # 채팅 소스 시험(P7)의 함정 서버: 시험 메시지에 이 주소의 "evil" 이미지·링크를 넣는다. 한 번도 요청되면 안 된다
+          mkdir -p chat-trap
+          python3 -m http.server 8099 --bind 127.0.0.1 --directory chat-trap > app-run/chat-trap.log 2>&1 &
+          chat_trap_pid=$!
+
+          # YouTube 로그인 시험(P8): Google OAuth·YouTube API 흉내. 송출 주소·키를 이 흐름으로 받아 위 ffmpeg로 보낸다
+          # 채팅(P7)도 같은 서버: 유튜브 웹 채팅(페이지·get_live_chat)과 공식 API liveChatMessages 흉내
+          python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2> app-run/youtube-mock-access.log &
+          youtube_mock_pid=$!
+
+          # 가로 화면 (iPad는 대부분 가로로 두고 쓴다): simctl에는 기기를 돌리는 명령이 없어 Simulator 앱의 기기 메뉴를 누른다.
+          # 안 되면(손쉬운 사용 권한 등) 앱의 -orientation과 화면 시험이 창 방향을 바꿔 달라고 한다
+          # (배치는 같지만 기기가 세로라 가로 창이 세로 화면 안에 줄어 보인다)
+          open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID"
+          sleep 5
+          device_landscape=0
+          rotate_device() {
+            local item="Rotate Left" want=1
+            if [ "$1" = portrait ]; then item="Rotate Right"; want=0; fi
+            [ "$device_landscape" = "$want" ] && return 0
+            if osascript -e 'tell application "Simulator" to activate' \
+              -e "tell application \"System Events\" to click menu item \"$item\" of menu \"Device\" of menu bar 1 of process \"Simulator\""; then
+              device_landscape=$want
+              echo "simulator device: $1"
+            else
+              echo "::warning::could not rotate the simulator device ($1)"
+            fi
+            sleep 2
+          }
+          # 스크린숏. 기기를 가로로 돌렸는데 사진이 시뮬레이터 화면의 원래 방향(세로)으로 나오면 돌려 세운다
+          shoot() {
+            xcrun simctl io "$SIM_UDID" screenshot "$1" > /dev/null 2>&1 || return 0
+            local width height
+            width=$(sips -g pixelWidth "$1" | awk '/pixelWidth/ { print $2 }')
+            height=$(sips -g pixelHeight "$1" | awk '/pixelHeight/ { print $2 }')
+            if [ "$device_landscape" = 1 ] && [ "$width" -lt "$height" ]; then
+              sips -r 270 "$1" > /dev/null
+            fi
+          }
+
           # 시뮬레이터 인코더는 소프트웨어라 캔버스를 줄인다 (1080p60은 실기기에서 확인)
+          # 처음 실행은 기기를 가로로 두고 띄운다
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
-          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -autotest-scenes \
-            -autotest-output 20 rtmp://127.0.0.1:1935/live > app-run/app.log 2>&1 &
+          # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
+          rotate_device landscape
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
+            -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
+            -autotest-chat http://127.0.0.1:8098 > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
-            xcrun simctl io "$SIM_UDID" screenshot "app-run/simulator-${t}s.png"
+            shoot "app-run/simulator-${t}s.png"
           done
+          # 채팅 시험은 1분쯤 걸린다. 끝나면 옆 칸이 채팅 탭(패널 페이지)인 채로 찍는다
+          for _ in $(seq 1 45); do
+            grep -q 'chat autotest: done' app-run/app.log && break
+            sleep 2
+          done
+          shoot app-run/simulator-chat.png
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -174,15 +235,32 @@ jobs:
           srt-live-transmit -a:no -t:120 'srt://:9000?mode=listener' file://con \
             > app-run/received-srt.ts 2> app-run/ffmpeg-srt.log &
           ffmpeg_srt_pid=$!
-          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 \
-            -autotest-srt 10 srt://127.0.0.1:9000 > app-run/app-relaunch.log 2>&1 &
+          # 화면 시험(-autotest-ui)도 함께: 세로로 띄워 송출 중에 설정 시트를 연 채로 가로로 돌리고,
+          # 가로에서 시트를 하나씩 연 뒤 다시 세로로
+          rotate_device portrait
+          app_tmp=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/tmp
+          mkdir -p "$app_tmp"
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation portrait \
+            -autotest-srt 10 srt://127.0.0.1:9000 -autotest-ui > app-run/app-relaunch.log 2>&1 &
           for _ in $(seq 1 60); do
             grep -q 'capture started' app-run/app-relaunch.log && break
             sleep 2
           done
-          xcrun simctl io "$SIM_UDID" screenshot app-run/simulator-relaunch.png || true
+          # 앱이 "ui autotest: shot <이름>"을 남기면 찍고 tmp/autotest-shot을 만든다(앱은 그때까지 기다린다).
+          # "ui autotest: rotate …"면 기기를 돌린다
+          for event in 'shot 1-portrait' 'shot 2-settings' 'rotate landscape' 'shot 3-settings-landscape' 'shot 4-landscape' \
+            'shot 5-add-source' 'shot 6-properties' 'shot 7-chat' 'rotate portrait' 'shot 8-portrait'; do
+            for _ in $(seq 1 60); do
+              grep -q "ui autotest: $event" app-run/app-relaunch.log && break
+              sleep 0.5
+            done
+            case $event in
+              rotate*) rotate_device "${event#rotate }" ;;
+              shot*) shoot "app-run/ui-${event#shot }.png"; touch "$app_tmp/autotest-shot" ;;
+            esac
+          done
           for _ in $(seq 1 30); do
-            grep -q 'srt autotest: done' app-run/app-relaunch.log && break
+            grep -q 'srt autotest: done' app-run/app-relaunch.log && grep -q 'ui autotest: done' app-run/app-relaunch.log && break
             sleep 2
           done
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
@@ -198,6 +276,8 @@ jobs:
 
           cat app-run/app.log
           grep -q 'core started' app-run/app.log
+          # 빌드 정보 (BuildInfo.swift): 로그 첫머리에 이 실행의 번호
+          grep -q "build: #$GITHUB_RUN_NUMBER " app-run/app.log
           grep -q '\[stats\]' app-run/app.log
           grep -q 'capture started (camera: yes, audio input: yes)' app-run/app.log
           # 시뮬레이터 마이크(CI에서는 무음)로도 버퍼가 libobs까지 오는지 본다
@@ -214,13 +294,76 @@ jobs:
                s == 4 && /display created/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/app.log
           # 오디오 필터: 노이즈 억제(RNNoise)를 넣고 바꾸고, 저장한 것을 다시 띄울 때 불러온다
           grep -q 'filters autotest: ok' app-run/app.log
+          # YouTube 로그인 (P8): 인증 주소 → 콜백 → PKCE 교환, 만료된 토큰 갱신, 스트림·방송 만들기·연결
+          kill "$youtube_mock_pid" 2> /dev/null || true
+          cat app-run/youtube-mock.log
+          grep -q 'youtube autotest: ok (broadcast mockBroadcast1)' app-run/app.log
+          # 설정에 넣은 ID가 있어도 빌드에 들어 있는 ID로 로그인한다
+          grep -q 'youtube: login with the built-in client' app-run/app.log
+          grep -q 'auth ok (client 123456-builtin.apps.googleusercontent.com)' app-run/youtube-mock.log
+          for step in 'auth ok' 'pkce ok' 'channels ok' 'refresh ok' 'stream created' 'broadcast ok' 'bind ok'; do
+            grep -q "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
+          done
+          if grep -q '^FAIL' app-run/youtube-mock.log; then exit 1; fi
+          # 교환 때 받은 토큰으로 채널을 조회하고, 그 토큰이 만료되자(401) 갱신해서 다시 보내야 한다.
+          # 그다음 조회가 500이면 잠시 뒤 다시 보낸다 (기기에서 Google이 liveStreams에 500을 준 일이 있음)
+          awk '/^channels ok/ { s = 1 } s == 1 && /^401 GET \/youtube\/v3\/liveStreams/ { s = 2 }
+               s == 2 && /^refresh ok/ { s = 3 } s == 3 && /^500 GET \/youtube\/v3\/liveStreams/ { s = 4 }
+               s == 4 && /^liveStreams list/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/youtube-mock.log
+          grep -q 'youtube: GET liveStreams 500 (backendError: Internal error encountered.)' app-run/app.log
+          # 토큰은 로그에 남지 않아야 한다
+          if grep -E 'mock-(access|refresh)|mock-code' app-run/app.log; then echo 'token in app log'; exit 1; fi
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
+          # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
+          kill "$chat_trap_pid" 2> /dev/null || true
+          grep -q 'chat autotest: added' app-run/app.log
+          { grep -E 'ios-chat\] (snapshot alpha|batch of|test round)' app-run/app.log || true; } | sed -n '1,25p'
+          grep -qE 'ios-chat\] snapshot alpha (preserved|dual)' app-run/app.log
+          grep -qE 'ios-chat\] test round 1 done \(rendered [0-9]+, unsafe 0, image mismatches 0,' app-run/app.log
+          # set -e는 "! 명령"으로 뒤집은 실패를 보지 않으므로 if로 확인한다
+          if grep -E 'ios-chat\] .*(unsafe element|blocked navigation)' app-run/app.log; then exit 1; fi
+          cat app-run/chat-trap.log
+          if grep -q 'evil' app-run/chat-trap.log; then echo 'chat test loaded a blocked URL'; exit 1; fi
+          # 유튜브 채팅 (P7): 직접 받기 → 패널 페이지 → (웹 형식이 바뀌면) 공식 API. 지난 메시지·중복은 보내지 않고,
+          # 지운 메시지는 채팅 소스의 쌓인 목록에서도 빠진다. 웹 채팅 요청에는 로그인 토큰이 가지 않는다
+          grep -E 'chat( panel)?: |chat autotest|ios-chat\] (youtube|removed)' app-run/app.log | sed -n '1,60p'
+          for step in 'direct ok' 'panel ok' 'api ok' 'ok (history shown 0, duplicates 0)'; do
+            grep -q "chat autotest: $step" app-run/app.log || { echo "chat autotest: missing '$step'"; exit 1; }
+          done
+          grep -qE 'ios-chat\] youtube: rendered [0-9]+ message' app-run/app.log
+          # 채팅 탭을 열면 패널 웹 화면이 화면에 붙고, 탭을 닫으면 창 뒤로 간다
+          grep -q 'chat panel: on screen' app-run/app.log
+          grep -qE 'ios-chat\] removed [0-9]+ deleted message' app-run/app.log
+          for step in 'chat page direct 1' 'chat direct uses the live view' 'get_live_chat d-live-4' 'chat page webkit 1' \
+            'get_live_chat p-top-3' 'chat page direct 2 (changed format)' 'api chat api-1'; do
+            grep -qF "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
+          done
           grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log
           grep -q 'ios-media-source: .*looping (play 2)' app-run/app.log
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
+          # 화면 방향: 처음 실행은 가로(옆 칸이 오른쪽)로 떴고, 다시 띄운 실행은 세로 → 가로 → 세로로 돌 때마다
+          # 배치만 바뀌고 프리뷰 디스플레이는 그대로 크기만 바뀐다. 열어 둔 설정 시트도 돌린 뒤에 남아 있다
+          grep -E 'orientation: |layout: |display (created|resized|destroyed)|ui autotest|settings sheet' \
+            app-run/app.log app-run/app-relaunch.log
+          if grep 'orientation: request failed' app-run/app.log app-run/app-relaunch.log; then exit 1; fi
+          if grep 'ui autotest: no screenshot ack' app-run/app-relaunch.log; then exit 1; fi
+          if grep -q 'ui autotest: the device did not rotate' app-run/app-relaunch.log; then
+            echo '::warning::the simulator device did not rotate; the app asked for the window orientation instead'
+          fi
+          grep -q 'layout: .* (side column)' app-run/app.log
+          awk '/ui autotest: start/ { s = 1 } s == 1 && /ui autotest: rotate landscape/ { s = 2 }
+               s == 2 && /layout: .*side column/ { wide = 1 } s == 2 && /display resized/ { resized = 1 }
+               s == 2 && /ui autotest: rotate portrait/ { s = 3 }
+               s == 3 && /layout: .*stacked/ { narrow = 1 } s == 3 && /display resized/ { resized_back = 1 }
+               s == 3 && /ui autotest: done/ { s = 4 }
+               s >= 1 && s < 4 && /display destroyed/ { bad = 1 }
+               END { exit s == 4 && wide && resized && narrow && resized_back && !bad ? 0 : 1 }' app-run/app-relaunch.log
+          awk '/ui autotest: shot 2-settings/ { s = 1 } s == 1 && /settings sheet: closed/ { bad = 1 }
+               s == 1 && /ui autotest: shot 3-settings-landscape/ { s = 2 }
+               END { exit s == 2 && !bad ? 0 : 1 }' app-run/app-relaunch.log
 
           # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {
@@ -261,17 +404,37 @@ jobs:
           if find "$app" -name '*.dSYM' | grep -q .; then
             echo "dSYM inside the app bundle:"; find "$app" -name '*.dSYM'; exit 1
           fi
+          # 유튜브 클라이언트 ID가 들어갔는지 (값은 찍지 않는다)
+          if [ -n "$(/usr/libexec/PlistBuddy -c 'Print :BroadcastYouTubeClient' "$app/Info.plist")" ]; then
+            echo "YouTube client ID: built in"
+            youtube_client="들어감"
+          else
+            echo "::notice::YouTube client ID is not built in (no YOUTUBE_CLIENT_ID secret). Users enter their own in the app."
+            youtube_client="없음 (앱 설정에서 입력)"
+          fi
+          # 어느 실행의 빌드인지 파일 이름과 LiveContainer 목록(버전 0.1.<실행 번호>)에서 알아보게 (app/CMakeLists.txt)
+          branch=${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}
+          version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Info.plist")
+          test "$version" = "0.1.$GITHUB_RUN_NUMBER"
+          ipa="$name-$GITHUB_RUN_NUMBER-${branch//\//-}-${GITHUB_SHA::7}.ipa"
           mkdir -p dist/ipa/Payload
           cp -R "$app" dist/ipa/Payload/
-          (cd dist/ipa && zip -qry "../$name.ipa" Payload)
+          (cd dist/ipa && zip -qry "../$ipa" Payload)
           dsymutil "$app/$name" -o "dist/$name.app.dSYM"
           codesign -dv "$app" 2>&1 | grep -E 'Identifier|Signature'
           ls -la dist
+          {
+            echo "### 기기용 IPA: 빌드 #$GITHUB_RUN_NUMBER"
+            echo "- 브랜치 \`$branch\`, 커밋 \`${GITHUB_SHA::7}\`"
+            echo "- 아티팩트 \`app-ipa-$GITHUB_RUN_NUMBER\`, 파일 \`$ipa\`"
+            echo "- LiveContainer 목록에는 버전 \`$version\`, 앱 오버레이와 설정 › 정보에는 \`#$GITHUB_RUN_NUMBER $branch\`"
+            echo "- YouTube 클라이언트 ID: $youtube_client"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v7
         if: matrix.platform == 'iphoneos'
         with:
-          name: app-ipa
+          name: app-ipa-${{ github.run_number }}
           path: |
             dist/*.ipa
             dist/*.dSYM
