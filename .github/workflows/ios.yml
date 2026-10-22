@@ -336,11 +336,16 @@ jobs:
             grep -q "chat autotest: $step" app-run/app.log || { echo "chat autotest: missing '$step'"; exit 1; }
           done
           grep -qE 'ios-chat\] youtube: rendered [0-9]+ message' app-run/app.log
-          # 채팅 탭을 열면 패널 웹 화면이 화면에 붙고, 탭을 닫으면 창 뒤로 간다
+          # 채팅 탭을 열면 패널 웹 화면이 화면에 붙고, 탭을 닫으면 창 뒤로 간다.
+          # 마지막은 사용자처럼 탭만 바꿔 연다: 웹 화면이 탭 화면보다 늦게 생겨도 붙어야 한다 (기기에서 빈 패널로 남았음)
           grep -q 'chat panel: on screen' app-run/app.log
+          awk '/chat autotest: api/ { s = 1 } s == 1 && /chat panel: created/ { s = 2 } s == 2 && /chat panel: on screen/ { s = 3 }
+               s == 3 && /chat autotest: done \(panel tab receiving, on screen yes\)/ { s = 4 } END { exit s == 4 ? 0 : 1 }' app-run/app.log
           grep -qE 'ios-chat\] removed [0-9]+ deleted message' app-run/app.log
+          # 패널에서 쓴 글은 send_message의 응답에서 읽는다 (받는 데이터에는 없음)
+          grep -qE 'chat panel: sent from the panel \(1 message' app-run/app.log
           for step in 'chat page direct 1' 'chat direct uses the live view' 'get_live_chat d-live-4' 'chat page webkit 1' \
-            'get_live_chat p-top-3' 'chat page direct 2 (changed format)' 'api chat api-1'; do
+            'get_live_chat p-top-3' 'chat send_message' 'chat page direct 2 (changed format)' 'api chat api-1'; do
             grep -qF "$step" app-run/youtube-mock.log || { echo "youtube mock: missing '$step'"; exit 1; }
           done
           grep -q 'ios-media-source: .*first video frame 640x360' app-run/app.log

@@ -12,6 +12,7 @@
 채팅 (P7, 앱 인자 `-autotest-chat <이 주소>`): 유튜브 웹 채팅과 공식 API의 형식을 흉내 낸다.
 - /live_chat: 채팅 팝업 페이지 (ytInitialData). 앱이 직접 받을 때(URLSession)와 패널(WebKit)이 띄울 때를
   Accept 헤더로 나눈다. 패널 페이지에는 진짜 페이지처럼 get_live_chat을 fetch로 되풀이하는 스크립트가 있다.
+  그 페이지는 글 하나를 send_message로 보내고 응답으로 그린다 (그 글은 get_live_chat으로 오지 않는다).
   직접 받기의 두 번째 페이지부터는 형식이 바뀐 페이지를 줘서 앱이 공식 API로 넘어가는지 본다.
 - /youtubei/v1/live_chat/get_live_chat: 단계별 메시지·삭제 (continuation "<d|p>-<top|live>-<n|reload>")
 - /youtube/v3/liveChat/messages: 공식 API (첫 응답은 지난 메시지)
@@ -163,14 +164,25 @@ PAGE_SCRIPT = r"""
     });
   }
   show(data.actions);
+  var context = {client: {clientName: 'WEB', clientVersion: '""" + CLIENT_VERSION + r"""'}};
+  // 패널에서 글을 쓴 것처럼: 진짜 페이지도 send_message의 응답으로 내 글을 그린다
+  var sent = false;
+  function send() {
+    sent = true;
+    fetch('/youtubei/v1/live_chat/send_message?prettyPrint=false', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({context: context, params: 'mock', richMessage: {textSegments: [{text: '패널에서 쓴 글'}]}})
+    }).then(function (response) { return response.json(); }).then(function (json) { show(json.actions); },
+                                                                  function () {});
+  }
   function poll() {
     fetch('/youtubei/v1/live_chat/get_live_chat?prettyPrint=false', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({context: {client: {clientName: 'WEB', clientVersion: '""" + CLIENT_VERSION + r"""'}},
-                            continuation: cont})
+      body: JSON.stringify({context: context, continuation: cont})
     }).then(function (response) { return response.json(); }).then(function (json) {
       var chat = json.continuationContents.liveChatContinuation;
       show(chat.actions);
+      if (!sent) send();
       var next = chat.continuations[0].invalidationContinuationData;
       cont = next.continuation;
       setTimeout(poll, next.timeoutMs);
@@ -389,6 +401,14 @@ class Handler(BaseHTTPRequestHandler):
             if token in ("d-live-1", "d-live-4", "p-top-1", "p-top-3"):
                 log(f"get_live_chat {token}")
             return self.reply(200, chat_continuation(token))
+
+        if url.path == "/youtubei/v1/live_chat/send_message":
+            # 패널 페이지가 쓴 글: 응답에만 있고 get_live_chat으로는 오지 않는다
+            if self.headers.get("Authorization"):
+                log("FAIL send_message carried a token")
+            log("chat send_message")
+            return self.reply(200, {"responseContext": {}, "actions": [
+                text("p-sent-1", "시험 채널", [{"text": "패널에서 쓴 글"}], channel="UCmock")]})
 
         if not self.authorized():
             return

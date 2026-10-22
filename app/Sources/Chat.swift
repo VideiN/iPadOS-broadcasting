@@ -602,6 +602,8 @@ final class APIChatClient {
 final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate, WKUIDelegate {
     private(set) var webView: WKWebView?
     private var hiddenHost: UIView?
+    /// 채팅 탭의 자리. 탭 화면이 웹 화면보다 먼저 생기므로(탭이 보인 뒤에 패널을 연다) 기다렸다가 붙인다
+    private weak var container: UIView?
     /// WebKit은 패널을 처음 열 때 쓴다 (앱을 켤 때 메인 스레드를 잡지 않게)
     private lazy var world = WKContentWorld.world(name: "broadcast-chat")
     private(set) var videoID: String?
@@ -624,7 +626,7 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
 
     func load(videoID: String, base: URL) {
         if webView != nil && self.videoID == videoID && self.base == base {
-            if hiddenHost == nil && webView?.superview == nil, let webView { park(webView) }
+            if webView?.superview == nil, let webView { place(webView) }
             return
         }
         self.videoID = videoID
@@ -665,7 +667,9 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         }
     }
 
+    /// 웹 화면이 아직 없으면 자리만 기억했다가 만들 때 붙인다 (기기: 송출 중에 채팅 탭을 열면 패널이 빈 채로 남았다)
     func show(in container: UIView) {
+        self.container = container
         guard let webView, webView.superview !== container else { return }
         webView.frame = container.bounds
         webView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
@@ -675,9 +679,25 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
     }
 
     func hide(from container: UIView) {
+        if self.container === container { self.container = nil }
         guard let webView, webView.superview === container else { return }
         park(webView)
         appLog("chat panel: behind the window")
+    }
+
+    /// 지금 화면의 채팅 탭에 붙어 있는지 (CI)
+    var isOnScreen: Bool {
+        guard let webView, let superview = webView.superview else { return false }
+        return superview === container && superview.window != nil
+    }
+
+    /// 채팅 탭이 있으면 거기에 (아직 창에 붙기 전일 수도 있다), 아니면 창 뒤에
+    private func place(_ webView: WKWebView) {
+        if let container {
+            show(in: container)
+        } else {
+            park(webView)
+        }
     }
 
     /// 창 맨 뒤 (그려지지만 보이지 않음): 탭을 숨겨도 페이지가 멈추지 않게
@@ -729,8 +749,8 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
         self.webView = webView
-        park(webView)
         appLog("chat panel: created")
+        place(webView)
     }
 
     // MARK: 받기
@@ -831,7 +851,13 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
           const post = (kind, body) => {
             try { window.postMessage({__broadcastChat: kind, body: body}, location.origin); } catch (e) {}
           };
-          const isChat = (url) => typeof url === 'string' && url.indexOf('/youtubei/v1/live_chat/get_live_chat') !== -1;
+          // 받은 채팅, 그리고 패널에서 보낸 채팅의 응답 (페이지는 내 글을 그 응답으로 그릴 수 있다)
+          const kindOf = (url) => {
+            if (typeof url !== 'string') return null;
+            if (url.indexOf('/youtubei/v1/live_chat/get_live_chat') !== -1) return 'continuation';
+            if (url.indexOf('/youtubei/v1/live_chat/send_message') !== -1) return 'sent';
+            return null;
+          };
 
           const originalFetch = window.fetch;
           if (typeof originalFetch === 'function') {
@@ -839,8 +865,9 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
               const result = originalFetch.apply(this, arguments);
               try {
                 const url = typeof input === 'string' ? input : (input && input.url) || String(input);
-                if (isChat(url)) {
-                  result.then((response) => response.clone().text()).then((text) => post('continuation', text), () => {});
+                const kind = kindOf(url);
+                if (kind) {
+                  result.then((response) => response.clone().text()).then((text) => post(kind, text), () => {});
                 }
               } catch (e) {}
               return result;
@@ -850,9 +877,10 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
           const open = XMLHttpRequest.prototype.open;
           XMLHttpRequest.prototype.open = function (method, url) {
             try {
-              if (isChat(String(url))) {
+              const kind = kindOf(String(url));
+              if (kind) {
                 this.addEventListener('load', () => {
-                  try { post('continuation', String(this.responseText)); } catch (e) {}
+                  try { post(kind, String(this.responseText)); } catch (e) {}
                 });
               }
             } catch (e) {}
@@ -1173,6 +1201,13 @@ final class ChatFeed: ObservableObject {
         case "continuation":
             guard let json = Self.object(body), let result = YouTubeWebChat.continuation(json) else { return }
             receive(result.events, history: result.reload, from: .panel)
+        case "sent":
+            // 패널에서 쓴 글: 페이지가 이 응답으로 그리고 받는 데이터에는 안 올 수 있다 (기기: 패널에 보인 글 셋이 데이터에
+            // 없어 직접 받기로 넘어갔고 방송 화면에도 안 나왔다. 패널에서 쓴 글이었는지는 확인 중). 같은 글이 나중에 와도 id로 거른다
+            guard let json = Self.object(body) else { return }
+            let events = YouTubeWebChat.events(json["actions"])
+            appLog("chat panel: sent from the panel (\(events.filter { $0.kind == .add }.count) message(s) in the reply)")
+            receive(events, history: false, from: .panel)
         case "dom":
             guard let ids = (try? JSONSerialization.jsonObject(with: Data(body.utf8))) as? [String] else { return }
             let now = Date()
@@ -1266,8 +1301,13 @@ final class ChatFeed: ObservableObject {
         UserDefaults.standard.set("chat", forKey: "sideColumnTab")
         openPanel()
         let removedBefore = removed
-        let panelOK = await wait(30) { source == .panel && count("p-") >= 2 && removed > removedBefore }
-        appLog("chat autotest: panel \(panelOK ? "ok" : "failed") (sent \(count("p-")), source \(source.rawValue))")
+        // mock 페이지는 글 하나를 보내고 그 응답으로 그린다 (그 글은 받는 데이터에 오지 않는다)
+        let panelOK = await wait(30) {
+            source == .panel && count("p-") >= 3 && count("p-sent-") >= 1 && removed > removedBefore
+        }
+        appLog(
+            "chat autotest: panel \(panelOK ? "ok" : "failed") (sent \(count("p-")), written in the panel "
+                + "\(count("p-sent-")), source \(source.rawValue))")
 
         // 패널을 닫으면 직접 받기로 돌아가는데, mock은 이제 형식이 바뀐 페이지를 준다 → 공식 API
         UserDefaults.standard.set("sources", forKey: "sideColumnTab")
@@ -1282,11 +1322,13 @@ final class ChatFeed: ObservableObject {
             "chat autotest: \(directOK && panelOK && apiOK && history == 0 && duplicates == 0 ? "ok" : "failed") "
                 + "(history shown \(history), duplicates \(duplicates))")
 
-        // 끝으로 채팅 탭을 다시 띄워 둔다: CI가 패널 화면을 찍고, 다시 띄운 실행(로그인 없음)은 안내 화면을 보인다
+        // 끝으로 채팅 탭을 다시 띄워 둔다: CI가 패널 화면을 찍고, 다시 띄운 실행(로그인 없음)은 안내 화면을 보인다.
+        // 이번에는 사용자처럼 탭만 바꾼다 (패널은 탭 화면이 연다: 웹 화면이 탭 화면보다 늦게 생긴다)
         UserDefaults.standard.set("chat", forKey: "sideColumnTab")
-        openPanel()
-        _ = await wait(15) { source == .panel }
-        appLog("chat autotest: done (panel tab \(source == .panel ? "receiving" : "not ready"))")
+        _ = await wait(15) { source == .panel && panel.isOnScreen }
+        appLog(
+            "chat autotest: done (panel tab \(source == .panel ? "receiving" : "not ready"), "
+                + "on screen \(panel.isOnScreen ? "yes" : "no"))")
     }
 }
 
