@@ -132,7 +132,7 @@ ARKit 얼굴 추적 (TrueDepth)                 얼굴 데이터 공급원
 ### 4.4 라이선스
 
 - 공개 저장소, MIT License (2026-10-24 결정). 저장소 맨 위에 LICENSE 파일을 둔다. Broadcast의 코드는 가져오지 않는다. 의존성은 Apple 프레임워크만
-- Live2D 같은 독점 SDK는 v1에 넣지 않는다 (나중에 아이폰에서 미리보기를 하고 싶어지면 따로 정한다)
+- Live2D 같은 독점 SDK는 넣지 않는다. 아바타 형식은 VRM으로 정했다 (아바타를 그리는 것은 아이패드 쪽이고, 컴패니언 앱은 수치만 보낸다)
 
 ### 4.5 사용자와 일하는 방식
 
@@ -147,7 +147,20 @@ ARKit 얼굴 추적 (TrueDepth)                 얼굴 데이터 공급원
 4. **아이패드 내장 카메라**: 먼저 실기기 실험. ARKit 얼굴 추적을 켜면 다른 카메라 소스(UVC 캡처카드, 후면 카메라가 함께 쓰는 멀티캠 세션)가 끊기는지 본다
    - 전면 카메라만 부딪히면: ARKit을 쓰고, 켤 때 **전면 카메라를 쓰는 카메라 소스를 자동으로 끈다** (그 소스에 "얼굴 추적이 전면 카메라 사용 중" 표시, 속성에서 전면 카메라를 못 고르게, 끄면 되돌림, 송출·녹화 중 그 소스가 보이면 먼저 확인)
    - 다른 카메라도 끊기면: ARKit을 쓰지 않고, 우리 캡처가 이미 받는 전면 카메라 프레임에 Vision(의존 없음, 덜 정밀) 또는 MediaPipe Face Landmarker(ARKit식 52개 값, Apache-2.0)를 돌린다
-5. **아바타 소스**(OBS 소스): 자기 Metal 큐로 IOSurface 텍스처에 그리고 `gs_texture_create_from_iosurface`·`gs_texture_rebind_iosurface`로 libobs에 넘긴다 (libobs-metal에 있음). 렌더러는 VRM(VRMKit, MIT)과 Live2D 중 정한 뒤에 (Live2D는 Cubism Core가 독점이라 공개 저장소·CI에 넣을 수 없다)
+5. **아바타 소스**(OBS 소스): 아바타 형식은 **VRM**으로 정했다 (2026-10-24). 5.1 참고
+
+### 5.1 VRM 아바타 소스
+
+- **그리기**: [VRMKit](https://github.com/tattn/VRMKit) 0.11 (MIT)의 RealityKit 렌더러로 모델을 읽고, RealityKit의 [`RealityRenderer`](https://developer.apple.com/documentation/realitykit/realityrenderer)(iOS 18 이상)로 화면 밖 텍스처에 그린다. 그 텍스처는 IOSurface로 만들어(`.renderTarget`·`.shaderRead`) libobs에 `gs_texture_create_from_iosurface`·`gs_texture_rebind_iosurface`로 넘긴다 (libobs-metal에 있음). 두 장을 번갈아 써서 그리는 중인 것을 방송에 내보내지 않는다. 배경은 투명
+- **최소 iOS**: VRMKit의 RealityKit 렌더러가 iOS 18 이상이라, 앱의 최소 버전을 17.0 → 18.0으로 올리거나 아바타 소스만 iOS 18 이상에서 쓰게 한다 (사용자 기기는 iPadOS 27)
+- **VRMKit 넣기**: 이 앱은 CMake로 빌드하므로 VRMKit 소스를 저장소에 넣고(MIT 고지와 함께, 라이선스 목록에도) 별도 Swift 모듈로 묶는다 (VRMKit은 Swift 6, 앱은 Swift 5 모드)
+- **VRM 0.x와 1.0** 모두 읽는다 (VRMKit이 지원). 머리카락·옷 흔들림(스프링 본)도 VRMKit이 한다
+- **얼굴 수치 → 모델**
+  - 퍼펙트 싱크 모델(ARKit 52개 이름의 표정을 가진 모델): 받은 이름 그대로 사용자 정의 표정에 넣는다
+  - 일반 모델: VRM 기본 표정으로 맞춘다. 눈 깜빡임(왼·오른) ← EyeBlink, 입 모양 아·이·우·에·오 ← JawOpen·MouthFunnel·MouthPucker·MouthStretch 등의 조합, 웃음 ← MouthSmile, 시선 ← 눈 회전 또는 EyeLook 값
+  - 머리: Head 본 회전 (일부를 목에 나눠 자연스럽게). 머리 위치는 쓰지 않거나 약하게
+- **속성**(초안): 모델 파일(파일 앱·사진에서 가져와 Documents/Media에), 얼굴 데이터 공급원, 구도(얼굴·상반신·전신, 확대), 거울, "정면 맞추기", 표정 세기, 모델의 사용 조건(VRM 메타데이터의 아바타 사용·재배포 허락 등)을 보여 주기
+- **CI 시험 모델**: 재배포가 허락된(CC0 등) VRM을 저장소에 넣는다. VRoid의 초기 샘플 일부가 CC0로 공개되어 있다고 알려져 있으니, 파일에 든 라이선스 정보로 확인한 뒤 고른다. 합성 송신기로 움직여 스크린숏으로 확인
 
 ## 부록 A. 블렌드셰이프 이름 (52개)
 
