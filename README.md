@@ -19,24 +19,42 @@ OBS Studio의 libobs 코어를 이용한 iPadOS용 방송/녹화 앱. 개인 사
   - 녹화: MP4, HEVC/H.264 하드웨어 인코딩(VideoToolbox), AAC(AudioToolbox). 앱 폴더나 직접 고른 폴더(외장 SSD 등)에 저장
   - 송출: RTMP/RTMPS(H.264, HEVC는 Enhanced RTMP), SRT(MPEG-TS, 암호 지원)
   - 리플레이 버퍼: 최근 10초~5분을 메모리에 두었다가 저장 (녹화 인코더를 같이 씀)
+- YouTube 계정으로 송출: Google 로그인(OAuth, PKCE) 한 번으로 스트림 키를 자동으로 가져옵니다. "새 방송 만들기"를 고르면 제목·설명·공개 범위·지연 시간을 정해 방송을 만들고, 송출을 시작·멈추면 방송도 자동으로 시작·종료됩니다. 토큰은 Keychain에 둡니다
+- 채팅
+  - 채팅 소스: 로그인한 계정의 지금 방송 채팅을 방송 화면에 그립니다. 메시지 하나하나를 WebKit이 HTML과 사용자 CSS로 그려 그림으로 받습니다. 시청자가 쓴 글은 글자로만 넣고, 페이지 스크립트는 끄고, 그림은 유튜브 이모지·배지 서버에서만 불러옵니다(Content-Security-Policy). 메시지는 표시 시간(기본 3분)이 지나면 흐려지며 사라집니다(0이면 위로 밀려 나갈 때까지)
+  - 채팅 패널: 옆 칸의 채팅 탭에 유튜브 채팅 창을 띄웁니다. 패널 안에서 유튜브에 로그인하면 채팅도 쓰고, 패널에서 쓴 글도 채팅 소스에 나옵니다
+  - 채팅 받기: 패널을 열었으면 패널 페이지가 받는 데이터를, 아니면 앱이 웹 채팅을 직접 받고, 웹 형식이 바뀌어 못 읽으면 공식 API로 넘어갑니다
+- 빌드 정보: 설치한 앱이 어느 CI 실행의 빌드인지 앱 버전(`0.1.<실행 번호>`, LiveContainer 목록에 보임), 계측 오버레이 첫 줄, 설정 > 정보에서 보이고, 같은 브랜치에 새 빌드가 있는지 확인할 수 있습니다
 - 진단과 로그: 앱은 libobs 로그와 앱 로그를 `Documents/broadcast.log`에 남깁니다(이전 실행은 `broadcast.log.prev`). 설정 > 진단과 로그에서 보고 공유할 수 있고, 파일 앱으로도 열 수 있습니다
 
 ## 상태
 
-- P0~P5 완료: libobs iOS 빌드, Metal 렌더러, 카메라·오디오 입력, 녹화·송출, 본 UI, 텍스트·미디어 소스, SRT, 리플레이 버퍼. 실기기(M4 iPad Pro)에서 1080p60 녹화·송출을 확인했습니다.
-- 진행 중: 사진 보관함에서 사진 가져오기, 유튜브 계정 로그인, 채팅 소스
+- P0~P5 완료: libobs iOS 빌드, Metal 렌더러, 카메라·오디오 입력, 녹화·송출, 본 UI, 텍스트·미디어 소스, SRT, 리플레이 버퍼. 실기기(M4 iPad Pro)에서 1080p60 녹화·송출을 확인했습니다. 충전하지 않고 1시간 48분 송출하는 동안 발열 상태는 내내 정상이었습니다.
+- 유튜브 계정 로그인과 채팅 소스·채팅 패널: 실기기에서 로그인 송출과 채팅 소스를 확인했습니다. 패널에서 로그인하면 유튜브 앱이 열리던 문제, 송출 중에 연 패널이 빈 채로 남던 문제의 수정과 메시지 표시 시간은 실기기 확인 전입니다.
+- 진행 중: 사진 보관함에서 사진 가져오기
 
 앱 이름은 가칭("Broadcast")이고, `app/CMakeLists.txt` 맨 위에서 바꿉니다.
+
+## YouTube 로그인용 OAuth 클라이언트
+
+로그인에는 Google Cloud 프로젝트의 **iOS 유형** OAuth 클라이언트 ID(`…apps.googleusercontent.com`, 비밀값 없음)와 그 프로젝트의 YouTube Data API v3가 필요합니다. 이 저장소의 코드에는 클라이언트 ID가 없습니다.
+
+- 기기용 빌드에 넣기: CMake에 `-DAPP_YOUTUBE_CLIENT_ID=<클라이언트 ID>`를 넘깁니다. CI는 저장소 비밀값 `YOUTUBE_CLIENT_ID`가 있으면 iphoneos 빌드에만 넘깁니다(로그에는 가려지고, 포크의 PR에는 넘어가지 않음)
+- 빌드에 없으면 앱의 설정 > 송출 > 방식 > YouTube 계정에서 직접 입력합니다
+
+포크해서 쓸 때는 자기 Google Cloud 프로젝트에서 클라이언트를 만드세요.
 
 ## Actions 아티팩트
 
 | 이름 | 내용 |
 |---|---|
-| `app-ipa` | fake-signed IPA와 dSYM. LiveContainer로 설치 |
-| `app-simulator-run` | 시뮬레이터에서 앱을 띄운 스크린숏(10/40/80초, 다시 켠 뒤), 앱 로그(`broadcast.log` 포함), 녹화·송출 시험 결과, 스레드 스택 |
+| `app-ipa-<실행 번호>` | fake-signed IPA(`Broadcast-<실행 번호>-<브랜치>-<커밋>.ipa`)와 dSYM. LiveContainer로 설치. 실행 요약에 빌드 번호·커밋·YouTube 클라이언트 ID가 들어갔는지가 나옵니다 |
+| `app-simulator-run` | 시뮬레이터에서 앱을 띄운 스크린숏(가로·세로, 다시 켠 뒤), 앱 로그(`broadcast.log` 포함), 녹화·송출 시험 결과, 가짜 YouTube 서버 로그, 스레드 스택 |
 | `libobs-ios-iphoneos` | `libobs.a`, `libobs-metal.a` 등 정적 라이브러리와 헤더 |
 
-CI는 시뮬레이터에서 앱을 실제로 띄워 자동 시험을 돌립니다: 장면·소스 조작과 저장·불러오기, 녹화와 RTMP 송출(러너의 ffmpeg가 받음), SRT 송출, 리플레이 버퍼 저장, 미디어 소스 재생, 오디오 필터, 미리보기 끄기·켜기. 받은 파일은 ffprobe로 확인합니다.
+CI는 시뮬레이터에서 앱을 실제로 띄워 자동 시험을 돌립니다: 장면·소스 조작과 저장·불러오기, 녹화와 RTMP 송출(러너의 ffmpeg가 받음), SRT 송출, 리플레이 버퍼 저장, 미디어 소스 재생, 오디오 필터, 미리보기 끄기·켜기, 화면 돌리기. 받은 파일은 ffprobe로 확인합니다.
+
+YouTube 로그인과 채팅은 가짜 Google·YouTube 서버(`ios/scripts/youtube-mock.py`)로 시험합니다: 로그인(PKCE), 만료된 토큰 갱신, 서버 오류 뒤 재시도, 스트림·방송 만들기와 연결, 받은 주소로 실제 송출, 채팅 받기(패널 페이지·직접·공식 API)와 지운 메시지, 패널에서 쓴 글, 채팅 탭을 열었을 때 패널이 화면에 붙는지. 채팅 소스의 메시지가 표시 시간 뒤에 사라지는지도 봅니다. 채팅 소스에는 마크업·스크립트·외부 그림 주소를 섞은 메시지를 넣어 글자로만 그려지는지, 함정 서버로 요청이 가지 않는지 확인합니다.
 
 ## 구성
 
@@ -47,10 +65,11 @@ CI는 시뮬레이터에서 앱을 실제로 띄워 자동 시험을 돌립니�
 | `obs-studio/plugins/ios-audio-input/` | 오디오 입력 소스 (AVAudioSession + AVAudioEngine, 새로 작성) |
 | `obs-studio/plugins/ios-text/` | 텍스트 소스 (UIKit/CoreText, 새로 작성. iOS 앱은 시스템 글꼴 파일을 읽을 수 없어 text-freetype2 대신) |
 | `obs-studio/plugins/ios-media-source/` | 미디어 소스 (AVFoundation, 새로 작성) |
+| `obs-studio/plugins/ios-chat/` | 채팅 소스 (메시지를 WebKit으로 그려 텍스처로, 기본 CSS는 `data/default.css`, 새로 작성). 채팅 받기와 YouTube 로그인은 앱의 `Chat.swift`·`YouTube.swift` |
 | `obs-studio/plugins/obs-outputs/replay-buffer.c` | iOS용 리플레이 버퍼 (OBS 것은 별도 프로세스를 띄워서 iOS에서 못 씀) |
 | `obs-studio/plugins/` 의 iOS 이식 | `mac-avcapture`(카메라), `mac-videotoolbox`(인코더), `coreaudio-encoder`(AAC), `image-source`, `obs-filters`(오디오 필터, RNNoise), `obs-ffmpeg`(SRT용 MPEG-TS 출력만) |
 | `ios/deps/` | 의존성 iOS arm64 크로스컴파일 스크립트: FFmpeg(이미지 디코더·MPEG-TS 먹서 등 최소 구성, nonfree 없음), mbedtls, libsrt, jansson 등 |
-| `ios/scripts/` | 시뮬레이터 테스트 실행 스크립트 |
+| `ios/scripts/` | 시뮬레이터 테스트 실행 스크립트, CI용 가짜 Google·YouTube 서버 |
 | `.github/workflows/ios.yml` | CI: 의존성 빌드 → libobs·플러그인·앱 빌드 → 시뮬레이터 단위 테스트 → 시뮬레이터에서 앱 자동 시험 → IPA |
 
 ### 정적 모듈 등록
