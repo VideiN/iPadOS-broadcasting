@@ -3,7 +3,8 @@
  * Shows a live chat in a box of fixed size. Each message is drawn once by WebKit with the user's CSS
  * (chat-renderer.m) and becomes a texture; new messages appear at the bottom and push the older ones up with a short
  * slide, all on the GPU. Messages come from the app's chat clients (YouTube, through the proc handler
- * "ios_chat_push", see obs_module_load) or from the test generator (CI only).
+ * "ios_chat_push", see obs_module_load) or from the test generator (CI only). A message leaves when it is pushed out
+ * of the top or, after the display time, fades out (data/chat.effect); either way its texture is freed right away.
  *
  * Threads: the controller (renderer, test timer) lives on the main thread. Rendered images go through the sink to
  * video_tick, which turns them into textures; video_render only draws. */
@@ -27,6 +28,7 @@ OBS_MODULE_USE_DEFAULT_LOCALE("ios-chat", "en-US")
 #define MIN_BOX_SIZE 50
 #define MAX_BOX_SIZE 4096
 #define REPLAY_COUNT 30 /* messages drawn again when the CSS or the width changes */
+#define FADE_SECONDS 0.6 /* fading out at the end of the display time */
 
 static NSString *default_css = @"";
 
@@ -243,6 +245,10 @@ static NSString *youtube_status = @"";
     if (_stopped || !message) {
         return;
     }
+    /* the display time counts from here (test messages come without a time) */
+    if (message.receivedAt <= 0) {
+        message.receivedAt = CFAbsoluteTimeGetCurrent();
+    }
     [_recent addObject:message];
     if (_recent.count > REPLAY_COUNT) {
         [_recent removeObjectAtIndex:0];
@@ -371,6 +377,7 @@ struct chat_item {
     float cy;
     char *message_id; /* for deletions */
     char *author_id;
+    double received_at; /* CFAbsoluteTime, start of the display time */
 };
 
 struct ios_chat {
@@ -381,13 +388,28 @@ struct ios_chat {
     uint32_t width;
     uint32_t height;
     float slide_seconds;
+    float display_seconds; /* 0: until pushed out */
 
     /* graphics thread only */
     DARRAY(struct chat_item) items; /* oldest first */
     float offset;                   /* how far the stack still sits below its place (slides to 0) */
     float offset_from;
     float elapsed;
+    gs_effect_t *effect; /* data/chat.effect; without it messages leave without fading */
+    gs_eparam_t *effect_image;
+    gs_eparam_t *effect_opacity;
+    bool expiry_logged;
 };
+
+/* 1 while shown, then down to 0 over FADE_SECONDS at the end of the display time */
+static float item_opacity(const struct ios_chat *context, const struct chat_item *item, double now)
+{
+    if (context->display_seconds <= 0) {
+        return 1.0f;
+    }
+    const double over = now - item->received_at - context->display_seconds;
+    return (float) fmin(1.0, fmax(0.0, 1.0 - over / FADE_SECONDS));
+}
 
 static const char *ios_chat_get_name(void *unused)
 {
@@ -411,6 +433,7 @@ static void ios_chat_update(void *data, obs_data_t *settings)
     context->width = (uint32_t) MAX(MIN_BOX_SIZE, MIN(MAX_BOX_SIZE, obs_data_get_int(settings, "width")));
     context->height = (uint32_t) MAX(MIN_BOX_SIZE, MIN(MAX_BOX_SIZE, obs_data_get_int(settings, "height")));
     context->slide_seconds = (float) obs_data_get_int(settings, "slide_ms") / 1000.0f;
+    context->display_seconds = (float) obs_data_get_int(settings, "display_seconds");
 
     @autoreleasepool {
         NSString *css = @(obs_data_get_string(settings, "css"));
@@ -437,6 +460,19 @@ static void *ios_chat_create(obs_data_t *settings, obs_source_t *source)
     ChatSink *sink = [[ChatSink alloc] init];
     context->sink = (__bridge_retained void *) sink;
     context->controller = (__bridge_retained void *) [[ChatController alloc] initWithSink:sink];
+
+    char *effect_path = obs_module_file("chat.effect");
+    obs_enter_graphics();
+    context->effect = effect_path ? gs_effect_create_from_file(effect_path, NULL) : NULL;
+    if (context->effect) {
+        context->effect_image = gs_effect_get_param_by_name(context->effect, "image");
+        context->effect_opacity = gs_effect_get_param_by_name(context->effect, "opacity");
+    }
+    obs_leave_graphics();
+    bfree(effect_path);
+    if (!context->effect) {
+        CHAT_LOG(LOG_WARNING, "chat.effect did not load: messages will leave without fading");
+    }
 
     ios_chat_update(context, settings);
     return context;
@@ -494,6 +530,11 @@ static void ios_chat_destroy(void *data)
 
     destroy_items(context, context->items.num);
     da_free(context->items);
+    if (context->effect) {
+        obs_enter_graphics();
+        gs_effect_destroy(context->effect);
+        obs_leave_graphics();
+    }
     bfree(context);
 }
 
@@ -536,9 +577,12 @@ static void ios_chat_tick(void *data, float seconds)
                 if (!texture) {
                     continue;
                 }
-                struct chat_item item = {texture, image.displayCX, image.displayCY,
+                struct chat_item item = {texture,
+                                         image.displayCX,
+                                         image.displayCY,
                                          bstrdup(image.messageID.UTF8String),
-                                         image.authorID ? bstrdup(image.authorID.UTF8String) : NULL};
+                                         image.authorID ? bstrdup(image.authorID.UTF8String) : NULL,
+                                         image.receivedAt > 0 ? image.receivedAt : CFAbsoluteTimeGetCurrent()};
                 da_push_back(context->items, &item);
                 added += image.displayCY;
             }
@@ -575,28 +619,31 @@ static void ios_chat_tick(void *data, float seconds)
     if (context->items.num - first_visible > MAX_ITEMS) {
         first_visible = context->items.num - MAX_ITEMS;
     }
+
+    /* Messages past the display time and the fade leave too. They are the oldest, at the top, so the rest of the
+     * stack (anchored at the bottom) does not move */
+    if (context->display_seconds > 0) {
+        const double now = CFAbsoluteTimeGetCurrent();
+        size_t expired = first_visible;
+        while (expired < context->items.num && item_opacity(context, &context->items.array[expired], now) <= 0) {
+            expired++;
+        }
+        if (expired > first_visible && !context->expiry_logged) {
+            context->expiry_logged = true;
+            CHAT_LOG(LOG_INFO, "display time: first message left after %.1f s (display time %.0f s)",
+                     now - context->items.array[expired - 1].received_at, context->display_seconds);
+        }
+        first_visible = expired;
+    }
     destroy_items(context, first_visible);
 }
 
-static void ios_chat_render(void *data, gs_effect_t *effect)
+/* Newest at the bottom; parts outside the box are cut off. Messages at the end of the display time fade out */
+static void draw_items(struct ios_chat *context, gs_eparam_t *image, gs_eparam_t *opacity, double now)
 {
-    struct ios_chat *context = data;
-    if (!context->items.num) {
-        return;
-    }
-
-    const bool previous = gs_framebuffer_srgb_enabled();
-    gs_enable_framebuffer_srgb(true);
-
-    /* The images have premultiplied alpha */
-    gs_blend_state_push();
-    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
-
-    gs_eparam_t *const image = gs_effect_get_param_by_name(effect, "image");
     const float height = (float) context->height;
     float bottom = height + context->offset;
 
-    /* Newest at the bottom; parts outside the box are cut off */
     for (size_t i = context->items.num; i-- > 0 && bottom > 0;) {
         const struct chat_item *item = &context->items.array[i];
         const float top = bottom - item->cy;
@@ -604,7 +651,8 @@ static void ios_chat_render(void *data, gs_effect_t *effect)
         const float clip_top = fmaxf(0, -top);
         const float clip_bottom = fmaxf(0, bottom - height);
         const float visible = item->cy - clip_top - clip_bottom;
-        if (visible > 0 && item->cy > 0) {
+        const float alpha = item_opacity(context, item, now);
+        if (visible > 0 && item->cy > 0 && alpha > 0) {
             const uint32_t texture_cx = gs_texture_get_width(item->texture);
             const uint32_t texture_cy = gs_texture_get_height(item->texture);
             const float scale_x = item->cx / (float) texture_cx;
@@ -614,6 +662,9 @@ static void ios_chat_render(void *data, gs_effect_t *effect)
 
             if (rows > 0) {
                 gs_effect_set_texture_srgb(image, item->texture);
+                if (opacity) {
+                    gs_effect_set_float(opacity, alpha);
+                }
                 gs_matrix_push();
                 gs_matrix_translate3f(0, top + clip_top, 0);
                 gs_matrix_scale3f(scale_x, scale_y, 1);
@@ -622,6 +673,33 @@ static void ios_chat_render(void *data, gs_effect_t *effect)
             }
         }
         bottom = top;
+    }
+}
+
+/* OBS_SOURCE_CUSTOM_DRAW: draws with its own effect (opacity for fading), so the effect argument is NULL */
+static void ios_chat_render(void *data, gs_effect_t *unused)
+{
+    UNUSED_PARAMETER(unused);
+    struct ios_chat *context = data;
+    if (!context->items.num) {
+        return;
+    }
+
+    /* Without chat.effect: the default effect, messages leave at the end of the display time without fading */
+    gs_effect_t *effect = context->effect ? context->effect : obs_get_base_effect(OBS_EFFECT_DEFAULT);
+    gs_eparam_t *image = context->effect ? context->effect_image : gs_effect_get_param_by_name(effect, "image");
+    gs_eparam_t *opacity = context->effect ? context->effect_opacity : NULL;
+    const double now = CFAbsoluteTimeGetCurrent();
+
+    const bool previous = gs_framebuffer_srgb_enabled();
+    gs_enable_framebuffer_srgb(true);
+
+    /* The images have premultiplied alpha */
+    gs_blend_state_push();
+    gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
+
+    while (gs_effect_loop(effect, "Draw")) {
+        draw_items(context, image, opacity, now);
     }
 
     gs_blend_state_pop();
@@ -648,6 +726,7 @@ static void ios_chat_get_defaults(obs_data_t *settings)
     obs_data_set_default_int(settings, "height", 600);
     obs_data_set_default_string(settings, "css", default_css.UTF8String);
     obs_data_set_default_int(settings, "slide_ms", 250);
+    obs_data_set_default_int(settings, "display_seconds", 180);
     obs_data_set_default_int(settings, "test_interval_ms", 1500);
 }
 
@@ -683,6 +762,9 @@ static obs_properties_t *ios_chat_get_properties(void *data)
     obs_properties_add_int(props, "height", obs_module_text("Height"), MIN_BOX_SIZE, MAX_BOX_SIZE, 1);
     obs_property_t *slide = obs_properties_add_int(props, "slide_ms", obs_module_text("SlideTime"), 0, 2000, 10);
     obs_property_int_set_suffix(slide, " ms");
+    obs_property_t *display =
+        obs_properties_add_int(props, "display_seconds", obs_module_text("DisplayTime"), 0, 3600, 10);
+    obs_property_int_set_suffix(display, " s");
 
     obs_properties_add_text(props, "css", obs_module_text("CSS"), OBS_TEXT_MULTILINE);
     obs_properties_add_path(props, "css_file", obs_module_text("CSSFile"), OBS_PATH_FILE, "CSS (*.css)", NULL);
@@ -700,7 +782,7 @@ static obs_properties_t *ios_chat_get_properties(void *data)
 static struct obs_source_info ios_chat_info = {
     .id = "ios_chat_source",
     .type = OBS_SOURCE_TYPE_INPUT,
-    .output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_SRGB,
+    .output_flags = OBS_SOURCE_VIDEO | OBS_SOURCE_CUSTOM_DRAW | OBS_SOURCE_SRGB,
     .icon_type = OBS_ICON_TYPE_TEXT,
     .get_name = ios_chat_get_name,
     .create = ios_chat_create,

@@ -317,13 +317,14 @@ final class SceneModel: ObservableObject {
 
         // 채팅 소스 (P7): 시험 모드로 가짜 메시지(위험한 입력 포함)를 빠르게 보낸다. 결과는 플러그인 로그로 CI가 본다
         // ("snapshot alpha …", "test round 1 done … unsafe 0, image mismatches 0"). 스크린숏 오른쪽에 보이게 둔다.
+        // 표시 시간은 1초: 위로 밀려 나가기 전에 사라지는 메시지가 생겨야 한다 ("display time: first message left")
         var chatResult = "no chat type"
         if let chatType = types.first(where: { $0.id == "ios_chat_source" }), let chatName = addSource(type: chatType) {
             core_source_update(
                 chatName,
                 encodeJSON([
                     "platform": .string("test"), "width": .number(260), "height": .number(330),
-                    "test_interval_ms": .number(400),
+                    "test_interval_ms": .number(400), "display_seconds": .number(1),
                 ]))
             translateSelection(by: CGSize(width: 370, height: 15))
             chatResult = "added"
