@@ -363,9 +363,6 @@ jobs:
             echo '::warning::the simulator device did not rotate; the app asked for the window orientation instead'
           fi
           grep -q 'layout: .* (side column)' app-run/app.log
-          # 오디오 믹서 독: 전역 오디오 입력과 장면의 소리 있는 소스마다 미터 (core_mixer_peak)
-          grep -E 'mixer: ' app-run/app.log app-run/app-relaunch.log || true
-          grep -q 'mixer: channels \[오디오 입력' app-run/app.log
           # 상태 표시줄 (설정 › 화면): 기본은 보이고 그 높이만큼 비운다. 화면 시험이 숨기면 화면(layout 높이)이 커져야 한다
           grep -E 'status bar: ' app-run/app-relaunch.log
           grep -q 'status bar: shown' app-run/app.log

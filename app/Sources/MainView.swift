@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-/// 메인 화면 (P4): PC OBS처럼 위는 프리뷰, 그 아래 장면·소스·오디오 믹서·제어 독, 오른쪽 끝은 채팅 패널, 맨 아래는 상태 줄.
+/// 메인 화면 (P4): PC OBS처럼 위는 프리뷰, 그 아래 장면·소스·오디오·제어 독, 오른쪽 끝은 채팅 패널, 맨 아래는 상태 줄.
 /// 창이 좁으면(세로 화면·창 모드) 프리뷰를 맨 위 전체 폭에 두고, 그 아래에 독(2×2)과 채팅을 나란히 둔다.
 struct ContentView: View {
     @ObservedObject private var core = Core.shared
@@ -63,8 +63,8 @@ struct ContentView: View {
                 .studioPart(.scenes)
             SourcesDock(model: model, sheets: sheets)
                 .studioPart(.sources)
-            MixerDock(core: core, model: model, sheets: sheets)
-                .studioPart(.mixer)
+            AudioDock(core: core, sheets: sheets)
+                .studioPart(.audio)
             ControlsDock(outputs: outputs, sheets: sheets, showDiagnostics: $showDiagnostics, chatShown: $chatShown)
                 .studioPart(.controls)
             if chatShown {
@@ -84,7 +84,7 @@ struct ContentView: View {
 // MARK: - 배치
 
 enum StudioPart {
-    case preview, scenes, sources, mixer, controls, chat, status
+    case preview, scenes, sources, audio, controls, chat, status
 }
 
 private struct StudioPartKey: LayoutValueKey {
@@ -154,11 +154,11 @@ struct StudioLayout: Layout {
         return frames
     }
 
-    /// 장면·소스·믹서·제어. 한 줄이면 폭을 22:30:30:18로, 두 줄이면 2×2
+    /// 장면·소스·오디오·제어. 한 줄이면 폭을 24:34:24:18로, 두 줄이면 2×2
     private func placeDocks(in rect: CGRect, columns: Int, into frames: inout [StudioPart: CGRect]) {
-        let parts: [StudioPart] = [.scenes, .sources, .mixer, .controls]
+        let parts: [StudioPart] = [.scenes, .sources, .audio, .controls]
         if columns == 4 {
-            let weights: [CGFloat] = [0.22, 0.30, 0.30, 0.18]
+            let weights: [CGFloat] = [0.24, 0.34, 0.24, 0.18]
             let usable = rect.width - 3 * gap
             var x = rect.minX
             for (index, part) in parts.enumerated() {
@@ -655,153 +655,63 @@ struct SourcesDock: View {
     }
 }
 
-// MARK: - 오디오 믹서
+// MARK: - 오디오 독
 
-/// 전역 오디오 입력과 이 장면의 소리 있는 소스: 미터, 볼륨, 음소거, 필터
-struct MixerDock: View {
+/// 전역 오디오 입력: 장치, 미터, 볼륨, 음소거, 필터. iPadOS는 오디오 입력 경로를 하나만 쓰므로 믹서가 아니라 입력 하나다
+struct AudioDock: View {
     @ObservedObject var core: Core
-    @ObservedObject var model: SceneModel
     let sheets: StudioSheets
     /// 미터는 따로 관찰한다 (초당 10번 바뀌는 값에 독 전체를 다시 그리지 않게)
-    @State private var meters = MixerMeters()
-
-    private var channelNames: [String] {
-        var seen: Set<String> = []
-        let input = String(cString: core_audio_input_name())
-        return ([input] + model.items.filter(\.audio).map(\.name)).filter { !$0.isEmpty && seen.insert($0).inserted }
-    }
-
-    var body: some View {
-        let channels = channelNames
-        let input = String(cString: core_audio_input_name())
-
-        Dock("오디오 믹서") {
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(channels, id: \.self) { name in
-                        MixerChannel(name: name, isInput: name == input, core: core, meters: meters, sheets: sheets)
-                        Divider()
-                    }
-                }
-            }
-            .overlay {
-                if channels.isEmpty {
-                    Text("소리 있는 소스가 없습니다").font(.footnote).foregroundStyle(.secondary)
-                }
-            }
-        }
-        .onChange(of: channels, initial: true) { _, names in
-            meters.names = names
-            appLog("mixer: channels [\(names.joined(separator: ", "))]")
-        }
-        .onAppear { meters.start() }
-        .onDisappear { meters.stop() }
-    }
-}
-
-struct MixerPeak: Equatable {
-    var left: Float
-    var right: Float
-}
-
-/// 믹서 미터 값 (core_mixer_peak를 초당 10번, 메인 스레드)
-final class MixerMeters: ObservableObject {
-    @Published private(set) var peaks: [String: MixerPeak] = [:]
-    var names: [String] = []
-    private var timer: Timer?
-
-    func start() {
-        guard timer == nil else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.update() }
-    }
-
-    func stop() {
-        timer?.invalidate()
-        timer = nil
-    }
-
-    /// 소리가 처음 잡힌 채널 (로그 한 번씩)
-    private var heard: Set<String> = []
-
-    private func update() {
-        guard Core.shared.isRunning else { return }
-        var result: [String: MixerPeak] = [:]
-        for name in names {
-            var left: Float = -.infinity
-            var right: Float = -.infinity
-            guard core_mixer_peak(name, &left, &right) else { continue }
-            result[name] = MixerPeak(left: left, right: right)
-            if max(left, right) > -90 && heard.insert(name).inserted {
-                appLog(String(format: "mixer: sound on '%@' (%.1f dB)", name, max(left, right)))
-            }
-        }
-        if result != peaks { peaks = result }
-    }
-}
-
-struct MixerChannel: View {
-    let name: String
-    /// 전역 오디오 입력이면 이름 자리에 입력 장치 고르기
-    let isInput: Bool
-    @ObservedObject var core: Core
-    let meters: MixerMeters
-    let sheets: StudioSheets
-
+    @State private var level = InputLevel()
     @State private var volumeDB: Double = 0
     @State private var muted = false
     @State private var editing = false
 
+    private var name: String { String(cString: core_audio_input_name()) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                if isInput {
-                    deviceMenu
-                } else {
-                    Label(name, systemImage: "speaker.wave.2").lineLimit(1)
-                }
-                Spacer(minLength: 4)
-                Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                Button {
-                    muted.toggle()
-                    core_source_set_muted(name, muted)
-                    SceneModel.shared.setNeedsSave()
-                } label: {
-                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .foregroundStyle(muted ? Color.red : Color.accentColor)
-                        .frame(width: 30, height: 28)
-                }
-                .accessibilityLabel(muted ? "음소거 해제" : "음소거")
-                Menu {
-                    Button("필터…", systemImage: "waveform") { sheets.editFilters(name) }
-                    if !isInput {
-                        Button("속성…", systemImage: "slider.horizontal.3") { sheets.editProperties(name) }
+        Dock("오디오") {
+            VStack(alignment: .leading, spacing: 10) {
+                deviceMenu
+                InputMeter(level: level, muted: muted)
+                HStack(spacing: 8) {
+                    Button {
+                        muted.toggle()
+                        core_source_set_muted(name, muted)
+                        SceneModel.shared.setNeedsSave()
+                    } label: {
+                        Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                            .foregroundStyle(muted ? Color.red : Color.accentColor)
+                            .frame(width: 30, height: 28)
                     }
-                } label: {
-                    Image(systemName: "ellipsis.circle").frame(width: 30, height: 28)
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(muted ? "음소거 해제" : "음소거")
+                    // 끄는 동안 바로 들리게 바꾼다 (불러온 값으로 바뀔 때는 쓰지 않는다)
+                    Slider(value: $volumeDB, in: -60...0) { editing in
+                        self.editing = editing
+                        if !editing { SceneModel.shared.setNeedsSave() }
+                    }
+                    .onChange(of: volumeDB) { _, db in
+                        guard editing else { return }
+                        core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
+                    }
+                    Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                        .frame(width: 56, alignment: .trailing)
                 }
+                Spacer(minLength: 0)
             }
-            .buttonStyle(.borderless)
-            .font(.subheadline)
-
-            ChannelMeter(meters: meters, name: name, muted: muted)
-
-            // 끄는 동안 바로 들리게 바꾼다 (불러온 값으로 바뀔 때는 쓰지 않는다)
-            Slider(value: $volumeDB, in: -60...0) { editing in
-                self.editing = editing
-                if !editing { SceneModel.shared.setNeedsSave() }
-            }
-            .onChange(of: volumeDB) { _, db in
-                guard editing else { return }
-                core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
-            }
+            .padding(12)
+        } toolbar: {
+            DockButton("오디오 필터", "waveform") { sheets.editFilters(name) }
+                .disabled(name.isEmpty)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .onAppear(perform: load)
-        .onChange(of: name) { _, _ in load() }
+        .onAppear {
+            level.start()
+            load()
+        }
+        .onDisappear { level.stop() }
         .onChange(of: core.isRunning) { _, _ in load() }
     }
 
@@ -820,6 +730,7 @@ struct MixerChannel: View {
             }
         } label: {
             Label(currentDeviceName, systemImage: "mic")
+                .font(.subheadline)
                 .lineLimit(1)
         }
     }
@@ -843,33 +754,61 @@ struct MixerChannel: View {
     }
 }
 
-/// L/R 막대. 뒤에 구간을 흐리게 깔고(-60~-20 초록, -20~-9 노랑, -9~0 빨강, PC OBS 믹서와 같은 구간) 피크까지 밝게
-struct ChannelMeter: View {
-    @ObservedObject var meters: MixerMeters
-    let name: String
+/// 오디오 입력의 최근 피크 (core_audio_input_peak를 초당 10번, 메인 스레드)
+final class InputLevel: ObservableObject {
+    @Published private(set) var left: Float = -.infinity
+    @Published private(set) var right: Float = -.infinity
+    private var timer: Timer?
+
+    func start() {
+        guard timer == nil else { return }
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in self?.update() }
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+    }
+
+    private func update() {
+        var left: Float = -.infinity
+        var right: Float = -.infinity
+        core_audio_input_peak(&left, &right)
+        if left != self.left { self.left = left }
+        if right != self.right { self.right = right }
+    }
+}
+
+/// L/R 막대. 뒤에 구간을 흐리게 깔고(-60~-20 초록, -20~-9 노랑, -9~0 빨강, PC OBS와 같은 구간) 피크까지 밝게
+struct InputMeter: View {
+    @ObservedObject var level: InputLevel
     let muted: Bool
 
     var body: some View {
-        let peak = meters.peaks[name]
-        VStack(spacing: 2) {
-            bar(peak?.left ?? -.infinity)
-            bar(peak?.right ?? -.infinity)
+        VStack(spacing: 3) {
+            bar("L", level.left)
+            bar("R", level.right)
         }
         .opacity(muted ? 0.4 : 1)
     }
 
-    private func bar(_ db: Float) -> some View {
-        GeometryReader { geometry in
-            let width = geometry.size.width
-            let level = db.isFinite ? CGFloat(min(max((db + 60) / 60, 0), 1)) : 0
-            ZStack(alignment: .leading) {
-                zones(width).opacity(0.22)
-                zones(width).mask(alignment: .leading) {
-                    Rectangle().frame(width: width * level)
+    private func bar(_ channel: String, _ db: Float) -> some View {
+        HStack(spacing: 6) {
+            Text(channel)
+                .font(.caption2.monospaced())
+                .foregroundStyle(.secondary)
+            GeometryReader { geometry in
+                let width = geometry.size.width
+                let level = db.isFinite ? CGFloat(min(max((db + 60) / 60, 0), 1)) : 0
+                ZStack(alignment: .leading) {
+                    zones(width).opacity(0.22)
+                    zones(width).mask(alignment: .leading) {
+                        Rectangle().frame(width: width * level)
+                    }
                 }
             }
+            .frame(height: 6)
         }
-        .frame(height: 5)
     }
 
     private func zones(_ width: CGFloat) -> some View {

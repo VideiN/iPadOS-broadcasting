@@ -12,11 +12,9 @@
 #include <graphics/vec3.h>
 #include <util/darray.h>
 #include <util/dstr.h>
-#include <util/platform.h>
 
 #include <math.h>
 #include <pthread.h>
-#include <stdatomic.h>
 #include <string.h>
 
 #define CAMERA_SOURCE_ID "macos-avcapture"
@@ -867,86 +865,6 @@ bool core_source_muted(const char *source_name)
 	bool muted = source ? obs_source_muted(source) : false;
 	obs_source_release(source);
 	return muted;
-}
-
-#pragma mark - 믹서 미터
-
-// 오디오 믹서의 소스마다 볼륨미터를 하나씩 붙여 두고 최근 피크를 돌려준다. 소스가 없어지면 libobs가 미터를
-// 떼어 내고(destroy 신호), 다음 조회 때 여기서도 치운다. 조회는 메인 스레드에서만, 콜백은 오디오 스레드.
-struct mixer_meter {
-	obs_weak_source_t *source;
-	obs_volmeter_t *volmeter;
-	_Atomic float left_db;
-	_Atomic float right_db;
-	_Atomic uint64_t time; // os_gettime_ns, 0이면 아직 소리가 안 옴
-};
-
-static DARRAY(struct mixer_meter *) mixer_meters;
-
-static void mixer_meter_updated(void *param, const float magnitude[MAX_AUDIO_CHANNELS],
-				const float peak[MAX_AUDIO_CHANNELS], const float input_peak[MAX_AUDIO_CHANNELS])
-{
-	UNUSED_PARAMETER(magnitude);
-	UNUSED_PARAMETER(input_peak);
-	struct mixer_meter *meter = param;
-
-	// 출력이 스테레오면 L/R, 모노 소스는 두 값이 같다 (obs-core.c의 입력 미터와 같게)
-	audio_t *audio = obs_get_audio();
-	const bool stereo = audio && audio_output_get_channels(audio) > 1;
-	atomic_store(&meter->left_db, peak[0]);
-	atomic_store(&meter->right_db, stereo ? peak[1] : peak[0]);
-	atomic_store(&meter->time, os_gettime_ns());
-}
-
-static void mixer_meter_free(struct mixer_meter *meter)
-{
-	obs_volmeter_remove_callback(meter->volmeter, mixer_meter_updated, meter);
-	obs_volmeter_destroy(meter->volmeter);
-	obs_weak_source_release(meter->source);
-	bfree(meter);
-}
-
-bool core_mixer_peak(const char *source_name, float *left_db, float *right_db)
-{
-	*left_db = -INFINITY;
-	*right_db = -INFINITY;
-
-	for (size_t i = mixer_meters.num; i > 0; i--) {
-		struct mixer_meter *meter = mixer_meters.array[i - 1];
-		if (obs_weak_source_expired(meter->source)) {
-			mixer_meter_free(meter);
-			da_erase(mixer_meters, i - 1);
-		}
-	}
-
-	obs_source_t *source = obs_get_source_by_name(source_name);
-	if (!source)
-		return false;
-
-	struct mixer_meter *meter = NULL;
-	for (size_t i = 0; i < mixer_meters.num; i++) {
-		if (obs_weak_source_references_source(mixer_meters.array[i]->source, source)) {
-			meter = mixer_meters.array[i];
-			break;
-		}
-	}
-	if (!meter) {
-		meter = bzalloc(sizeof(*meter));
-		meter->source = obs_source_get_weak_source(source);
-		meter->volmeter = obs_volmeter_create(OBS_FADER_LOG);
-		obs_volmeter_add_callback(meter->volmeter, mixer_meter_updated, meter);
-		obs_volmeter_attach_source(meter->volmeter, source);
-		da_push_back(mixer_meters, &meter);
-	}
-	obs_source_release(source);
-
-	// 1초 넘게 소리가 안 왔으면 (멈춘 미디어 등) 무음
-	const uint64_t time = atomic_load(&meter->time);
-	if (time && os_gettime_ns() - time <= 1000000000ULL) {
-		*left_db = atomic_load(&meter->left_db);
-		*right_db = atomic_load(&meter->right_db);
-	}
-	return true;
 }
 
 #pragma mark - 미디어 조작

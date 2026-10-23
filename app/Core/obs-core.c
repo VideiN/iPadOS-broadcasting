@@ -473,10 +473,15 @@ void core_get_stats(struct core_stats *stats)
 		calldata_free(&cd);
 	}
 	obs_source_release(camera);
+	core_audio_input_peak(&stats->audio_peak_left_db, &stats->audio_peak_right_db);
+}
+
+void core_audio_input_peak(float *left_db, float *right_db)
+{
 	// 오디오가 1초 넘게 안 들어오면 무음으로 표시한다
 	const bool audio_stale = os_gettime_ns() - atomic_load(&core.audio_peak_time) > 1000000000ULL;
-	stats->audio_peak_left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
-	stats->audio_peak_right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
+	*left_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_left_db);
+	*right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
 }
 
 #pragma mark - 채팅
