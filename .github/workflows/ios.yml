@@ -366,6 +366,14 @@ jobs:
           # 오디오 믹서 독: 전역 오디오 입력과 장면의 소리 있는 소스마다 미터 (core_mixer_peak)
           grep -E 'mixer: ' app-run/app.log app-run/app-relaunch.log || true
           grep -q 'mixer: channels \[오디오 입력' app-run/app.log
+          # 상태 표시줄 (설정 › 화면): 기본은 보이고 그 높이만큼 비운다. 화면 시험이 숨기면 화면(layout 높이)이 커져야 한다
+          grep -E 'status bar: ' app-run/app-relaunch.log
+          grep -q 'status bar: shown' app-run/app.log
+          awk '/layout: / { split($0, a, "layout: "); split(a[2], b, "[x ]"); h = b[2] + 0 }
+               /status bar: hidden/ { before = h; s = 1; next }
+               s == 1 && /layout: / { after = h; s = 2 }
+               END { print "status bar hidden: layout height " before " -> " after; exit s == 2 && after > before ? 0 : 1 }' \
+            app-run/app-relaunch.log
           awk '/ui autotest: start/ { s = 1 } s == 1 && /ui autotest: rotate landscape/ { s = 2 }
                s == 2 && /layout: .*side column/ { wide = 1 } s == 2 && /display resized/ { resized = 1 }
                s == 2 && /ui autotest: rotate portrait/ { s = 3 }

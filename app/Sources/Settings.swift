@@ -28,6 +28,7 @@ enum AppSettings {
     static let youtubeLatency = "youtubeLatency"  // "normal" | "low" | "ultraLow"
     static let youtubeStreamID = "youtubeStreamID"  // 이 앱이 만든 재사용 스트림
     static let chatPanelShown = "chatPanelShown"  // 오른쪽 채팅 패널 (숨겨도 패널 페이지는 창 뒤에서 계속 돈다)
+    static let statusBarShown = "statusBarShown"  // iPad 상태 표시줄 (시계·배터리). 보이면 그 자리는 비우고 아래부터 그린다
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -47,6 +48,7 @@ enum AppSettings {
             youtubePrivacy: "unlisted",
             youtubeLatency: "normal",
             chatPanelShown: true,
+            statusBarShown: true,
         ])
     }
 
@@ -171,6 +173,7 @@ struct SettingsView: View {
     @AppStorage(AppSettings.recordBitrate) private var recordBitrate = 20000
     @AppStorage(AppSettings.recordAudioBitrate) private var recordAudioBitrate = 192
     @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
+    @AppStorage(AppSettings.statusBarShown) private var statusBarShown = true
 
     @State private var streamKey = ""
     @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
@@ -201,6 +204,14 @@ struct SettingsView: View {
                 recordSection
                 replaySection
                 canvasSection
+
+                Section {
+                    Toggle("상태 표시줄 보이기", isOn: $statusBarShown)
+                } header: {
+                    Text("화면")
+                } footer: {
+                    Text("iPad 맨 위의 시계·배터리·Wi-Fi 줄입니다. 보이게 하면 그 자리는 비워 두고 앱 화면은 그 아래부터 그립니다.")
+                }
 
                 Section("정보") {
                     BuildInfoRows()

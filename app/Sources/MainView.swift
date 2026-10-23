@@ -11,6 +11,7 @@ struct ContentView: View {
     @StateObject private var sheets = StudioSheets()
     @AppStorage("showDiagnostics") private var showDiagnostics = true
     @AppStorage(AppSettings.chatPanelShown) private var chatShown = true
+    @AppStorage(AppSettings.statusBarShown) private var statusBarShown = true
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
 
@@ -25,7 +26,12 @@ struct ContentView: View {
                             + "(\(StudioLayout.isWide(size) ? "side column" : "stacked"))")
                 }
         }
+        // 상태 표시줄을 보이면 그 높이만큼 안전 영역이 생겨 화면은 그 아래부터 그리고, 그 자리는 이 검정만 남는다
         .background(Color.black.ignoresSafeArea())
+        .statusBarHidden(!statusBarShown)
+        .onChange(of: statusBarShown, initial: true) { _, shown in
+            appLog("status bar: \(shown ? "shown" : "hidden")")
+        }
         .preferredColorScheme(.dark)
         .modifier(StudioSheetsModifier(sheets: sheets, model: model, outputs: outputs))
         .onAppear {
@@ -1120,7 +1126,7 @@ extension Notification.Name {
 }
 
 /// CI (`-autotest-ui`, 다시 띄운 실행): 세로로 뜬 화면에서 설정 시트를 연 채로 가로로 돌리고(시트가 남아야 한다),
-/// 가로에서 소스 추가·소스 속성 시트를 하나씩 열고 채팅 패널을 숨겨 본 뒤 다시 세로로 돌린다.
+/// 가로에서 소스 추가·소스 속성 시트를 하나씩 열고 채팅 패널과 상태 표시줄을 숨겨 본 뒤 다시 세로로 돌린다.
 /// "ui autotest: shot <이름>"을 남기면 CI가 스크린숏을 찍고 tmp/autotest-shot 파일을 만든다. 그때까지 기다린다.
 /// "ui autotest: rotate …"를 남기면 CI가 시뮬레이터 기기를 돌린다.
 @MainActor
@@ -1185,11 +1191,13 @@ enum UIAutotest {
         if let item = items.first(where: { $0.type == "ios_chat_source" }) ?? items.first {
             await sheet("properties:\(item.name)", shot: "6-properties")
         }
-        // 채팅 패널을 숨기면 그 자리를 프리뷰와 독이 쓴다
+        // 채팅 패널을 숨기면 그 자리를 프리뷰와 독이 쓴다. 상태 표시줄도 숨기면 화면이 그만큼 위로 커진다
         UserDefaults.standard.set(false, forKey: AppSettings.chatPanelShown)
+        UserDefaults.standard.set(false, forKey: AppSettings.statusBarShown)
         await shot("7-no-chat")
 
         UserDefaults.standard.set(true, forKey: AppSettings.chatPanelShown)
+        UserDefaults.standard.set(true, forKey: AppSettings.statusBarShown)
         await rotate(landscape: false)
         await shot("8-portrait")
         appLog("ui autotest: done")

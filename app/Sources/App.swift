@@ -33,8 +33,8 @@ struct BroadcastApp: App {
 
     var body: some Scene {
         WindowGroup {
+            // 상태 표시줄은 설정에 따라 ContentView가 보이거나 숨긴다
             ContentView()
-                .statusBarHidden()
                 .persistentSystemOverlays(.hidden)
         }
     }
