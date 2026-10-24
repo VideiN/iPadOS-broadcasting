@@ -6,6 +6,11 @@ on:
       - '**.md'
   pull_request:
   workflow_dispatch:
+    inputs:
+      testflight:
+        description: TestFlight에 올리기 (이 브랜치를 testflight 환경이 허락해야 한다)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -459,3 +464,62 @@ jobs:
         with:
           name: libobs-ios-${{ matrix.platform }}
           path: dist/libobs-ios-${{ matrix.platform }}
+
+  # TestFlight (2026-10-24): main에 푸시할 때와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
+  # 기기용 빌드가 만든 가짜 서명 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다 (ios/scripts/testflight.sh).
+  # 서명 비밀값은 testflight 환경에만 있고, 그 환경은 허락한 브랜치에서만 열린다. PR에서는 돌지 않는다.
+  # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 시뮬레이터 시험이 실패해도 기기용 빌드가 있으면 올린다
+  testflight:
+    name: TestFlight upload
+    needs: libobs
+    if: >-
+      !cancelled() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.testflight))
+    runs-on: macos-26
+    environment: testflight
+    outputs:
+      bundle: ${{ steps.upload.outputs.bundle }}
+      build: ${{ steps.upload.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            ios/scripts
+            app/app.entitlements
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: app-ipa-${{ github.run_number }}
+          path: ipa
+
+      - name: Sign and upload
+        id: upload
+        env:
+          APPLE_DIST_P12_BASE64: ${{ secrets.APPLE_DIST_P12_BASE64 }}
+          APPLE_DIST_P12_PASSWORD: ${{ secrets.APPLE_DIST_P12_PASSWORD }}
+          APPLE_PROFILE_BASE64: ${{ secrets.APPLE_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
+
+  # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux)
+  testflight-check:
+    name: TestFlight processing
+    needs: testflight
+    runs-on: ubuntu-latest
+    environment: testflight
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - name: Wait for App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: python3 ios/scripts/asc.py wait-build "${{ needs.testflight.outputs.bundle }}" "${{ needs.testflight.outputs.build }}" 45
