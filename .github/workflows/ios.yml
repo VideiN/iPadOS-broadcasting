@@ -389,15 +389,23 @@ jobs:
             awk -F= -v min="$min" -v max="$max" \
               '/^duration=/ { found = 1; if ($2 + 0 < min || $2 + 0 > max) exit 1 } END { if (!found) exit 1 }' "$file.txt"
           }
-          check_media app-run/autotest.mp4 'hevc|h264'
-          check_media app-run/received.flv 'h264'
+          # 길이는 앱이 실제로 녹화·송출했다고 남긴 길이로 본다. 받은 쪽은 그보다 키프레임 간격(2초)쯤 짧을 수 있다.
+          # 느린 러너에서는 연결이 늦게 붙어 보낸 길이 자체가 짧아져 고정값(10초)으로는 실패했다 (#88, #91). 3초는 넘어야 한다.
+          # 앱 줄을 못 찾으면 예전 기준(녹화·RTMP 10초, SRT 7초)
+          sent_min() { awk -v sent="$1" 'BEGIN { m = sent - 2.5; print (m < 3 ? 3 : m) }'; }
+          record_s=$(sed -nE 's/.*autotest: recording ([0-9.]+) s .*/\1/p' app-run/app.log | head -1)
+          rtmp_s=$(sed -nE 's/.*autotest: recording [0-9.]+ s [0-9]+ bytes, streaming ([0-9.]+) s .*/\1/p' app-run/app.log | head -1)
+          srt_s=$(sed -nE 's/.*srt autotest: streamed ([0-9.]+) s .*/\1/p' app-run/app-relaunch.log | head -1)
+          echo "sent by the app: recording ${record_s:-?} s, RTMP ${rtmp_s:-?} s, SRT ${srt_s:-?} s"
+          check_media app-run/autotest.mp4 'hevc|h264' "$(sent_min "${record_s:-12.5}")"
+          check_media app-run/received.flv 'h264' "$(sent_min "${rtmp_s:-12.5}")"
           # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
           grep -q '\[app\] replay saved: ' app-run/app.log
           check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
           # SRT 송출 10초 (P5)
           grep -q 'srt autotest: started true' app-run/app-relaunch.log
           grep -q "srt autotest: done (stream error '')" app-run/app-relaunch.log
-          check_media app-run/received-srt.ts 'h264' 7
+          check_media app-run/received-srt.ts 'h264' "$(sent_min "${srt_s:-9.5}")"
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
           rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts
 
