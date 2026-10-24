@@ -4,10 +4,11 @@
 앱을 `-autotest-youtube http://127.0.0.1:<포트>`로 띄우면 이 서버로 로그인 흐름 전체를 돈다.
 - /o/oauth2/v2/auth: 요청을 확인하고 code_challenge를 기억한 뒤, 로그인 창이 돌려줄 콜백 주소를 본문으로 준다
 - /token: 코드 교환(PKCE 확인)과 토큰 갱신
-- /youtube/v3/...: channels, liveStreams, liveBroadcasts, liveBroadcasts/bind
+- /youtube/v3/...: channels, liveStreams, liveBroadcasts, liveBroadcasts/bind, liveBroadcasts/transition
 첫 액세스 토큰은 채널 조회 뒤 만료된 것으로 다뤄(401) 앱이 갱신하는지 본다.
 그다음 첫 스트림 조회에는 500을 한 번 줘서 앱이 잠시 뒤 다시 보내는지 본다.
 수신 주소는 러너의 ffmpeg RTMP 수신(rtmp://127.0.0.1:1935/live, 키 autotest).
+만든 방송은 연결(bind)하면 영상이 들어간 것(live)으로 다룬다: 앱이 끊긴 방송을 이어 쓰고, 멈추면 끝내는지(complete) 본다.
 
 채팅 (P7, 앱 인자 `-autotest-chat <이 주소>`): 유튜브 웹 채팅과 공식 API의 형식을 흉내 낸다.
 - /live_chat: 채팅 팝업 페이지 (ytInitialData). 앱이 직접 받을 때(URLSession)와 패널(WebKit)이 띄울 때를
@@ -31,7 +32,7 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 STATE = {"challenge": None, "client_id": None, "redirect_uri": None, "streams": [], "expired": set(),
-         "server_error_sent": False}
+         "server_error_sent": False, "broadcast": None}
 CHAT = {"direct_pages": 0, "webkit_pages": 0}
 CLIENT_VERSION = "2.20261019.01.00"
 EVIL = "http://127.0.0.1:8099/"
@@ -340,6 +341,15 @@ class Handler(BaseHTTPRequestHandler):
                     "status": "INTERNAL"}})
             log(f"liveStreams list ({len(STATE['streams'])})")
             return self.reply(200, {"items": STATE["streams"]})
+        if url.path == "/youtube/v3/liveBroadcasts" and "id" in query:
+            # 앱이 만든 방송의 상태
+            if query["id"] != "mockBroadcast1" or "status" not in query.get("part", ""):
+                return self.fail(400, f"bad liveBroadcasts list {query}")
+            log(f"broadcast status {STATE['broadcast'] or 'none'}")
+            if not STATE["broadcast"]:
+                return self.reply(200, {"items": []})
+            return self.reply(200, {"items": [{"id": "mockBroadcast1", "snippet": {"liveChatId": "mockChat1"},
+                                               "status": {"lifeCycleStatus": STATE["broadcast"]}}]})
         if url.path == "/youtube/v3/liveBroadcasts":
             log("liveBroadcasts list")
             return self.reply(200, {"items": [{"id": "mockBroadcast1", "snippet": {"liveChatId": "mockChat1"}}]})
@@ -446,6 +456,7 @@ class Handler(BaseHTTPRequestHandler):
                 problems.append("auto start/stop")
             if problems:
                 return self.fail(400, "bad liveBroadcasts.insert body: " + ", ".join(problems))
+            STATE["broadcast"] = "ready"
             log("broadcast ok")
             return self.reply(200, {"id": "mockBroadcast1", "snippet": {**snippet, "liveChatId": "mockChat1"},
                                     "status": status})
@@ -453,8 +464,18 @@ class Handler(BaseHTTPRequestHandler):
         if url.path == "/youtube/v3/liveBroadcasts/bind":
             if query.get("id") != "mockBroadcast1" or query.get("streamId") != "mockStream1":
                 return self.fail(400, f"bad bind {query}")
+            STATE["broadcast"] = "live"
             log("bind ok")
             return self.reply(200, {"id": "mockBroadcast1", "contentDetails": {"boundStreamId": "mockStream1"}})
+
+        if url.path == "/youtube/v3/liveBroadcasts/transition":
+            if query.get("id") != "mockBroadcast1" or query.get("broadcastStatus") != "complete":
+                return self.fail(400, f"bad transition {query}")
+            if STATE["broadcast"] != "live":
+                return self.fail(403, f"transition from {STATE['broadcast']}")
+            STATE["broadcast"] = "complete"
+            log("broadcast ended")
+            return self.reply(200, {"id": "mockBroadcast1", "status": {"lifeCycleStatus": "complete"}})
 
         return self.fail(404, "unknown path")
 

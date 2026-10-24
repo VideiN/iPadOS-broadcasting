@@ -27,6 +27,7 @@ enum AppSettings {
     static let youtubePrivacy = "youtubePrivacy"  // "public" | "unlisted" | "private"
     static let youtubeLatency = "youtubeLatency"  // "normal" | "low" | "ultraLow"
     static let youtubeStreamID = "youtubeStreamID"  // 이 앱이 만든 재사용 스트림
+    static let youtubeOpenBroadcast = "youtubeOpenBroadcast"  // 이 앱이 만들어 아직 끝내지 않은 방송
     static let chatPanelShown = "chatPanelShown"  // 오른쪽 채팅 패널 (숨겨도 패널 페이지는 창 뒤에서 계속 돈다)
     static let statusBarShown = "statusBarShown"  // iPad 상태 표시줄 (시계·배터리). 보이면 그 자리는 비우고 아래부터 그린다
 

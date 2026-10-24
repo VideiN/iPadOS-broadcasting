@@ -177,6 +177,7 @@ final class Outputs: ObservableObject {
         if active {
             let force = streamStopping
             streamStopping = true
+            if youtube { YouTubeAccount.shared.endBroadcast() }
             DispatchQueue.global(qos: .userInitiated).async {
                 core_streaming_stop(force)
                 DispatchQueue.main.async { self.update() }

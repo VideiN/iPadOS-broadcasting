@@ -56,6 +56,8 @@ final class YouTubeAccount: ObservableObject {
 
     private var accessToken = ""
     private var accessExpiry = Date.distantPast
+    /// 송출을 멈춰 방송을 끝내는 중 (메인 스레드). 다시 송출하면 이것이 끝난 뒤에 방송을 고른다
+    private var ending: Task<Void, Never>?
 
     private init() {
         let started = Date()
@@ -171,6 +173,7 @@ final class YouTubeAccount: ObservableObject {
         accessExpiry = .distantPast
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeChannelTitle)
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeStreamID)
+        AppSettings.defaults.removeObject(forKey: AppSettings.youtubeOpenBroadcast)
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeTokenClientID)
         loggedIn = false
         channelTitle = ""
@@ -215,6 +218,9 @@ final class YouTubeAccount: ObservableObject {
             return StreamTarget(server: server, key: key, broadcastID: nil)
         }
 
+        if let ending = await MainActor.run(body: { self.ending }) { await ending.value }
+        if let target = try await continueOpenBroadcast(server: server, key: key) { return target }
+
         // 제목에 < > 는 쓸 수 없다
         let title = (defaults.string(forKey: AppSettings.youtubeTitle) ?? "")
             .replacingOccurrences(of: "<", with: "").replacingOccurrences(of: ">", with: "")
@@ -240,6 +246,7 @@ final class YouTubeAccount: ObservableObject {
             ])
         guard let id = broadcast["id"] as? String else { throw YouTubeError("방송을 만들었지만 ID가 없습니다.") }
         let chatID = (broadcast["snippet"] as? [String: Any])?["liveChatId"] as? String
+        defaults.set(id, forKey: AppSettings.youtubeOpenBroadcast)
 
         _ = try await api("POST", "liveBroadcasts/bind", query: ["id": id, "streamId": streamID, "part": "id,contentDetails"])
         appLog("youtube: broadcast \(id) created and bound")
@@ -248,6 +255,83 @@ final class YouTubeAccount: ObservableObject {
             $0.liveChatID = chatID
         }
         return StreamTarget(server: server, key: key, broadcastID: id)
+    }
+
+    /// 끝내지 않은 이 앱의 방송 (송출이 오류로 멈췄거나 앱이 꺼졌다). 아직 진행 중이면 YouTube가 영상을 그 방송에 이어 붙이므로
+    /// 새로 만들지 않고 그 방송으로 보낸다 (채팅도 그 방송). 시작하지 않은 방송은 지운다: 같은 스트림에 자동 시작 방송이 둘이면
+    /// 영상이 어느 쪽으로 갈지 모른다
+    private func continueOpenBroadcast(server: String, key: String) async throws -> StreamTarget? {
+        guard let id = AppSettings.defaults.string(forKey: AppSettings.youtubeOpenBroadcast) else { return nil }
+        let broadcast = try await broadcastInfo(id)
+        let status = (broadcast?["status"] as? [String: Any])?["lifeCycleStatus"] as? String ?? ""
+        switch status {
+        case "live", "liveStarting":
+            let chatID = (broadcast?["snippet"] as? [String: Any])?["liveChatId"] as? String
+            appLog("youtube: broadcast \(id) is still \(status), streaming to it again")
+            await publish {
+                $0.broadcastID = id
+                $0.liveChatID = chatID
+            }
+            return StreamTarget(server: server, key: key, broadcastID: id)
+        case "created", "ready":
+            await deleteBroadcast(id)
+        default:
+            appLog("youtube: broadcast \(id) is \(status.isEmpty ? "gone" : status)")
+        }
+        AppSettings.defaults.removeObject(forKey: AppSettings.youtubeOpenBroadcast)
+        return nil
+    }
+
+    /// 사용자가 송출을 멈추면 이 앱이 만든 방송을 바로 끝낸다 (메인 스레드에서 부른다).
+    /// 자동 종료에 맡기면 그 사이 다시 송출할 때 YouTube는 영상을 이 방송에 이어 붙이는데 앱은 새 방송을 만들어,
+    /// 채팅 패널은 새 방송을, 영상은 이전 방송으로 갔다 (2026-10-25 실기기). 영상이 들어가기 전에 멈춰 시작하지 않은 방송은 지운다
+    func endBroadcast() {
+        guard let id = AppSettings.defaults.string(forKey: AppSettings.youtubeOpenBroadcast) else { return }
+        let previous = ending
+        ending = Task {
+            await previous?.value
+            do {
+                // 자동 시작 중이면 live가 된 뒤에 끝낸다 (20초까지)
+                for _ in 0..<10 {
+                    let broadcast = try await broadcastInfo(id)
+                    switch (broadcast?["status"] as? [String: Any])?["lifeCycleStatus"] as? String ?? "" {
+                    case "liveStarting":
+                        try await Task.sleep(for: .seconds(2))
+                        continue
+                    case "live":
+                        try await api(
+                            "POST", "liveBroadcasts/transition",
+                            query: ["broadcastStatus": "complete", "id": id, "part": "id,status"])
+                        appLog("youtube: broadcast \(id) ended")
+                    case "created", "ready":
+                        await deleteBroadcast(id)
+                    default:
+                        break
+                    }
+                    if AppSettings.defaults.string(forKey: AppSettings.youtubeOpenBroadcast) == id {
+                        AppSettings.defaults.removeObject(forKey: AppSettings.youtubeOpenBroadcast)
+                    }
+                    return
+                }
+                appLog("youtube: broadcast \(id) is still starting, leaving it")
+            } catch {
+                appLog("youtube: could not end broadcast \(id): \(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func broadcastInfo(_ id: String) async throws -> [String: Any]? {
+        let list = try await api("GET", "liveBroadcasts", query: ["part": "id,snippet,status", "id": id])
+        return (list["items"] as? [[String: Any]])?.first
+    }
+
+    private func deleteBroadcast(_ id: String) async {
+        do {
+            try await api("DELETE", "liveBroadcasts", query: ["id": id])
+            appLog("youtube: broadcast \(id) deleted (it had not started)")
+        } catch {
+            appLog("youtube: could not delete broadcast \(id): \(error.localizedDescription)")
+        }
     }
 
     /// 지금 진행 중인 내 방송 ("스트림 키만"으로 보냈거나 앱을 다시 켠 경우, 채팅이 쓴다). 1 단위
@@ -461,6 +545,7 @@ final class YouTubeAccount: ObservableObject {
         AppSettings.defaults.set("CI <시험> 방송", forKey: AppSettings.youtubeTitle)
         AppSettings.defaults.set("unlisted", forKey: AppSettings.youtubePrivacy)
         AppSettings.defaults.removeObject(forKey: AppSettings.youtubeStreamID)
+        AppSettings.defaults.removeObject(forKey: AppSettings.youtubeOpenBroadcast)
 
         // 로그인 창 대신 mock의 인증 주소를 직접 열고, 돌려준 콜백 주소를 그대로 처리한다
         let request = try makeLoginRequest()
@@ -471,6 +556,11 @@ final class YouTubeAccount: ObservableObject {
         try await finishLogin(callback: callback, request: request)
         appLog("youtube autotest: logged in as \(channelTitle)")
 
+        // 송출이 끊겼다가 다시 하면 아직 진행 중인 그 방송으로 보내고, 사용자가 멈추면 방송을 끝낸 뒤 바로 다시 해도
+        // 끝난 다음에 새 방송을 만든다 (mock은 연결한 방송을 영상이 들어간 것으로 다룬다. 확인은 CI가 로그로)
+        _ = try await prepareStream()
+        _ = try await prepareStream()
+        await MainActor.run { self.endBroadcast() }
         return try await prepareStream()
     }
 }
@@ -580,7 +670,7 @@ struct YouTubeBroadcastSection: View {
         } footer: {
             Text(
                 mode == "new"
-                    ? "송출을 누르면 이 내용으로 새 방송을 만들고, 영상이 들어가면 자동으로 시작해 송출을 멈추면 자동으로 끝납니다. 방송 하나에 YouTube API 사용량이 약 5 단위 듭니다 (하루 10,000)."
+                    ? "송출을 누르면 이 내용으로 새 방송을 만들고, 영상이 들어가면 자동으로 시작해 송출을 멈추면 바로 끝납니다. 방송 하나에 YouTube API 사용량이 약 5 단위 듭니다 (하루 10,000)."
                     : "채널의 기본 스트림 키로 보냅니다. 제목·공개 범위 등은 YouTube Studio 설정을 그대로 씁니다.")
         }
     }
