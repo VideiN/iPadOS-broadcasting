@@ -23,12 +23,20 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for name in APPLE_DIST_P12_BASE64 APPLE_DIST_P12_PASSWORD APPLE_PROFILE_BASE64 ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8; do
-  if [ -z "${!name:-}" ]; then
-    echo "::error::secret $name is empty (add it to the testflight environment)"
-    exit 1
-  fi
+secrets=(APPLE_DIST_P12_BASE64 APPLE_DIST_P12_PASSWORD APPLE_PROFILE_BASE64 ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_P8)
+missing=()
+for name in "${secrets[@]}"; do
+  [ -n "${!name:-}" ] || missing+=("$name")
 done
+# 비밀값이 하나도 없으면 (포크 등) 올리지 않고 끝낸다. 일부만 있으면 설정 실수라 실패로
+if [ ${#missing[@]} -eq ${#secrets[@]} ]; then
+  echo "::notice::TestFlight secrets are not set (testflight environment); not uploading"
+  exit 0
+fi
+if [ ${#missing[@]} -gt 0 ]; then
+  echo "::error::secrets missing in the testflight environment: ${missing[*]}"
+  exit 1
+fi
 
 # 1. 프로필: App Store용이고 이 앱의 App ID인지
 profile="$work/profile.mobileprovision"

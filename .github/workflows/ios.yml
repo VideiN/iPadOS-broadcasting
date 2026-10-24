@@ -526,7 +526,7 @@ jobs:
   testflight-check:
     name: TestFlight processing
     needs: testflight
-    if: ${{ !cancelled() && needs.testflight.result == 'success' }}
+    if: ${{ !cancelled() && needs.testflight.result == 'success' && needs.testflight.outputs.build != '' }}
     runs-on: ubuntu-latest
     environment: testflight
     timeout-minutes: 50
