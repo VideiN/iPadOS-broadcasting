@@ -513,10 +513,12 @@ jobs:
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
 
-  # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux)
+  # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux).
+  # 기본 조건(success())은 앞의 앞 작업까지 보므로 시뮬레이터 시험이 실패하면 건너뛴다 (#96): 올리기 결과만 본다
   testflight-check:
     name: TestFlight processing
     needs: testflight
+    if: ${{ !cancelled() && needs.testflight.result == 'success' }}
     runs-on: ubuntu-latest
     environment: testflight
     timeout-minutes: 50
