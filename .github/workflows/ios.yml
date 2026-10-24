@@ -43,19 +43,20 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         run: bash ios/deps/build-deps.sh ${{ matrix.platform }}
 
-  libobs:
+  # 기기용 빌드와 시뮬레이터 시험은 따로 돈다: TestFlight는 기기용 빌드만 기다린다 (시뮬레이터 시험이 10분쯤 더 걸린다).
+  # 두 작업은 같은 단계 목록을 쓰고(YAML 앵커), 플랫폼에만 있는 단계는 matrix.platform으로 고른다
+  libobs-device:
     name: libobs (${{ matrix.platform }})
     needs: deps
     runs-on: macos-26
     strategy:
-      fail-fast: false
       matrix:
-        platform: [iphoneos, iphonesimulator]
-    env:
+        platform: [iphoneos]
+    env: &libobs-env
       BUILD_DIR: build_ios-${{ matrix.platform }}
       DEPS_DIR: ${{ github.workspace }}/.deps/ios-${{ matrix.platform }}
       DIST_DIR: ${{ github.workspace }}/dist/libobs-ios-${{ matrix.platform }}
-    steps:
+    steps: &libobs-steps
       - uses: actions/checkout@v7
 
       - name: Load config
@@ -316,6 +317,12 @@ jobs:
                s == 2 && /^refresh ok/ { s = 3 } s == 3 && /^500 GET \/youtube\/v3\/liveStreams/ { s = 4 }
                s == 4 && /^liveStreams list/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/youtube-mock.log
           grep -q 'youtube: GET liveStreams 500 (backendError: Internal error encountered.)' app-run/app.log
+          # 송출이 끊긴 뒤 다시 하면 진행 중인 방송으로 보낸다. 사용자가 멈추면 방송을 끝내고(complete), 바로 다시 해도
+          # 끝난 다음에 새 방송을 만든다 (멈춘 방송이 자동 종료를 기다리는 동안 영상은 그 방송, 채팅은 새 방송으로 갔음)
+          grep -q 'youtube: broadcast mockBroadcast1 is still live, streaming to it again' app-run/app.log
+          grep -q 'youtube: broadcast mockBroadcast1 ended' app-run/app.log
+          awk 's == 0 && /^bind ok/ { s = 1 } s == 1 && /^broadcast ended/ { s = 2 }
+               s == 2 && /^broadcast ok/ { s = 3 } s == 3 && /^bind ok/ { s = 4 } END { exit s == 4 ? 0 : 1 }' app-run/youtube-mock.log
           # 토큰은 로그에 남지 않아야 한다
           if grep -E 'mock-(access|refresh)|mock-code' app-run/app.log; then echo 'token in app log'; exit 1; fi
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
@@ -481,17 +488,26 @@ jobs:
           name: libobs-ios-${{ matrix.platform }}
           path: dist/libobs-ios-${{ matrix.platform }}
 
+  libobs-simulator:
+    name: libobs (${{ matrix.platform }})
+    needs: deps
+    runs-on: macos-26
+    strategy:
+      matrix:
+        platform: [iphonesimulator]
+    env: *libobs-env
+    steps: *libobs-steps
+
   # TestFlight (2026-10-24): main에 푸시할 때와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
   # 기기용 빌드가 만든 가짜 서명 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다 (ios/scripts/testflight.sh).
   # 서명 비밀값은 testflight 환경에만 있고, 그 환경은 허락한 브랜치에서만 열린다. PR에서는 돌지 않는다.
-  # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 시뮬레이터 시험이 실패해도 기기용 빌드가 있으면 올린다
+  # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 기기용 빌드가 끝나면 바로 올린다 (시뮬레이터 시험은 기다리지 않는다)
   testflight:
     name: TestFlight upload
-    needs: libobs
+    needs: libobs-device
     if: >-
-      !cancelled() &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-       (github.event_name == 'workflow_dispatch' && inputs.testflight))
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     environment: testflight
     outputs:
@@ -522,7 +538,7 @@ jobs:
         run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
 
   # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux).
-  # 기본 조건(success())은 앞의 앞 작업까지 보므로 시뮬레이터 시험이 실패하면 건너뛴다 (#96): 올리기 결과만 본다
+  # 올리기 결과만 본다 (#96: 기본 조건 success()는 앞의 앞 작업까지 본다)
   testflight-check:
     name: TestFlight processing
     needs: testflight
