@@ -249,7 +249,7 @@ jobs:
           # 앱이 "ui autotest: shot <이름>"을 남기면 찍고 tmp/autotest-shot을 만든다(앱은 그때까지 기다린다).
           # "ui autotest: rotate …"면 기기를 돌린다
           for event in 'shot 1-portrait' 'shot 2-settings' 'rotate landscape' 'shot 3-settings-landscape' 'shot 4-landscape' \
-            'shot 5-add-source' 'shot 6-properties' 'shot 7-chat' 'rotate portrait' 'shot 8-portrait'; do
+            'shot 5-add-source' 'shot 6-properties' 'shot 7-no-chat' 'rotate portrait' 'shot 8-portrait'; do
             for _ in $(seq 1 60); do
               grep -q "ui autotest: $event" app-run/app-relaunch.log && break
               sleep 0.5
@@ -363,6 +363,14 @@ jobs:
             echo '::warning::the simulator device did not rotate; the app asked for the window orientation instead'
           fi
           grep -q 'layout: .* (side column)' app-run/app.log
+          # 상태 표시줄 (설정 › 화면): 기본은 보이고 그 높이만큼 비운다. 화면 시험이 숨기면 화면(layout 높이)이 커져야 한다
+          grep -E 'status bar: ' app-run/app-relaunch.log
+          grep -q 'status bar: shown' app-run/app.log
+          awk '/layout: / { split($0, a, "layout: "); split(a[2], b, "[x ]"); h = b[2] + 0 }
+               /status bar: hidden/ { before = h; s = 1; next }
+               s == 1 && /layout: / { after = h; s = 2 }
+               END { print "status bar hidden: layout height " before " -> " after; exit s == 2 && after > before ? 0 : 1 }' \
+            app-run/app-relaunch.log
           awk '/ui autotest: start/ { s = 1 } s == 1 && /ui autotest: rotate landscape/ { s = 2 }
                s == 2 && /layout: .*side column/ { wide = 1 } s == 2 && /display resized/ { resized = 1 }
                s == 2 && /ui autotest: rotate portrait/ { s = 3 }

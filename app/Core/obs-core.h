@@ -167,6 +167,8 @@ void core_display_resize(void *display, uint32_t width, uint32_t height);
 void core_display_destroy(void *display);
 
 void core_get_stats(struct core_stats *stats);
+// 오디오 입력의 최근 피크 L/R만 (core_stats의 값과 같다). 오디오 독의 미터가 자주 부른다
+void core_audio_input_peak(float *left_db, float *right_db);
 
 // --- 채팅 소스 (P7, plugins/ios-chat의 proc handler) ---
 // 메인 스레드에서 부른다. libobs가 아직 안 떴으면 아무것도 하지 않는다.
