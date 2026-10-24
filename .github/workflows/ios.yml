@@ -6,6 +6,11 @@ on:
       - '**.md'
   pull_request:
   workflow_dispatch:
+    inputs:
+      testflight:
+        description: TestFlight에 올리기 (이 브랜치를 testflight 환경이 허락해야 한다)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -392,15 +397,23 @@ jobs:
             awk -F= -v min="$min" -v max="$max" \
               '/^duration=/ { found = 1; if ($2 + 0 < min || $2 + 0 > max) exit 1 } END { if (!found) exit 1 }' "$file.txt"
           }
-          check_media app-run/autotest.mp4 'hevc|h264'
-          check_media app-run/received.flv 'h264'
+          # 길이는 앱이 실제로 녹화·송출했다고 남긴 길이로 본다. 받은 쪽은 그보다 키프레임 간격(2초)쯤 짧을 수 있다.
+          # 느린 러너에서는 연결이 늦게 붙어 보낸 길이 자체가 짧아져 고정값(10초)으로는 실패했다 (#88, #91). 3초는 넘어야 한다.
+          # 앱 줄을 못 찾으면 예전 기준(녹화·RTMP 10초, SRT 7초)
+          sent_min() { awk -v sent="$1" 'BEGIN { m = sent - 2.5; print (m < 3 ? 3 : m) }'; }
+          record_s=$(sed -nE 's/.*autotest: recording ([0-9.]+) s .*/\1/p' app-run/app.log | head -1)
+          rtmp_s=$(sed -nE 's/.*autotest: recording [0-9.]+ s [0-9]+ bytes, streaming ([0-9.]+) s .*/\1/p' app-run/app.log | head -1)
+          srt_s=$(sed -nE 's/.*srt autotest: streamed ([0-9.]+) s .*/\1/p' app-run/app-relaunch.log | head -1)
+          echo "sent by the app: recording ${record_s:-?} s, RTMP ${rtmp_s:-?} s, SRT ${srt_s:-?} s"
+          check_media app-run/autotest.mp4 'hevc|h264' "$(sent_min "${record_s:-12.5}")"
+          check_media app-run/received.flv 'h264' "$(sent_min "${rtmp_s:-12.5}")"
           # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
           grep -q '\[app\] replay saved: ' app-run/app.log
           check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
           # SRT 송출 10초 (P5)
           grep -q 'srt autotest: started true' app-run/app-relaunch.log
           grep -q "srt autotest: done (stream error '')" app-run/app-relaunch.log
-          check_media app-run/received-srt.ts 'h264' 7
+          check_media app-run/received-srt.ts 'h264' "$(sent_min "${srt_s:-9.5}")"
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
           rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts
 
@@ -467,3 +480,64 @@ jobs:
         with:
           name: libobs-ios-${{ matrix.platform }}
           path: dist/libobs-ios-${{ matrix.platform }}
+
+  # TestFlight (2026-10-24): main에 푸시할 때와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
+  # 기기용 빌드가 만든 가짜 서명 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다 (ios/scripts/testflight.sh).
+  # 서명 비밀값은 testflight 환경에만 있고, 그 환경은 허락한 브랜치에서만 열린다. PR에서는 돌지 않는다.
+  # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 시뮬레이터 시험이 실패해도 기기용 빌드가 있으면 올린다
+  testflight:
+    name: TestFlight upload
+    needs: libobs
+    if: >-
+      !cancelled() &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       (github.event_name == 'workflow_dispatch' && inputs.testflight))
+    runs-on: macos-26
+    environment: testflight
+    outputs:
+      bundle: ${{ steps.upload.outputs.bundle }}
+      build: ${{ steps.upload.outputs.build }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            ios/scripts
+            app/app.entitlements
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: app-ipa-${{ github.run_number }}
+          path: ipa
+
+      - name: Sign and upload
+        id: upload
+        env:
+          APPLE_DIST_P12_BASE64: ${{ secrets.APPLE_DIST_P12_BASE64 }}
+          APPLE_DIST_P12_PASSWORD: ${{ secrets.APPLE_DIST_P12_PASSWORD }}
+          APPLE_PROFILE_BASE64: ${{ secrets.APPLE_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
+
+  # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux).
+  # 기본 조건(success())은 앞의 앞 작업까지 보므로 시뮬레이터 시험이 실패하면 건너뛴다 (#96): 올리기 결과만 본다
+  testflight-check:
+    name: TestFlight processing
+    needs: testflight
+    if: ${{ !cancelled() && needs.testflight.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: testflight
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - name: Wait for App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: python3 ios/scripts/asc.py wait-build "${{ needs.testflight.outputs.bundle }}" "${{ needs.testflight.outputs.build }}" 45

@@ -41,6 +41,31 @@
 	</array>
 	<key>DTPlatformName</key>
 	<string>@APP_PLATFORM_NAME@</string>
+	<key>DTPlatformVersion</key>
+	<string>@APP_SDK_VERSION@</string>
+	<key>DTPlatformBuild</key>
+	<string>@APP_SDK_BUILD@</string>
+	<key>DTSDKName</key>
+	<string>@APP_PLATFORM_NAME@@APP_SDK_VERSION@</string>
+	<key>DTSDKBuild</key>
+	<string>@APP_SDK_BUILD@</string>
+	<key>DTXcode</key>
+	<string>@APP_XCODE@</string>
+	<key>DTXcodeBuild</key>
+	<string>@APP_XCODE_BUILD@</string>
+	<key>DTCompiler</key>
+	<string>com.apple.compilers.llvm.clang.1_0</string>
+	<key>BuildMachineOSBuild</key>
+	<string>@APP_BUILD_MACHINE_OS@</string>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<!-- App Store Connect가 64비트 바이너리에 요구한다 (업로드 오류 90502) -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>MinimumOSVersion</key>

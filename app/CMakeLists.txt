@@ -45,6 +45,41 @@ else()
   set(APP_PLATFORM_NAME "iphoneos")
 endif()
 
+# Xcode가 Info.plist에 넣는 빌드 도구 정보 (DTXcode, DTSDKName …). App Store Connect는 올린 빌드가 요구하는 SDK·Xcode로
+# 만들어졌는지 이 값으로 본다. 이 앱은 Xcode 프로젝트가 아니라 CMake로 빌드하므로 직접 넣는다 (TestFlight, 2026-10-24)
+execute_process(
+  COMMAND xcrun --sdk ${APP_PLATFORM_NAME} --show-sdk-version
+  OUTPUT_VARIABLE APP_SDK_VERSION
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+execute_process(
+  COMMAND xcrun --sdk ${APP_PLATFORM_NAME} --show-sdk-build-version
+  OUTPUT_VARIABLE APP_SDK_BUILD
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  ERROR_QUIET
+)
+execute_process(COMMAND xcodebuild -version OUTPUT_VARIABLE _xcode_version ERROR_QUIET)
+execute_process(COMMAND sw_vers -buildVersion OUTPUT_VARIABLE APP_BUILD_MACHINE_OS OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+# "Xcode 26.0.1\nBuild version 17A400" → DTXcode 2601, DTXcodeBuild 17A400
+set(APP_XCODE "")
+set(APP_XCODE_BUILD "")
+if(_xcode_version MATCHES "Xcode ([0-9]+)\\.?([0-9]*)\\.?([0-9]*)")
+  set(_minor "${CMAKE_MATCH_2}")
+  set(_patch "${CMAKE_MATCH_3}")
+  if(_minor STREQUAL "")
+    set(_minor 0)
+  endif()
+  if(_patch STREQUAL "")
+    set(_patch 0)
+  endif()
+  math(EXPR APP_XCODE "${CMAKE_MATCH_1} * 100 + ${_minor} * 10 + ${_patch}")
+endif()
+if(_xcode_version MATCHES "Build version ([0-9A-Za-z]+)")
+  set(APP_XCODE_BUILD "${CMAKE_MATCH_1}")
+endif()
+message(STATUS "App toolchain: SDK ${APP_PLATFORM_NAME}${APP_SDK_VERSION} (${APP_SDK_BUILD}), Xcode ${APP_XCODE} (${APP_XCODE_BUILD})")
+
 # 유튜브 로그인(P8)의 Google OAuth 클라이언트 ID (iOS 유형). Google API 약관상 오픈 소스 코드에는 넣지 않고,
 # CI가 저장소 비밀값(YOUTUBE_CLIENT_ID)으로 넘긴다. Info.plist에는 16진수로 넣는다 (번들을 글자로 훑어서는 안 보이게).
 # 비어 있으면 앱 설정에서 사용자가 자기 클라이언트 ID를 넣는다.
@@ -199,6 +234,17 @@ add_custom_command(
     sh -c
     "if [ -d \"$1/${APP_EXECUTABLE}.dSYM\" ]; then rm -rf \"$2\"; mv \"$1/${APP_EXECUTABLE}.dSYM\" \"$2\"; fi" sh
     "$<TARGET_BUNDLE_DIR:app>" "${CMAKE_CURRENT_BINARY_DIR}/${APP_EXECUTABLE}.app.dSYM"
+  # 앱 아이콘 (TestFlight에 올리려면 필요): 에셋 카탈로그를 Assets.car와 아이콘 PNG로 만들고, actool이 내놓는
+  # Info.plist 조각(CFBundleIcons~ipad)을 번들의 Info.plist에 합친다. 다시 빌드할 때를 위해 먼저 지운다
+  COMMAND
+    xcrun actool "${CMAKE_CURRENT_SOURCE_DIR}/Resources/Assets.xcassets" --compile "${bundle_dir}" --platform
+    "${APP_PLATFORM_NAME}" --minimum-deployment-target "${CMAKE_OSX_DEPLOYMENT_TARGET}" --target-device ipad --app-icon
+    AppIcon --output-partial-info-plist "${CMAKE_CURRENT_BINARY_DIR}/assetcatalog_generated_info.plist" --output-format
+    human-readable-text --errors --warnings
+  COMMAND
+    sh -c
+    "for key in CFBundleIcons CFBundleIcons~ipad; do /usr/libexec/PlistBuddy -c \"Delete :$key\" \"$1\" >/dev/null 2>&1; done; /usr/libexec/PlistBuddy -c \"Merge $2\" \"$1\""
+    sh "${bundle_dir}/Info.plist" "${CMAKE_CURRENT_BINARY_DIR}/assetcatalog_generated_info.plist"
   COMMAND codesign --force --sign - --timestamp=none ${codesign_entitlements} "$<TARGET_BUNDLE_DIR:app>"
   VERBATIM
 )
