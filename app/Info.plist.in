@@ -59,6 +59,11 @@
 	<string>@APP_BUILD_MACHINE_OS@</string>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<!-- App Store Connect가 64비트 바이너리에 요구한다 (업로드 오류 90502) -->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
