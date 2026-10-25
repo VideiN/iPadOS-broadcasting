@@ -330,8 +330,9 @@ jobs:
           done
           if grep -q '^FAIL' app-run/youtube-mock.log; then exit 1; fi
           # 교환 때 받은 토큰으로 채널을 조회하고, 그 토큰이 만료되자(401) 갱신해서 다시 보내야 한다.
-          # 그다음 조회가 500이면 잠시 뒤 다시 보낸다 (기기에서 Google이 liveStreams에 500을 준 일이 있음)
-          awk '/^channels ok/ { s = 1 } s == 1 && /^401 GET \/youtube\/v3\/liveStreams/ { s = 2 }
+          # 그다음 조회가 500이면 잠시 뒤 다시 보낸다 (기기에서 Google이 liveStreams에 500을 준 일이 있음).
+          # 401은 채팅이 먼저 보낸 liveBroadcasts 조회가 받을 수도 있다 (순서는 경쟁, run 40209256610)
+          awk '/^channels ok/ { s = 1 } s == 1 && /^401 GET \/youtube\/v3\// { s = 2 }
                s == 2 && /^refresh ok/ { s = 3 } s == 3 && /^500 GET \/youtube\/v3\/liveStreams/ { s = 4 }
                s == 4 && /^liveStreams list/ { s = 5 } END { exit s == 5 ? 0 : 1 }' app-run/youtube-mock.log
           grep -q 'youtube: GET liveStreams 500 (backendError: Internal error encountered.)' app-run/app.log
