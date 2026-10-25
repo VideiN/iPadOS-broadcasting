@@ -143,6 +143,20 @@ FetchContent_Declare(
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_MakeAvailable(vrmkit)
+# VRMKit main은 Xcode 27(Swift 6.4)로 빌드한다. 그 전 컴파일러는 클로저 안의 이름을 선언 중인 지역 상수로 읽어
+# 메서드를 못 찾는다 (let skeleton = ….map { try skeleton(…) }). 그 한 곳만 self.로
+set(_vrmkit_patch "${vrmkit_SOURCE_DIR}/Sources/VRMRealityKit/Loading/GLTFSceneBuilder.swift")
+file(READ "${_vrmkit_patch}" _vrmkit_content)
+string(
+  REPLACE
+  "{ try skeleton(withSkinIndex: $0) }"
+  "{ try self.skeleton(withSkinIndex: $0) }"
+  _vrmkit_patched
+  "${_vrmkit_content}"
+)
+if(NOT _vrmkit_patched STREQUAL _vrmkit_content)
+  file(WRITE "${_vrmkit_patch}" "${_vrmkit_patched}")
+endif()
 
 set(vrmkit_module_dir "${CMAKE_CURRENT_BINARY_DIR}/swift-modules")
 file(GLOB_RECURSE vrmkit_sources "${vrmkit_SOURCE_DIR}/Sources/VRMKit/*.swift")
