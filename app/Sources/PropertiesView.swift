@@ -100,6 +100,7 @@ struct SourcePropertiesView: View {
 
     @State private var properties: SourceProperties?
     @State private var pickingPathFor: SourceProperty?
+    @State private var showingImporter = false
     /// 이 소스의 필터 수. 소리가 없는 소스면 nil
     @State private var filterCount: Int?
 
@@ -142,13 +143,30 @@ struct SourcePropertiesView: View {
             reloadFilterCount()
         }
         .fileImporter(
-            isPresented: Binding(get: { pickingPathFor != nil }, set: { if !$0 { pickingPathFor = nil } }),
+            isPresented: $showingImporter,
             allowedContentTypes: allowedTypes(pickingPathFor),
             allowsMultipleSelection: false
         ) { result in
-            guard let property = pickingPathFor, case .success(let urls) = result, let url = urls.first else { return }
-            if let copy = Self.importFile(url) {
-                update(property.name, .string(copy.path))
+            // 창이 닫힐 때(isPresented = false) 이 처리기보다 먼저 불리므로 고른 속성은 여기서 지운다.
+            // 예전에는 닫히면서 지워져 파일을 골라도 아무것도 바뀌지 않았다 (로그도 없이)
+            let property = pickingPathFor
+            pickingPathFor = nil
+            guard let property else {
+                appLog("file picker: no property to set")
+                return
+            }
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else {
+                    appLog("file picker: nothing chosen for '\(property.name)'")
+                    return
+                }
+                appLog("file picker: '\(property.name)' ← \(url.lastPathComponent)")
+                if let copy = Self.importFile(url) {
+                    update(property.name, .string(copy.path))
+                }
+            case .failure(let error):
+                appLog("file picker: failed for '\(property.name)': \(error.localizedDescription)")
             }
         }
     }
@@ -195,7 +213,10 @@ struct SourcePropertiesView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("파일 선택…") { pickingPathFor = property }
+                Button("파일 선택…") {
+                    pickingPathFor = property
+                    showingImporter = true
+                }
             }
 
         case "list":

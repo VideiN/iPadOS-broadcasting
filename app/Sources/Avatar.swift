@@ -237,6 +237,9 @@ final class AvatarRenderer {
             targets = makeTargets(width: new.width, height: new.height)
         }
         if new.model != old.model || (model == nil && loading == nil && !new.model.isEmpty) {
+            if new.model != old.model {
+                appLog("avatar: model setting '\(URL(fileURLWithPath: new.model).lastPathComponent)'")
+            }
             load(new.model)
         } else if new.framing != old.framing || new.width != old.width || new.height != old.height {
             frameCamera()
@@ -291,6 +294,7 @@ final class AvatarRenderer {
             return
         }
         host?.status = "불러오는 중… \(name)"
+        appLog("avatar: loading \(name)")
         let started = CACurrentMediaTime()
         loading = Task { @MainActor in
             defer { if !Task.isCancelled { loading = nil } }
