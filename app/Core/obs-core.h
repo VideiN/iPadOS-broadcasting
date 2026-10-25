@@ -37,7 +37,8 @@ void core_log(const char *message);
 
 // libobs를 시작한다 (모듈, 오디오, 비디오). 씬은 core_start_capture가 불러오거나 만든다.
 // resource_path는 앱 번들의 리소스 경로.
-bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps);
+// fps는 분수 (fps_num/fps_den, 예: 30000/1001 = 29.97)
+bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den);
 
 // 씬 구성(collection_path, JSON)을 불러오고 전역 오디오 입력을 건다. 구성이 없으면 기본 씬(배경 + 카메라)을 만든다.
 // 권한 요청이 끝난 뒤에 부른다.
@@ -158,7 +159,7 @@ void core_streaming_stop(bool force);
 bool core_outputs_active(void);
 
 // 캔버스(해상도·fps)를 바꾼다. 녹화·송출 중이면 바꾸지 않고 false
-bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps);
+bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den);
 
 void core_get_output_stats(struct core_output_stats *stats);
 // 녹화(false)나 송출(true)의 마지막 오류 문장. 없으면 "". core_free로 해제한다.

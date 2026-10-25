@@ -39,6 +39,8 @@ extern double libobs_metal_gpu_busy_ms_per_second(void);
 static struct {
 	uint32_t width;
 	uint32_t height;
+	uint32_t fps_num;
+	uint32_t fps_den;
 	double fps;
 
 	obs_source_t *audio_input; // 전역 오디오 입력 (출력 채널 1)
@@ -166,12 +168,12 @@ static bool load_modules(const char *resource_path)
 	return true;
 }
 
-static bool reset_video(uint32_t width, uint32_t height, uint32_t fps)
+static bool reset_video(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den)
 {
 	struct obs_video_info ovi = {
 		.graphics_module = "libobs-metal",
-		.fps_num = fps,
-		.fps_den = 1,
+		.fps_num = fps_num,
+		.fps_den = fps_den,
 		.base_width = width,
 		.base_height = height,
 		.output_width = width,
@@ -193,11 +195,17 @@ static bool reset_video(uint32_t width, uint32_t height, uint32_t fps)
 	return true;
 }
 
-bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps)
+bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den)
 {
+	if (!fps_num || !fps_den) {
+		fps_num = 60;
+		fps_den = 1;
+	}
 	core.width = width;
 	core.height = height;
-	core.fps = fps;
+	core.fps_num = fps_num;
+	core.fps_den = fps_den;
+	core.fps = (double)fps_num / fps_den;
 
 	gs_register_static_module("libobs-metal", libobs_metal_get_export);
 
@@ -216,30 +224,35 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 	};
 	obs_reset_audio(&audio);
 
-	if (!reset_video(width, height, fps))
+	if (!reset_video(width, height, fps_num, fps_den))
 		return false;
 
-	blog(LOG_INFO, "[app] core started (%ux%u @ %u fps)", width, height, fps);
+	blog(LOG_INFO, "[app] core started (%ux%u @ %.3f fps, %u/%u)", width, height, core.fps, fps_num, fps_den);
 	return true;
 }
 
-bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps)
+bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den)
 {
+	if (!fps_num || !fps_den)
+		return false;
+
 	if (core_outputs_active()) {
 		blog(LOG_WARNING, "[app] canvas not changed: recording or streaming is active");
 		return false;
 	}
 
-	if (!reset_video(width, height, fps)) {
+	if (!reset_video(width, height, fps_num, fps_den)) {
 		// 실패하면 원래 설정으로 되돌린다
-		reset_video(core.width, core.height, (uint32_t)core.fps);
+		reset_video(core.width, core.height, core.fps_num, core.fps_den);
 		return false;
 	}
 
 	core.width = width;
 	core.height = height;
-	core.fps = fps;
-	blog(LOG_INFO, "[app] canvas changed to %ux%u @ %u fps", width, height, fps);
+	core.fps_num = fps_num;
+	core.fps_den = fps_den;
+	core.fps = (double)fps_num / fps_den;
+	blog(LOG_INFO, "[app] canvas changed to %ux%u @ %.3f fps (%u/%u)", width, height, core.fps, fps_num, fps_den);
 	return true;
 }
 
@@ -369,7 +382,7 @@ void core_select_device(enum core_device_kind kind, const char *device_id)
 	obs_data_t *settings = obs_source_get_settings(source);
 
 	if (kind == CORE_DEVICE_CAMERA)
-		capture_configure_camera(settings, device_id, core.width, core.height, (uint32_t)core.fps);
+		capture_configure_camera(settings, device_id, core.width, core.height, core.fps_num, core.fps_den);
 	else
 		obs_data_set_string(settings, "device", device_id ? device_id : "");
 

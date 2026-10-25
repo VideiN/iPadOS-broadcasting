@@ -307,6 +307,9 @@ jobs:
           # 씬·소스 (P4)
           grep -q 'created the default scene' app-run/app.log
           grep -q 'scenes autotest: ok' app-run/app.log
+          # 캔버스 fps는 분수로 (29.97 = 30000/1001, libobs도 그 분수로)
+          grep -q 'canvas set to 1280x720 @ 29.97 (30000/1001)' app-run/app.log
+          grep -q 'canvas changed to 1280x720 @ 29.970 fps (30000/1001)' app-run/app.log
           # 미리보기 끄기·켜기: 디스플레이를 없앴다가 다시 만들고, 꺼진 동안에도 캔버스는 돈다
           awk '/preview autotest: off/ { s = 1 } s == 1 && /display destroyed/ { s = 2 }
                s == 2 && /\[stats\] fps=[1-9]/ { s = 3 } s == 3 && /preview autotest: on/ { s = 4 }

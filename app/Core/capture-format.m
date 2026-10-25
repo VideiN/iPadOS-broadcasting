@@ -196,8 +196,14 @@ static AVCaptureDeviceFormat *pick_format(AVCaptureDevice *device, uint32_t widt
 }
 
 void capture_configure_camera(obs_data_t *settings, const char *device_id, uint32_t width, uint32_t height,
-			      uint32_t fps)
+			      uint32_t fps_num, uint32_t fps_den)
 {
+	if (!fps_num || !fps_den) {
+		fps_num = 60;
+		fps_den = 1;
+	}
+	const double fps = (double)fps_num / fps_den;
+
 	obs_data_set_string(settings, "device", device_id ? device_id : "");
 
 	AVCaptureDevice *device = (device_id && *device_id) ? [AVCaptureDevice deviceWithUniqueID:@(device_id)] : nil;
@@ -210,14 +216,20 @@ void capture_configure_camera(obs_data_t *settings, const char *device_id, uint3
 	AVCaptureDeviceFormat *format = pick_format(device, width, height, fps, &format_fps);
 
 	if (format && format_fps >= 1.0) {
+		// 형식이 캔버스 fps를 그대로 지원하면 분수 그대로 (29.97 = 30000/1001), 아니면 형식의 값
 		struct media_frames_per_second rate = {.numerator = (uint32_t)llround(format_fps), .denominator = 1};
+		if (format_fps == fps) {
+			rate.numerator = fps_num;
+			rate.denominator = fps_den;
+		}
 
 		obs_data_set_bool(settings, "use_preset", false);
 		obs_data_set_string(settings, "supported_format", format.obsPropertyListInternalRepresentation.UTF8String);
 		obs_data_set_frames_per_second(settings, "frame_rate", rate, NULL);
 
-		blog(LOG_INFO, "[app] camera '%s': %s @ %u fps", device.localizedName.UTF8String,
-		     format.obsPropertyListDescription.UTF8String, rate.numerator);
+		blog(LOG_INFO, "[app] camera '%s': %s @ %.2f fps (%u/%u)", device.localizedName.UTF8String,
+		     format.obsPropertyListDescription.UTF8String, (double)rate.numerator / rate.denominator, rate.numerator,
+		     rate.denominator);
 	} else {
 		obs_data_set_bool(settings, "use_preset", true);
 		obs_data_set_string(settings, "preset", AVCaptureSessionPresetHigh.UTF8String);

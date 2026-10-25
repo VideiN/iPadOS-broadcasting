@@ -548,8 +548,9 @@ int64_t core_scene_add_source(const char *type_id, const char *name)
 	} else if (strcmp(type_id, CAMERA_SOURCE_ID) == 0) {
 		char *camera_id = unused_camera_id();
 		struct obs_video_info ovi;
-		const uint32_t fps = obs_get_video_info(&ovi) && ovi.fps_den ? ovi.fps_num / ovi.fps_den : 60;
-		capture_configure_camera(settings, camera_id, width, height, fps);
+		const bool have_video = obs_get_video_info(&ovi) && ovi.fps_den;
+		capture_configure_camera(settings, camera_id, width, height, have_video ? ovi.fps_num : 60,
+					 have_video ? ovi.fps_den : 1);
 		bfree(camera_id);
 	}
 
@@ -773,19 +774,21 @@ void core_source_update(const char *source_name, const char *changes_json)
 		canvas_size(&width, &height);
 		struct obs_video_info ovi;
 		const bool have_video = obs_get_video_info(&ovi) && ovi.fps_den;
-		const uint32_t fps = have_video ? ovi.fps_num / ovi.fps_den : 60;
+		const uint32_t fps_num = have_video ? ovi.fps_num : 60;
+		const uint32_t fps_den = have_video ? ovi.fps_den : 1;
 
 		if (obs_data_has_user_value(changes, "device")) {
-			capture_configure_camera(settings, obs_data_get_string(changes, "device"), width, height, fps);
+			capture_configure_camera(settings, obs_data_get_string(changes, "device"), width, height, fps_num,
+						 fps_den);
 		} else if (obs_data_has_user_value(changes, "supported_format") &&
 			   !obs_data_has_user_value(changes, "frame_rate")) {
 			// 입력 형식을 바꾸면 fps를 그 형식이 지원하는 값 중 캔버스에 가까운 것으로
-			capture_fit_frame_rate(settings, have_video ? ovi.fps_num : 60, have_video ? ovi.fps_den : 1);
+			capture_fit_frame_rate(settings, fps_num, fps_den);
 		} else if (obs_data_has_user_value(changes, "use_preset") && !obs_data_get_bool(changes, "use_preset") &&
 			   !*obs_data_get_string(settings, "supported_format")) {
 			// 프리셋을 끄면 고른 형식이 없으니 캔버스에 맞는 형식을 고른다
 			char *device = bstrdup(obs_data_get_string(settings, "device"));
-			capture_configure_camera(settings, device, width, height, fps);
+			capture_configure_camera(settings, device, width, height, fps_num, fps_den);
 			bfree(device);
 		}
 	}

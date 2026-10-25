@@ -374,9 +374,12 @@ final class SceneModel: ObservableObject {
 
         // 캔버스를 한 번 바꿨다가 되돌린다 (프리뷰가 떠 있는 채로 obs_reset_video)
         let core = Core.shared
-        let (width, height, fps) = (core.width, core.height, core.fps)
-        let changed = core.applyCanvas(width: 1280, height: 720, fps: 30)
-        let restored = core.applyCanvas(width: width, height: height, fps: fps)
+        // 분수 fps도 (29.97 = 30000/1001, CI가 로그 줄을 본다)
+        let (width, height, frameRate) = (core.width, core.height, core.frameRate)
+        let changed =
+            core.applyCanvas(width: 1280, height: 720, frameRate: FrameRateChoice(numerator: 30, denominator: 1))
+            && core.applyCanvas(width: 1280, height: 720, frameRate: FrameRateChoice(numerator: 30000, denominator: 1001))
+        let restored = core.applyCanvas(width: width, height: height, frameRate: frameRate)
         saveNow()
 
         // 오디오 필터: 오디오 입력에 노이즈 억제(RNNoise)와 게인을 넣고, 설정·순서·켜기를 바꾼 뒤 게인만 지운다.

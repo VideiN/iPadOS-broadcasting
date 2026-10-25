@@ -14,7 +14,9 @@ enum AppSettings {
     static let recordFolderBookmark = "recordFolderBookmark"
     static let canvasWidth = "canvasWidth"
     static let canvasHeight = "canvasHeight"
-    static let canvasFPS = "canvasFPS"
+    static let canvasFPS = "canvasFPS"  // 예전 정수 fps (분수 키가 없을 때 읽는다)
+    static let canvasFPSNum = "canvasFPSNum"  // 캔버스 fps 분자·분모 (29.97 = 30000/1001)
+    static let canvasFPSDen = "canvasFPSDen"
     static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
     static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
     static let streamMode = "streamMode"  // "manual"(서버·스트림 키 직접 입력) | "youtube"(계정, P8)
@@ -169,7 +171,7 @@ enum RecordingFolder {
     }
 }
 
-/// MARK: - 설정 화면
+// MARK: - 설정 화면
 
 /// 설정 화면의 페이지 (왼쪽 사이드바 목록)
 enum SettingsPage: String, CaseIterable, Identifiable {
@@ -406,50 +408,128 @@ private struct ReplaySettingsPage: View {
     }
 }
 
+/// 캔버스 fps: 흔한 값 목록과 직접 입력 (분수 30000/1001, 소수 29.97, 정수 24)
+extension FrameRateChoice {
+    static let canvasRange = 1.0...120.0
+
+    static let canvasPresets: [FrameRateChoice] = [
+        .init(numerator: 24000, denominator: 1001), .init(numerator: 24, denominator: 1),
+        .init(numerator: 25, denominator: 1), .init(numerator: 30000, denominator: 1001),
+        .init(numerator: 30, denominator: 1), .init(numerator: 48, denominator: 1),
+        .init(numerator: 50, denominator: 1), .init(numerator: 60000, denominator: 1001),
+        .init(numerator: 60, denominator: 1), .init(numerator: 120, denominator: 1),
+    ]
+
+    /// "30000/1001", "29.97", "24" → 약분한 분수. 23.976·29.97·59.94 같은 값은 정확한 /1001로 바꾼다
+    init?(text: String) {
+        let text = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")
+        let parts = text.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        var numerator: Int
+        var denominator: Int
+        if parts.count == 2, let n = Int(parts[0]), let d = Int(parts[1]) {
+            (numerator, denominator) = (n, d)
+        } else if parts.count == 1, let value = Double(parts[0]), value > 0, value < 100_000 {
+            if let base = [24, 30, 48, 60, 120].first(where: { abs(value - Double($0 * 1000) / 1001) < 0.006 }) {
+                (numerator, denominator) = (base * 1000, 1001)
+            } else if value == value.rounded() {
+                (numerator, denominator) = (Int(value), 1)
+            } else {
+                (numerator, denominator) = (Int((value * 1000).rounded()), 1000)
+            }
+        } else {
+            return nil
+        }
+        guard (1...10_000_000).contains(numerator), (1...10_000_000).contains(denominator) else { return nil }
+        var (a, b) = (numerator, denominator)
+        while b != 0 { (a, b) = (b, a % b) }
+        self.init(numerator: numerator / a, denominator: denominator / a)
+    }
+
+    /// 로그용: "30", "29.97 (30000/1001)"
+    var logText: String {
+        denominator == 1 ? "\(numerator)" : String(format: "%.2f (%ld/%ld)", fps, numerator, denominator)
+    }
+}
+
 private struct CanvasSettingsPage: View {
     @ObservedObject var core: Core
     @ObservedObject var outputs: Outputs
-    @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
+    @State private var size = CanvasSize(width: 1920, height: 1080)
+    /// 목록에서 고른 값 ("분자/분모") 또는 "custom"
+    @State private var rateTag = "60/1"
+    @State private var customText = ""
     @State private var canvasMessage = ""
 
-    struct CanvasChoice: Hashable {
+    struct CanvasSize: Hashable {
         var width: UInt32
         var height: UInt32
-        var fps: UInt32
     }
 
-    private let resolutions: [(String, UInt32, UInt32)] = [
-        ("1280×720", 1280, 720), ("1920×1080", 1920, 1080), ("2560×1440", 2560, 1440), ("3840×2160", 3840, 2160),
+    private let resolutions: [(String, CanvasSize)] = [
+        ("1280×720", .init(width: 1280, height: 720)), ("1920×1080", .init(width: 1920, height: 1080)),
+        ("2560×1440", .init(width: 2560, height: 1440)), ("3840×2160", .init(width: 3840, height: 2160)),
     ]
+
+    private static func tag(_ rate: FrameRateChoice) -> String { "\(rate.numerator)/\(rate.denominator)" }
+
+    /// 고른 fps. 직접 입력이 틀렸거나 범위 밖이면 nil
+    private var frameRate: FrameRateChoice? {
+        let rate =
+            rateTag == "custom"
+            ? FrameRateChoice(text: customText) : FrameRateChoice.canvasPresets.first { Self.tag($0) == rateTag }
+        return rate.flatMap { FrameRateChoice.canvasRange.contains($0.fps) ? $0 : nil }
+    }
 
     var body: some View {
         Form {
             Section {
-                Picker("해상도", selection: $canvas) {
-                    ForEach(resolutions, id: \.0) { resolution in
-                        Text(resolution.0).tag(CanvasChoice(width: resolution.1, height: resolution.2, fps: canvas.fps))
+                Picker("해상도", selection: $size) {
+                    ForEach(resolutions, id: \.0) { Text($0.0).tag($0.1) }
+                }
+                Picker("프레임", selection: $rateTag) {
+                    ForEach(FrameRateChoice.canvasPresets, id: \.self) { Text($0.label).tag(Self.tag($0)) }
+                    Text("직접 입력…").tag("custom")
+                }
+                if rateTag == "custom" {
+                    TextField("예: 30000/1001, 29.97, 24", text: $customText)
+                        .keyboardType(.numbersAndPunctuation)
+                        .autocorrectionDisabled()
+                    if let frameRate {
+                        LabeledContent("적용할 값", value: "\(frameRate.label) (\(frameRate.numerator)/\(frameRate.denominator))")
+                    } else if !customText.isEmpty {
+                        Text("1~120 fps 사이의 숫자나 분수(분자/분모)를 넣으세요.").font(.footnote).foregroundStyle(.red)
                     }
                 }
-                Picker("프레임", selection: $canvas.fps) {
-                    Text("30 fps").tag(UInt32(30))
-                    Text("60 fps").tag(UInt32(60))
-                }
                 Button("적용") {
-                    canvasMessage = core.applyCanvas(width: canvas.width, height: canvas.height, fps: canvas.fps)
+                    guard let frameRate else { return }
+                    canvasMessage = core.applyCanvas(width: size.width, height: size.height, frameRate: frameRate)
                         ? "바꿨습니다. 맞지 않는 소스는 ⋯ 메뉴의 '화면에 맞추기'를 쓰세요."
                         : "바꾸지 못했습니다. 녹화·송출을 멈춘 뒤 다시 해 보세요."
                 }
                 .disabled(
-                    outputs.stats.recording || outputs.stats.streaming
-                        || canvas == CanvasChoice(width: core.width, height: core.height, fps: core.fps))
+                    outputs.stats.recording || outputs.stats.streaming || frameRate == nil
+                        || (size == CanvasSize(width: core.width, height: core.height) && frameRate == core.frameRate))
                 if !canvasMessage.isEmpty {
                     Text(canvasMessage).font(.footnote).foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("녹화·송출 중에는 바꿀 수 없습니다.")
+                if let frameRate, frameRate.fps > 60.01 {
+                    Text("녹화·송출 중에는 바꿀 수 없습니다. 송출 플랫폼 대부분은 60 fps까지 받습니다.")
+                } else {
+                    Text("녹화·송출 중에는 바꿀 수 없습니다. 29.97·59.94처럼 방송 장비와 맞출 값은 분수(30000/1001)로 정확히 들어갑니다.")
+                }
             }
         }
-        .onAppear { canvas = CanvasChoice(width: core.width, height: core.height, fps: core.fps) }
+        .onAppear {
+            size = CanvasSize(width: core.width, height: core.height)
+            if FrameRateChoice.canvasPresets.contains(core.frameRate) {
+                rateTag = Self.tag(core.frameRate)
+            } else {
+                rateTag = "custom"
+                customText = Self.tag(core.frameRate)
+            }
+        }
     }
 }
 
@@ -516,7 +596,7 @@ private struct DeveloperSettingsPage: View {
     }
 }
 
-/ MARK: - 진단 화면
+// MARK: - 진단 화면
 
 struct DiagnosticsView: View {
     @State private var lines: [String] = []

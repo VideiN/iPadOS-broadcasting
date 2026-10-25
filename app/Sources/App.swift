@@ -68,44 +68,60 @@ final class Core: ObservableObject {
 
     /// 캔버스 (기본 1080p60, 설정 화면에서 바꿈).
     /// CI 시뮬레이터는 소프트웨어 인코더라 1080p60을 따라가지 못해 `-canvas 640x360@30`으로 줄여 띄운다.
+    /// fps는 분수(29.97 = 30000/1001)
     @Published private(set) var width: UInt32
     @Published private(set) var height: UInt32
-    @Published private(set) var fps: UInt32
+    @Published private(set) var frameRate: FrameRateChoice
+
+    var fps: Double { frameRate.fps }
 
     private init() {
         AppSettings.register()
         let defaults = AppSettings.defaults
-        (width, height, fps) =
-            Self.canvasFromArguments()
-            ?? (
-                UInt32(defaults.integer(forKey: AppSettings.canvasWidth)),
-                UInt32(defaults.integer(forKey: AppSettings.canvasHeight)),
-                UInt32(defaults.integer(forKey: AppSettings.canvasFPS))
-            )
+        if let canvas = Self.canvasFromArguments() {
+            (width, height, frameRate) = canvas
+        } else {
+            width = UInt32(defaults.integer(forKey: AppSettings.canvasWidth))
+            height = UInt32(defaults.integer(forKey: AppSettings.canvasHeight))
+            // 분수로 저장하기 전(정수 canvasFPS만 있던 때)의 값도 읽는다
+            let numerator = defaults.integer(forKey: AppSettings.canvasFPSNum)
+            let denominator = defaults.integer(forKey: AppSettings.canvasFPSDen)
+            frameRate =
+                numerator > 0 && denominator > 0
+                ? FrameRateChoice(numerator: numerator, denominator: denominator)
+                : FrameRateChoice(numerator: max(defaults.integer(forKey: AppSettings.canvasFPS), 1), denominator: 1)
+        }
     }
 
     /// 캔버스를 바꾸고 저장한다. 녹화·송출 중이면 바꾸지 않는다.
-    func applyCanvas(width: UInt32, height: UInt32, fps: UInt32) -> Bool {
-        guard core_reset_canvas(width, height, fps) else { return false }
+    func applyCanvas(width: UInt32, height: UInt32, frameRate: FrameRateChoice) -> Bool {
+        guard frameRate.numerator > 0, frameRate.denominator > 0,
+            core_reset_canvas(width, height, UInt32(frameRate.numerator), UInt32(frameRate.denominator))
+        else { return false }
         self.width = width
         self.height = height
-        self.fps = fps
+        self.frameRate = frameRate
 
         let defaults = AppSettings.defaults
         defaults.set(Int(width), forKey: AppSettings.canvasWidth)
         defaults.set(Int(height), forKey: AppSettings.canvasHeight)
-        defaults.set(Int(fps), forKey: AppSettings.canvasFPS)
-        appLog("canvas set to \(width)x\(height) @ \(fps)")
+        defaults.set(frameRate.numerator, forKey: AppSettings.canvasFPSNum)
+        defaults.set(frameRate.denominator, forKey: AppSettings.canvasFPSDen)
+        defaults.set(Int(frameRate.fps.rounded()), forKey: AppSettings.canvasFPS)
+        appLog("canvas set to \(width)x\(height) @ \(frameRate.logText)")
         return true
     }
 
-    private static func canvasFromArguments() -> (UInt32, UInt32, UInt32)? {
+    /// `-canvas 640x360@30`, `@30000/1001`, `@29.97`
+    private static func canvasFromArguments() -> (UInt32, UInt32, FrameRateChoice)? {
         let args = ProcessInfo.processInfo.arguments
         guard let index = args.firstIndex(of: "-canvas"), index + 1 < args.count else { return nil }
 
-        let parts = args[index + 1].split(whereSeparator: { $0 == "x" || $0 == "@" }).compactMap { UInt32($0) }
-        guard parts.count == 3, parts.allSatisfy({ $0 > 0 }) else { return nil }
-        return (parts[0], parts[1], parts[2])
+        let value = args[index + 1].split(separator: "@", maxSplits: 1)
+        guard value.count == 2, let frameRate = FrameRateChoice(text: String(value[1])) else { return nil }
+        let size = value[0].split(separator: "x").compactMap { UInt32($0) }
+        guard size.count == 2, size.allSatisfy({ $0 > 0 }) else { return nil }
+        return (size[0], size[1], frameRate)
     }
 
     @Published private(set) var isRunning = false
@@ -129,11 +145,12 @@ final class Core: ObservableObject {
         ready.enter()
         Self.requestPermissions { ready.leave() }
 
-        let (width, height, fps) = (width, height, fps)
+        let (width, height) = (width, height)
+        let (fpsNum, fpsDen) = (UInt32(frameRate.numerator), UInt32(frameRate.denominator))
         var ok = false
         ready.enter()
         DispatchQueue.global(qos: .userInitiated).async {
-            ok = core_startup(resourcePath, width, height, fps)
+            ok = core_startup(resourcePath, width, height, fpsNum, fpsDen)
 
             DispatchQueue.main.async {
                 appLog(ok ? "core started" : "core_startup failed")
