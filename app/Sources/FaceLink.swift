@@ -811,6 +811,10 @@ final class FaceLinkReceiver: ObservableObject {
     private var timer: Timer?
     /// 설정 화면이 받은 값을 보고 있을 때
     var previewing = false
+    /// 연결 요청을 묻는 창. 설정 등 시트가 떠 있어도 보이게 앱 화면 위의 따로 창에 띄운다
+    private var prompt: (request: FaceLinkRequest, window: UIWindow)?
+    /// 답한 요청: 그 아이폰이 요청을 멈출 때까지(Hello가 5초 없음) 다시 묻지 않는다. 취소해도 설정 화면에서 허락할 수 있다
+    private var answeredKey: String?
 
     /// 아바타 소스가 읽는다 (어느 스레드에서나)
     nonisolated func latestFrame() -> FaceFrame? { engine.latestFrame() }
@@ -873,8 +877,79 @@ final class FaceLinkReceiver: ObservableObject {
 
     private func refresh() {
         let latest = engine.status()
-        if latest != status { status = latest }
+        if latest != status {
+            status = latest
+            updatePrompt()
+        }
         if previewing { preview = engine.latestFrame() }
+    }
+
+    /// 코드 없이 연결하려는 아이폰이 있으면 허락할지 묻는다. 코드가 틀린 쪽은 QR을 다시 찍으라고 알린다
+    private func updatePrompt() {
+        let request = status.request
+        if request?.key != answeredKey { answeredKey = nil }
+        // 요청이 사라지면(아이폰이 멈춤, 설정 화면에서 허락) 창도 닫는다
+        if let shown = prompt?.request, shown.key != request?.key || shown.wrongCode != request?.wrongCode {
+            closePrompt()
+        }
+        guard prompt == nil, let request, request.key != answeredKey,
+            UIApplication.shared.applicationState == .active,
+            let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+        else { return }
+
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .alert + 1
+        window.backgroundColor = .clear
+        let root = UIViewController()
+        root.view.backgroundColor = .clear
+        window.rootViewController = root
+        window.isHidden = false
+
+        let alert: UIAlertController
+        if request.wrongCode {
+            alert = UIAlertController(
+                title: "\"\(request.name)\"의 페어링 코드가 다릅니다",
+                message: "\(request.address)\n아이폰 앱에서 설정 › 얼굴 추적의 QR을 다시 찍으세요.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "확인", style: .cancel) { [weak self] _ in self?.answerPrompt(allow: false) })
+        } else {
+            alert = UIAlertController(
+                title: "\"\(request.name)\"에서 페어링을 시도하고 있습니다",
+                message: "\(request.address)\n페어링 코드 없이 얼굴 추적 연결을 요청했습니다. 허락하면 이 아이폰을 기억해 다음부터 바로 받습니다.",
+                preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "취소", style: .cancel) { [weak self] _ in self?.answerPrompt(allow: false) })
+            let allowAction = UIAlertAction(title: "허락", style: .default) { [weak self] _ in
+                self?.answerPrompt(allow: true)
+            }
+            alert.addAction(allowAction)
+            alert.preferredAction = allowAction
+        }
+        prompt = (request, window)
+        root.present(alert, animated: true)
+        appLog("facelink: asking about '\(request.name)' \(request.address)\(request.wrongCode ? " (wrong pairing code)" : "")")
+    }
+
+    /// 묻는 창의 단추 (CI 시험도 이걸 부른다)
+    func answerPrompt(allow allowing: Bool) {
+        guard let request = prompt?.request else { return }
+        answeredKey = request.key
+        closePrompt()
+        if allowing {
+            allow(request)
+        } else if !request.wrongCode {
+            appLog("facelink: '\(request.name)' \(request.address) not allowed (can still allow in settings)")
+        }
+    }
+
+    private func closePrompt() {
+        guard let window = prompt?.window else { return }
+        prompt = nil
+        // 단추로 닫힌 경우엔 알림이 이미 내려가 있다. 빈 창이 남아 터치를 막지 않게 꼭 숨긴다
+        if let root = window.rootViewController, root.presentedViewController != nil {
+            root.dismiss(animated: true) { window.isHidden = true }
+        } else {
+            window.isHidden = true
+        }
     }
 
     /// QR에 넣는 주소: facelink://IP:포트?v=1&name=이름&token=코드 (IP마다 하나)
@@ -951,17 +1026,24 @@ final class FaceLinkReceiver: ObservableObject {
             "facelink autotest: filtered (ignored \(status.ignored), invalid \(status.invalid), stale \(status.stale))")
         let firstSender = status.senderName == "CI 송신기"
 
-        // 코드 없이 Hello를 보내는 쪽 (아이폰 앱에서 Bonjour 목록으로 고른 경우): 연결 요청으로 보이고, 허락하면 받는다
+        // 코드 없이 Hello를 보내는 쪽 (아이폰 앱에서 Bonjour 목록으로 고른 경우): 연결 요청으로 보이고 묻는 창이 뜬다.
+        // 그 허락 단추와 같은 일을 하면 받는다
         let requested = await wait(10) { status.request?.name == "CI 허락 송신기" && status.request?.wrongCode == false }
-        if requested, let request = status.request { allow(request) }
+        let asked = await wait(5) { prompt?.request.name == "CI 허락 송신기" }
+        if asked {
+            answerPrompt(allow: true)
+        } else if requested, let request = status.request {
+            allow(request)
+        }
         let allowedReceiving = await wait(15) { status.state == .receiving && status.senderName == "CI 허락 송신기" }
+        let promptClosed = prompt == nil
         appLog(
-            "facelink autotest: pairing request \(requested ? "seen" : "not seen"), "
+            "facelink autotest: pairing request \(requested ? "seen" : "not seen"), prompt \(asked ? "shown" : "not shown"), "
                 + "allowed sender \(allowedReceiving ? "receiving" : "not receiving")")
 
         let ok =
             receiving && frame?.presentCount == FaceBlendShape.names.count && headTurned && eyes && lost && disconnected
-            && filtered && firstSender && requested && allowedReceiving
+            && filtered && firstSender && requested && asked && promptClosed && allowedReceiving
         appLog("facelink autotest: \(ok ? "ok" : "failed")")
     }
 }
