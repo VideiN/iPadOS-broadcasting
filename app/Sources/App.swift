@@ -52,6 +52,7 @@ struct BroadcastApp: App {
             ContentView()
                 .persistentSystemOverlays(.hidden)
         }
+        .commands { StudioCommands(outputs: .shared, model: .shared) }
     }
 }
 

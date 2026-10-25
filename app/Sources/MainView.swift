@@ -362,6 +362,16 @@ private struct StudioSheetsModifier: ViewModifier {
                 sheets.addingSource = sheet == "add source"
                 sheets.properties = sheet.hasPrefix("properties:") ? .init(name: String(sheet.dropFirst(11))) : nil
             }
+            // 메뉴 막대·키보드 단축키 (Commands.swift)
+            .onReceive(NotificationCenter.default.publisher(for: .studioCommand)) { note in
+                switch (note.object as? String).flatMap(StudioCommand.init(rawValue:)) {
+                case .settings: sheets.openSettings()
+                case .addSource: sheets.addingSource = true
+                case .properties: if let item = model.selectedItem { sheets.editProperties(item.name) }
+                case .toggleStream: if !outputs.toggleStreaming() { sheets.openSettings(.stream) }
+                case nil: break
+                }
+            }
     }
 
     private func finishRenaming() {
@@ -1136,7 +1146,8 @@ enum UIAutotest {
         await shot("1-portrait")
 
         // 시트를 연 채로 돌린다. 돌릴 때 화면이 새로 만들어지면 시트가 닫힌다
-        NotificationCenter.default.post(name: .autotestSheet, object: "settings")
+        // 메뉴 막대의 "설정…"(⌘,)과 같은 길로 연다
+        NotificationCenter.default.post(name: .studioCommand, object: StudioCommand.settings.rawValue)
         await shot("2-settings")
         await rotate(landscape: true)
         await shot("3-settings-landscape")
