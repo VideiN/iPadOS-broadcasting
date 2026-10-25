@@ -331,7 +331,8 @@ jobs:
           # 토큰은 로그에 남지 않아야 한다
           if grep -E 'mock-(access|refresh)|mock-code' app-run/app.log; then echo 'token in app log'; exit 1; fi
           # 얼굴 추적 받기 (P9): 합성 송신기의 블렌드셰이프 52개·머리·눈, 정면 맞추기 명령, 얼굴 놓침, 끊김.
-          # 틀린 페어링 코드·코드 없는 VMC·깨진 패킷·지난 순번은 버리고, 보내기가 멈추면 Ack도 멈춘다
+          # 틀린 페어링 코드·코드 없는 VMC·깨진 패킷·지난 순번은 버리고, 보내기가 멈추면 Ack도 멈춘다.
+          # 코드 없는 Hello는 연결 요청으로 보이고, 허락하면 받는다
           (sleep 10; kill "$facelink_pid" 2> /dev/null) &
           wait "$facelink_pid" || true
           cat app-run/facelink-sender.log

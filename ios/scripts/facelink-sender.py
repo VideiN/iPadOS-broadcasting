@@ -7,6 +7,8 @@
 - 앱의 첫 /FaceLink/Ack를 받은 때(t0)부터 단계를 밟는다:
   t0+2초 깨진 패킷, 지난 순번 프레임, 다른 주소에서 틀린 코드의 Hello와 코드 없는 VMC(앱이 버려야 함)
   t0+6~8초 추적 상태 0 (얼굴 놓침), t0+10초 보내기를 멈춤 (앱은 1초 뒤 끊김으로 보고 3초 뒤 Ack를 멈춰야 함)
+- t0+2초부터 또 다른 주소에서 코드 없는 Hello와 프레임("CI 허락 송신기", 아이폰 앱에서 Bonjour 목록으로 고른 경우):
+  앱은 연결 요청으로 보이고, 시험이 허락하면 첫 송신기가 멈춘 뒤 이것을 받아 Ack를 보내야 함
 - 앱이 보내는 /FaceLink/Calibrate(정면 맞추기)를 받으면 남긴다
 
 사용법: facelink-sender.py <주소> <포트> <페어링 코드>
@@ -135,6 +137,9 @@ def main():
     sock.bind(("127.0.0.1", 0))
     rogue = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     rogue.bind(("127.0.0.1", 0))
+    asker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    asker.bind(("127.0.0.1", 0))
+    asker_session = str(uuid.uuid4())
     session = str(uuid.uuid4())
     log(f"facelink sender: to {host}:{port} from port {sock.getsockname()[1]} (session {session[:8]})")
 
@@ -150,6 +155,10 @@ def main():
     calibrated = False
     extras_sent = False
     stopped_at = None
+    asker_sequence = 0
+    next_asker_frame = None
+    next_asker_hello = None
+    asker_ack = None
     failures = []
 
     def send(data, via=sock):
@@ -168,7 +177,8 @@ def main():
         if stopped_at is None and since_ack is not None and since_ack >= 10:
             stopped_at = now
             log(f"facelink sender: stopped sending after {frames} frames (t0+10 s)")
-        if stopped_at is not None and now - stopped_at >= 5:
+        # 허락 송신기가 Ack를 받을 때까지 (허락은 첫 송신기가 끊긴 뒤라 늦어도 25초)
+        if stopped_at is not None and now - stopped_at >= 5 and (asker_ack is not None or now - stopped_at >= 25):
             break
 
         sending = stopped_at is None
@@ -200,10 +210,29 @@ def main():
                 send(osc_message("/VMC/Ext/Blend/Val", "JawOpen", 1.0), rogue)
                 send(osc_message("/VMC/Ext/Blend/Apply"), rogue)
             log("facelink sender: sent garbage, a stale frame and a rogue sender")
+            next_asker_hello = next_asker_frame = now
 
-        deadline = min(next_frame if sending else now + 0.05, next_hello if sending else now + 0.05)
-        readable, _, _ = select.select([sock], [], [], max(0.0, deadline - time.monotonic()))
-        if readable:
+        # 코드 없는 송신기: 1초마다 Hello, 30Hz 프레임 (허락받기 전에는 앱이 버린다)
+        if next_asker_hello is not None and now >= next_asker_hello:
+            next_asker_hello += 1
+            send(osc_message("/FaceLink/Hello", "1", "CI 허락 송신기", "ci", asker_session, ""), asker)
+        if next_asker_frame is not None and now >= next_asker_frame:
+            next_asker_frame += 1 / 30
+            asker_sequence += 1
+            for bundle in osc_bundles(frame_messages(asker_sequence, elapsed, True, elapsed)):
+                send(bundle, asker)
+
+        deadline = min(next_frame if sending else now + 0.05, next_hello if sending else now + 0.05,
+                       next_asker_frame if next_asker_frame is not None else now + 0.05,
+                       next_asker_hello if next_asker_hello is not None else now + 0.05)
+        readable, _, _ = select.select([sock, asker], [], [], max(0.0, deadline - time.monotonic()))
+        if asker in readable:
+            data, _ = asker.recvfrom(65536)
+            if data.startswith(osc_string("/FaceLink/Ack")) and asker_ack is None:
+                asker_ack = time.monotonic()
+                after = f"{asker_ack - stopped_at:.1f} s after" if stopped_at is not None else "before"
+                log(f"facelink sender: allowed sender got an ack {after} the first sender stopped")
+        if sock in readable:
             data, _ = sock.recvfrom(65536)
             try:
                 address, args = parse_message(data)
@@ -228,6 +257,10 @@ def main():
         failures.append(f"datagram {max_datagram} bytes > {MAX_DATAGRAM}")
     if first_ack is not None and not calibrated:
         failures.append("no calibrate from the app")
+    if first_ack is not None and asker_ack is None:
+        failures.append("the sender without a pairing code got no ack after it was allowed")
+    if asker_ack is not None and (stopped_at is None or asker_ack < stopped_at):
+        failures.append("the sender without a pairing code got an ack while the paired sender was active")
     log(f"facelink sender: sent {frames} frames (max datagram {max_datagram} bytes), acks {acks}, "
         f"calibrate {'yes' if calibrated else 'no'}")
     for failure in failures:

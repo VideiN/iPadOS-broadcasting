@@ -32,6 +32,7 @@ struct BroadcastApp: App {
             defaults.set(args[index + 1], forKey: AppSettings.faceLinkToken)
             defaults.set(false, forKey: AppSettings.faceLinkAcceptVMC)
             defaults.set(39539, forKey: AppSettings.faceLinkPort)
+            defaults.removeObject(forKey: AppSettings.faceLinkAllowed)
             Task { @MainActor in await FaceLinkReceiver.shared.runAutotest() }
         }
         FaceLinkReceiver.shared.applySettings()

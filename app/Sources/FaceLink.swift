@@ -263,6 +263,18 @@ struct FaceLinkStatus: Equatable {
     var stale = 0
     var trackingLostFrames = 0
     var disconnects = 0
+    /// 받지 않고 있는 보내는 쪽 (마지막 Hello 5초 안)
+    var request: FaceLinkRequest?
+}
+
+/// 페어링 코드 없이 Hello를 보낸 쪽(아이폰 앱에서 Bonjour 목록·주소로 고른 경우: 이 iPad에서 허락하면 받는다),
+/// 또는 코드가 틀린 쪽(예전 QR)
+struct FaceLinkRequest: Equatable {
+    var name: String
+    var address: String
+    /// 허락할 때 기억하는 값: 기기 이름과 주소(포트 뺌)
+    var key: String
+    var wrongCode: Bool
 }
 
 /// UDP 받기. 모든 일은 자기 큐에서 하고, 최신 프레임과 상태만 잠금으로 내놓는다
@@ -272,14 +284,19 @@ final class FaceLinkEngine: @unchecked Sendable {
         var token: String
         var acceptVMC: Bool
         var name: String
+        /// 코드 없이 받기로 허락한 보내는 쪽 (FaceLinkRequest.key)
+        var allowed: Set<String>
     }
 
     private final class Peer {
         let connection: NWConnection
         let address: String
+        let host: String
         var lastPacket: TimeInterval = 0
         var helloName: String?
         var helloApp: String?
+        /// 코드 없이 허락으로 받는 중이면 그 키
+        var allowedKey: String?
         var session: String?
         var lastSequence: Int32?
         /// 조립 중인 프레임. stale이면 Apply를 만나도 버린다
@@ -291,8 +308,11 @@ final class FaceLinkEngine: @unchecked Sendable {
             self.connection = connection
             if case .hostPort(let host, let port) = connection.endpoint {
                 address = "\(host):\(port)"
+                self.host = "\(host)"
             } else {
-                address = "\(connection.endpoint)"
+                let description = "\(connection.endpoint)"
+                address = description
+                host = description
             }
         }
     }
@@ -306,6 +326,9 @@ final class FaceLinkEngine: @unchecked Sendable {
     private var config: Config?
     private var listener: NWListener?
     private var advertise = true
+    /// mDNS 연결이 끊겨 알림까지 다시 연 횟수 (알림이 되면 0)
+    private var dnsRetries = 0
+    private var requestTime: TimeInterval = 0
     private var peers: [NWEndpoint: Peer] = [:]
     private var active: Peer?
     private var lastFrame = FaceFrame()
@@ -344,7 +367,9 @@ final class FaceLinkEngine: @unchecked Sendable {
                 appLog("facelink: stopped")
                 return
             }
-            if tokenChanged || (!newConfig.acceptVMC && active != nil && active?.helloName == nil) {
+            if tokenChanged || (!newConfig.acceptVMC && active != nil && active?.helloName == nil)
+                || (active?.allowedKey.map { !newConfig.allowed.contains($0) } ?? false)
+            {
                 dropActive()
             }
             if portChanged || listener == nil {
@@ -385,6 +410,7 @@ final class FaceLinkEngine: @unchecked Sendable {
                 switch change {
                 case .add(let endpoint):
                     appLog("facelink: advertised \(endpoint)")
+                    dnsRetries = 0
                     updateStatus { $0.advertised = config.name }
                 case .remove:
                     updateStatus { $0.advertised = nil }
@@ -405,11 +431,22 @@ final class FaceLinkEngine: @unchecked Sendable {
                     if $0.state == .off { $0.state = .waiting }
                 }
             case .failed(let error):
-                // LiveContainer 등에서 Bonjour 알림이 막히면 듣기까지 실패할 수 있다: 알림 없이 다시
-                if case .dns(_) = error, advertise {
-                    appLog("facelink: Bonjour unavailable (\(error)), listening without it")
-                    advertise = false
-                    startListening()
+                if case .dns(let code) = error, advertise {
+                    // 앱이 멈췄다 돌아오면 mDNS 연결이 끊겨(-65569 DefunctConnection) 실패한다: 알림까지 다시 (몇 번만).
+                    // LiveContainer 등에서 Bonjour 알림이 막히면 듣기까지 실패할 수 있다: 알림 없이 다시
+                    if code == -65569 && dnsRetries < 3 {
+                        dnsRetries += 1
+                        appLog("facelink: Bonjour connection lost (\(error)), listening again")
+                    } else {
+                        appLog("facelink: Bonjour unavailable (\(error)), listening without it")
+                        advertise = false
+                    }
+                    updateStatus {
+                        $0.listening = false
+                        $0.advertised = nil
+                    }
+                    // 바로 다시 열면 앞 소켓이 아직 닫히는 중이라 포트가 쓰이는 중이다 (Address already in use)
+                    restartListening(after: 1)
                 } else {
                     fail("listener failed: \(error)")
                 }
@@ -435,6 +472,8 @@ final class FaceLinkEngine: @unchecked Sendable {
         for peer in peers.values { peer.connection.cancel() }
         peers.removeAll()
         active = nil
+        requestTime = 0
+        updateStatus { $0.request = nil }
     }
 
     /// 포트가 쓰이는 중이면 등: 5초 뒤 다시
@@ -444,14 +483,19 @@ final class FaceLinkEngine: @unchecked Sendable {
             $0.listening = false
             $0.error = message
         }
+        restartListening(after: 5)
+    }
+
+    private func restartListening(after seconds: Double) {
         listener?.cancel()
         listener = nil
+        restart?.cancel()
         let item = DispatchWorkItem { [weak self] in
             guard let self, self.config != nil, self.listener == nil else { return }
             self.startListening()
         }
         restart = item
-        queue.asyncAfter(deadline: .now() + 5, execute: item)
+        queue.asyncAfter(deadline: .now() + seconds, execute: item)
     }
 
     private func accept(_ connection: NWConnection) {
@@ -524,14 +568,25 @@ final class FaceLinkEngine: @unchecked Sendable {
     private func hello(_ message: OSC.Message, from peer: Peer, now: TimeInterval) {
         guard let config, let version = message.string(0), let name = message.string(1) else { return }
         let token = message.string(4) ?? ""
-        guard !config.token.isEmpty, token == config.token else {
+        let key = "\(name)|\(peer.host)"
+        let paired = !config.token.isEmpty && token == config.token
+        // 코드 없이 온 Hello는 이 iPad에서 허락한 기기면 받고, 아니면 연결 요청으로 보인다. 코드가 틀리면 버린다
+        guard paired || (token.isEmpty && config.allowed.contains(key)) else {
             if !peer.warnedToken {
                 peer.warnedToken = true
-                appLog("facelink: ignored hello from \(peer.address) (pairing code mismatch)")
+                appLog(
+                    "facelink: ignored hello from \(peer.address) "
+                        + (token.isEmpty ? "(no pairing code, waiting for approval on this iPad)" : "(pairing code mismatch)"))
             }
-            updateStatus { $0.ignored += 1 }
+            requestTime = now
+            updateStatus {
+                $0.ignored += 1
+                $0.request = FaceLinkRequest(
+                    name: String(name.prefix(64)), address: peer.address, key: key, wrongCode: !token.isEmpty)
+            }
             return
         }
+        peer.allowedKey = paired ? nil : key
         let session = message.string(3) ?? ""
         if peer.session != session {
             peer.session = session
@@ -542,7 +597,9 @@ final class FaceLinkEngine: @unchecked Sendable {
         peer.helloName = String(name.prefix(64))
         peer.helloApp = message.string(2).map { String($0.prefix(32)) }
         if peer !== active && activeIsIdle(now) {
-            appLog("facelink: sender '\(peer.helloName ?? "")' \(peer.address) (protocol \(version), app \(peer.helloApp ?? "?"))")
+            appLog(
+                "facelink: sender '\(peer.helloName ?? "")' \(peer.address) (protocol \(version), app \(peer.helloApp ?? "?"))"
+                    + (paired ? "" : " allowed without a pairing code"))
             activate(peer, vmc: false)
         } else if peer === active {
             updateStatus {
@@ -564,6 +621,7 @@ final class FaceLinkEngine: @unchecked Sendable {
             $0.senderApp = peer.helloApp
             $0.senderIsVMC = vmc
             $0.state = .waiting
+            $0.request = nil
         }
     }
 
@@ -708,6 +766,11 @@ final class FaceLinkEngine: @unchecked Sendable {
             send(ack, to: active)
         }
 
+        if requestTime > 0, now - requestTime > 5 {
+            requestTime = 0
+            updateStatus { $0.request = nil }
+        }
+
         // 오래 조용한 연결은 닫는다
         for peer in peers.values where peer !== active && now - peer.lastPacket > 30 {
             peer.connection.cancel()
@@ -741,6 +804,8 @@ final class FaceLinkReceiver: ObservableObject {
     @Published private(set) var preview: FaceFrame?
     /// 페어링 코드 (QR에 들어간다)
     @Published private(set) var token = UserDefaults.standard.string(forKey: AppSettings.faceLinkToken) ?? ""
+    /// 코드 없이 받기로 허락한 보내는 쪽 (FaceLinkRequest.key: 기기 이름|주소)
+    @Published private(set) var allowed = UserDefaults.standard.stringArray(forKey: AppSettings.faceLinkAllowed) ?? []
 
     private let engine = FaceLinkEngine()
     private var timer: Timer?
@@ -766,7 +831,8 @@ final class FaceLinkReceiver: ObservableObject {
         engine.apply(
             FaceLinkEngine.Config(
                 port: UInt16(clamping: (1024...65535).contains(port) ? port : 39539), token: token,
-                acceptVMC: defaults.bool(forKey: AppSettings.faceLinkAcceptVMC), name: UIDevice.current.name))
+                acceptVMC: defaults.bool(forKey: AppSettings.faceLinkAcceptVMC), name: UIDevice.current.name,
+                allowed: Set(allowed)))
         if timer == nil {
             timer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.refresh() }
@@ -774,13 +840,33 @@ final class FaceLinkReceiver: ObservableObject {
         }
     }
 
-    /// 페어링 코드 (QR에 들어간다). 바꾸면 지금 보내는 쪽은 다시 연결해야 한다
+    /// 페어링 코드 (QR에 들어간다). 바꾸면 지금 보내는 쪽은 다시 연결해야 하고, 허락한 아이폰도 잊는다
     func regenerateToken() {
         let letters = Array("abcdefghjkmnpqrstuvwxyz23456789")
         token = String((0..<8).map { _ in letters.randomElement()! })
         UserDefaults.standard.set(token, forKey: AppSettings.faceLinkToken)
+        setAllowed([])
         appLog("facelink: new pairing code")
         if timer != nil { applySettings() }
+    }
+
+    /// 코드 없이 연결하려는 아이폰을 받는다 (다음 Hello부터, 1초 안)
+    func allow(_ request: FaceLinkRequest) {
+        guard !request.wrongCode, !allowed.contains(request.key) else { return }
+        setAllowed(allowed + [request.key])
+        appLog("facelink: allowed '\(request.name)' \(request.address) without a pairing code")
+        applySettings()
+    }
+
+    func forgetAllowed() {
+        setAllowed([])
+        appLog("facelink: forgot allowed senders")
+        applySettings()
+    }
+
+    private func setAllowed(_ keys: [String]) {
+        allowed = keys
+        UserDefaults.standard.set(keys, forKey: AppSettings.faceLinkAllowed)
     }
 
     func calibrate() { engine.calibrate() }
@@ -863,9 +949,19 @@ final class FaceLinkReceiver: ObservableObject {
         let filtered = status.ignored > 0 && status.invalid > 0 && status.stale > 0
         appLog(
             "facelink autotest: filtered (ignored \(status.ignored), invalid \(status.invalid), stale \(status.stale))")
+        let firstSender = status.senderName == "CI 송신기"
+
+        // 코드 없이 Hello를 보내는 쪽 (아이폰 앱에서 Bonjour 목록으로 고른 경우): 연결 요청으로 보이고, 허락하면 받는다
+        let requested = await wait(10) { status.request?.name == "CI 허락 송신기" && status.request?.wrongCode == false }
+        if requested, let request = status.request { allow(request) }
+        let allowedReceiving = await wait(15) { status.state == .receiving && status.senderName == "CI 허락 송신기" }
+        appLog(
+            "facelink autotest: pairing request \(requested ? "seen" : "not seen"), "
+                + "allowed sender \(allowedReceiving ? "receiving" : "not receiving")")
+
         let ok =
             receiving && frame?.presentCount == FaceBlendShape.names.count && headTurned && eyes && lost && disconnected
-            && filtered && status.senderName == "CI 송신기"
+            && filtered && firstSender && requested && allowedReceiving
         appLog("facelink autotest: \(ok ? "ok" : "failed")")
     }
 }
@@ -897,6 +993,7 @@ struct FaceLinkSettingsView: View {
             }
 
             if enabled {
+                if let request = receiver.status.request { requestSection(request) }
                 connectionSection
                 statusSection
                 valuesSection
@@ -946,11 +1043,26 @@ struct FaceLinkSettingsView: View {
                 Button("적용", action: applyPort)
                     .disabled(Int(portText) == port)
             }
+            if !receiver.allowed.isEmpty {
+                LabeledContent("허락한 아이폰", value: receiver.allowed.map { $0.components(separatedBy: "|")[0] }.joined(separator: ", "))
+                Button("허락한 아이폰 잊기", role: .destructive) { receiver.forgetAllowed() }
+            }
             Toggle("다른 VMC 앱 받기 (Waidayo 등)", isOn: $acceptVMC)
         } header: {
             Text("연결")
         } footer: {
-            Text("아이폰 앱에서 QR을 찍거나 주소와 페어링 코드를 넣으세요. 페어링 코드가 맞는 아이폰 하나만 받습니다. \"다른 VMC 앱 받기\"를 켜면 코드 없이 VMC로 보내는 앱도 받습니다.")
+            Text("아이폰 앱에서 QR을 찍으면 바로 연결됩니다. 아이폰 앱의 목록이나 주소로 고르면 여기에 연결 요청이 뜨고, 허락하면 받습니다. 한 번에 아이폰 하나만 받습니다. \"다른 VMC 앱 받기\"를 켜면 FaceLink가 아닌 VMC 앱도 받습니다.")
+        }
+    }
+
+    private func requestSection(_ request: FaceLinkRequest) -> some View {
+        Section("연결 요청") {
+            if request.wrongCode {
+                Text("\"\(request.name)\" (\(request.address))에서 다른 페어링 코드로 보내고 있습니다. 아이폰 앱에서 이 화면의 QR을 다시 찍으세요.")
+            } else {
+                Text("\"\(request.name)\" (\(request.address))에서 페어링 코드 없이 연결을 요청했습니다.")
+                Button("허락") { receiver.allow(request) }
+            }
         }
     }
 

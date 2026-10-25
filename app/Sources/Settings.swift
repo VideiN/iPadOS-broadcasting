@@ -34,6 +34,7 @@ enum AppSettings {
     static let faceLinkPort = "faceLinkPort"
     static let faceLinkToken = "faceLinkToken"  // 페어링 코드 (QR에 들어감)
     static let faceLinkAcceptVMC = "faceLinkAcceptVMC"  // 페어링 코드 없이 VMC로 보내는 다른 앱도 받기
+    static let faceLinkAllowed = "faceLinkAllowed"  // 코드 없이 받기로 허락한 아이폰 (기기 이름|주소)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
