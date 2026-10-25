@@ -22,6 +22,8 @@ struct BroadcastApp: App {
         if ProcessInfo.processInfo.arguments.contains("-autotest-chat") {
             UserDefaults.standard.set(false, forKey: AppSettings.chatPanelShown)
         }
+        // 아바타 소스 (P9, iOS 18+): libobs가 뜰 때 등록되도록 먼저
+        AvatarSources.install()
         Core.shared.start()
 
         // 아이폰 얼굴 추적 받기 (P9). CI(`-autotest-facelink <페어링 코드>`)는 그 코드로 켜고 합성 송신기를 받는다

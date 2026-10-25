@@ -127,7 +127,61 @@ target_link_libraries(
     OBS::filters
     OBS::ffmpeg
 )
+target_sources(app-core PRIVATE Core/avatar-source.c)
+target_link_libraries(app-core PUBLIC "$<LINK_LIBRARY:FRAMEWORK,IOSurface.framework>")
 set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
+
+# 아바타 소스 (P9): VRM 모델을 RealityKit으로 그리는 VRMKit (github.com/tattn/VRMKit, MIT). 고정한 커밋을 받아 SwiftPM의
+# 세 타깃(VRMKit, VRMKitRuntime, VRMRealityKit)을 같은 이름의 Swift 모듈로 빌드한다. SwiftPM이 해 주던 것은 Vendor/에:
+# 의존성 swift-simd-compat(Apple에서는 simd 그대로)와 VRMRealityKit의 Bundle.module(→ 앱 번들, MToon metallib 복사)
+include(FetchContent)
+set(VRMKIT_COMMIT 6302146e58862fd00402a17be1f2c0dbff6dd167)
+FetchContent_Declare(
+  vrmkit
+  URL "https://github.com/tattn/VRMKit/archive/${VRMKIT_COMMIT}.tar.gz"
+  URL_HASH SHA256=62265ae684e92b21352ca3dd8733a3755f5a1db5f85b7c0941e33f2007dfccc8
+  DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+)
+FetchContent_MakeAvailable(vrmkit)
+# VRMKit main은 Xcode 27(Swift 6.4)로 빌드한다. 그 전 컴파일러는 클로저 안의 이름을 선언 중인 지역 상수로 읽어
+# 메서드를 못 찾는다 (let skeleton = ….map { try skeleton(…) }). 그 한 곳만 self.로
+set(_vrmkit_patch "${vrmkit_SOURCE_DIR}/Sources/VRMRealityKit/Loading/GLTFSceneBuilder.swift")
+file(READ "${_vrmkit_patch}" _vrmkit_content)
+string(
+  REPLACE
+  "{ try skeleton(withSkinIndex: $0) }"
+  "{ try self.skeleton(withSkinIndex: $0) }"
+  _vrmkit_patched
+  "${_vrmkit_content}"
+)
+if(NOT _vrmkit_patched STREQUAL _vrmkit_content)
+  file(WRITE "${_vrmkit_patch}" "${_vrmkit_patched}")
+endif()
+
+set(vrmkit_module_dir "${CMAKE_CURRENT_BINARY_DIR}/swift-modules")
+file(GLOB_RECURSE vrmkit_sources "${vrmkit_SOURCE_DIR}/Sources/VRMKit/*.swift")
+file(GLOB_RECURSE vrmkit_runtime_sources "${vrmkit_SOURCE_DIR}/Sources/VRMKitRuntime/*.swift")
+file(GLOB_RECURSE vrmkit_realitykit_sources "${vrmkit_SOURCE_DIR}/Sources/VRMRealityKit/*.swift")
+add_library(SIMDCompat STATIC Vendor/SIMDCompat.swift)
+add_library(VRMKit STATIC ${vrmkit_sources})
+add_library(VRMKitRuntime STATIC ${vrmkit_runtime_sources})
+add_library(VRMRealityKit STATIC ${vrmkit_realitykit_sources} Vendor/VRMRealityKit+Bundle.swift)
+target_link_libraries(VRMKit PUBLIC SIMDCompat)
+target_link_libraries(VRMKitRuntime PUBLIC VRMKit)
+target_link_libraries(VRMRealityKit PUBLIC VRMKitRuntime)
+foreach(_target IN ITEMS SIMDCompat VRMKit VRMKitRuntime VRMRealityKit)
+  set_target_properties(${_target} PROPERTIES Swift_LANGUAGE_VERSION 6 Swift_MODULE_DIRECTORY "${vrmkit_module_dir}")
+  target_include_directories(${_target} PUBLIC "${vrmkit_module_dir}")
+endforeach()
+# 세 모듈은 package 접근 수준으로 서로를 부른다
+foreach(_target IN ITEMS VRMKit VRMKitRuntime VRMRealityKit)
+  target_compile_options(${_target} PRIVATE "SHELL:-package-name VRMKit")
+endforeach()
+if(APP_PLATFORM_NAME STREQUAL "iphoneos")
+  set(vrmkit_metallib "${vrmkit_SOURCE_DIR}/Sources/VRMRealityKit/Resources/MToon-ios.metallib")
+else()
+  set(vrmkit_metallib "${vrmkit_SOURCE_DIR}/Sources/VRMRealityKit/Resources/MToon-iossim.metallib")
+endif()
 
 configure_file(Info.plist.in "${CMAKE_CURRENT_BINARY_DIR}/Info.plist" @ONLY)
 
@@ -148,8 +202,9 @@ add_executable(
   Sources/YouTube.swift
   Sources/Chat.swift
   Sources/FaceLink.swift
+  Sources/Avatar.swift
 )
-target_link_libraries(app PRIVATE app-core)
+target_link_libraries(app PRIVATE app-core VRMRealityKit)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는
 # 심볼 참조가 없어 링커가 빼 버린다. -ObjC로 Objective-C 오브젝트 파일을 모두 넣는다.
 target_link_options(app PRIVATE "LINKER:-ObjC")
@@ -216,6 +271,7 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy_directory "${CMAKE_SOURCE_DIR}/plugins/obs-ffmpeg/data"
     "${bundle_dir}/obs-plugins/obs-ffmpeg"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_CURRENT_SOURCE_DIR}/Resources/test-pattern.png" "${bundle_dir}/"
+  COMMAND "${CMAKE_COMMAND}" -E copy "${vrmkit_metallib}" "${bundle_dir}/"
   # 라이선스 화면용 (계획 10.1): 이 앱·OBS Studio(GPLv2+), OBS가 함께 넣은 코드, 의존성(ios/deps/build-deps.sh가 모음)
   COMMAND "${CMAKE_COMMAND}" -E make_directory "${bundle_dir}/licenses"
   COMMAND "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/../LICENSE" "${bundle_dir}/licenses/app.txt"
@@ -229,6 +285,7 @@ add_custom_command(
     "${CMAKE_COMMAND}" -E copy "${CMAKE_SOURCE_DIR}/plugins/obs-filters/rnnoise/COPYING"
     "${bundle_dir}/licenses/rnnoise.txt"
   COMMAND "${CMAKE_COMMAND}" -E copy_directory "${deps_prefix}/share/licenses" "${bundle_dir}/licenses"
+  COMMAND "${CMAKE_COMMAND}" -E copy "${vrmkit_SOURCE_DIR}/LICENSE" "${bundle_dir}/licenses/vrmkit.txt"
   # swiftc는 디버그 정보(dSYM)를 실행 파일 옆, 즉 번들 안에 만든다. 번들 안에 있으면 LiveContainer가 설치할 때
   # 서명하려다 "Failed to Sign …/Broadcast.dSYM/…" 경고를 낸다. 서명 전에 번들 밖으로 옮긴다.
   COMMAND

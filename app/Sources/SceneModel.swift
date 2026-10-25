@@ -26,6 +26,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "ios_text_source": "텍스트"
         case "ios_media_source": "미디어 (동영상·음악 파일)"
         case "ios_chat_source": "채팅"
+        case "ios_avatar_source": "아바타 (VRM 3D 모델)"
         default: name
         }
     }
@@ -39,6 +40,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "ios_text_source": "textformat"
         case "ios_media_source": "film"
         case "ios_chat_source": "bubble.left.and.text.bubble.right"
+        case "ios_avatar_source": "person.crop.square"
         default: "square.on.square"
         }
     }
@@ -336,6 +338,27 @@ final class SceneModel: ObservableObject {
             core_source_update(chatName, encodeJSON(["width": .number(260), "height": .number(330)]))
             translateSelection(by: CGSize(width: 10, height: 15))
             appLog("youtube chat source: added")
+        }
+
+        // 아바타 소스 (P9): CI가 Documents에 시험 VRM을 넣고 -autotest-avatar로 알려 준다. 가운데 아래에 작게 둔다.
+        // 그림·움직임·모델 바꾸기는 AvatarAutotest가 본다
+        if let avatarModel = AvatarAutotest.firstModel {
+            if let avatarType = types.first(where: { $0.id == "ios_avatar_source" }),
+                let avatarName = addSource(type: avatarType), let avatarItem = selectedItem
+            {
+                core_source_update(
+                    avatarName,
+                    encodeJSON([
+                        "model": .string(avatarModel), "width": .number(320), "height": .number(320),
+                        "fps": .number(15), "framing": .string("bust"),
+                    ]))
+                resetTransform(avatarItem)
+                scaleSelection(by: 0.5, around: .zero)
+                translateSelection(by: CGSize(width: 240, height: 195))
+                AvatarAutotest.begin(sourceName: avatarName)
+            } else {
+                appLog("avatar autotest: no avatar source type")
+            }
         }
 
         // 형식의 fps 범위 → 고를 수 있는 값
