@@ -129,7 +129,7 @@ jobs:
           mkdir -p app-run
 
           # 라이선스 화면에 쓰는 파일이 번들에 들어갔는지 (계획 10.1)
-          for license in app obs-studio ffmpeg librtmp rnnoise srt mbedtls jansson libcaption simde uthash; do
+          for license in app obs-studio ffmpeg librtmp rnnoise srt mbedtls jansson libcaption simde uthash vrmkit; do
             test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
           done
 
@@ -149,6 +149,10 @@ jobs:
           media_dir=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/Documents
           mkdir -p "$media_dir"
           cp app-run/test-media.mp4 "$media_dir/"
+          # 아바타 소스 시험 (P9): 빌드가 받은 VRMKit의 시험 모델. VRM 1.0으로 넣고 VRM 0.x로 바꾼다
+          vrm_dir="$BUILD_DIR/_deps/vrmkit-src/Tests/Assets/VRM"
+          cp "$vrm_dir/VRM1_Constraint_Twist_Sample.vrm" "$media_dir/test-avatar.vrm"
+          cp "$vrm_dir/AliciaSolid.vrm" "$media_dir/test-avatar0.vrm"
 
           ffmpeg -nostdin -hide_banner -listen 1 -timeout 150 -i rtmp://127.0.0.1:1935/live/autotest \
             -c copy -f flv app-run/received.flv > app-run/ffmpeg-rtmp.log 2>&1 &
@@ -203,10 +207,12 @@ jobs:
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
           # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
           # -autotest-facelink: 그 페어링 코드로 얼굴 추적 받기를 켜고 합성 송신기를 받는다 (P9)
+          # -autotest-avatar: 씬 시험이 아바타 소스를 첫 모델로 넣고, 그려서 움직이는지 본 뒤 다음 모델로 바꾼다 (P9)
           rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
-            -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink > app-run/app.log 2>&1 &
+            -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink \
+            -autotest-avatar test-avatar.vrm,test-avatar0.vrm > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -234,6 +240,8 @@ jobs:
             for replay in "$data_dir"/Documents/Recordings/Replay*.mp4; do
               if [ -f "$replay" ]; then cp "$replay" app-run/replay.mp4; fi
             done
+            # 아바타 소스가 그린 그림 (P9)
+            cp "$data_dir"/Documents/avatar-*.png app-run/ 2> /dev/null || true
           fi
 
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
@@ -340,6 +348,11 @@ jobs:
           grep -q 'facelink autotest: ok' app-run/app.log
           grep -q 'facelink sender: calibrate received' app-run/facelink-sender.log
           if grep -q '^FAIL' app-run/facelink-sender.log; then exit 1; fi
+          # 아바타 소스 (P9): VRM 1.0과 0.x를 불러와 투명한 바탕에 그리고, 얼굴 값(없으면 시험용 얼굴)으로 움직인다
+          grep -E 'avatar( autotest)?: ' app-run/app.log | sed -n '1,30p'
+          grep -q "avatar: loaded 'test-avatar.vrm' (VRM 1.0)" app-run/app.log
+          grep -q "avatar: loaded 'test-avatar0.vrm' (VRM 0.x)" app-run/app.log
+          grep -q 'avatar autotest: ok' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
@@ -380,6 +393,8 @@ jobs:
           cat app-run/app-relaunch.log
           grep -q 'loaded 2 scene(s)' app-run/app-relaunch.log
           grep -q "audio input '.*' has 1 filter(s)" app-run/app-relaunch.log
+          # 저장된 씬의 아바타 소스는 다시 띄워도 모델을 불러온다 (P9)
+          grep -qE "avatar: loaded 'test-avatar0?\.vrm'" app-run/app-relaunch.log
           # 화면 방향: 처음 실행은 가로(옆 칸이 오른쪽)로 떴고, 다시 띄운 실행은 세로 → 가로 → 세로로 돌 때마다
           # 배치만 바뀌고 프리뷰 디스플레이는 그대로 크기만 바뀐다. 열어 둔 설정 시트도 돌린 뒤에 남아 있다
           grep -E 'orientation: |layout: |display (created|resized|destroyed)|ui autotest|settings sheet' \

@@ -4,7 +4,10 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#include <IOSurface/IOSurfaceRef.h>
 
 struct core_stats {
 	double active_fps;             // 실제 렌더 fps
@@ -179,3 +182,21 @@ void core_chat_push(const char *json);
 void core_chat_set_status(const char *text);
 // YouTube 채팅을 보여 주는 채팅 소스 수
 int core_chat_listeners(void);
+
+// --- 아바타 소스 (P9, avatar-source.c ↔ Avatar.swift) ---
+// VRM 모델은 앱이 IOSurface(BGRA, 미리 곱한 알파)에 그리고, 소스는 그것을 보인다. 설정은 obs_data의 JSON.
+struct core_avatar_callbacks {
+	// 소스를 만들 때 (어느 스레드에서나). context는 core_avatar_present에 넘기는 값. 앱 쪽 객체를 돌려준다
+	void *(*create)(void *context, const char *settings_json);
+	void (*update)(void *host, const char *settings_json);
+	// 이것이 돌아온 뒤에는 그 context로 core_avatar_present를 부르지 않는다
+	void (*destroy)(void *host);
+	// 화면(프리뷰·출력) 어딘가에 보이는지
+	void (*set_showing)(void *host, bool showing);
+	// 속성 화면 맨 위의 상태 글 (UTF-8, 0으로 끝냄)
+	void (*copy_status)(void *host, char *buffer, size_t size);
+};
+// core_startup 전에 부른다. 부르지 않으면 아바타 소스는 등록되지 않는다
+void core_avatar_set_callbacks(const struct core_avatar_callbacks *callbacks);
+// 새로 그린 표면을 보인다 (어느 스레드에서나). 소스가 쓰는 동안 표면의 use count가 올라가 있다
+void core_avatar_present(void *context, IOSurfaceRef surface);

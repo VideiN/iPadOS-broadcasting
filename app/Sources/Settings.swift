@@ -447,6 +447,7 @@ struct LicensesView: View {
         Entry(file: "libcaption", title: "libcaption", license: "MIT"),
         Entry(file: "simde", title: "SIMDe", license: "MIT"),
         Entry(file: "uthash", title: "uthash", license: "BSD-1-Clause"),
+        Entry(file: "vrmkit", title: "VRMKit (아바타 소스)", license: "MIT"),
     ]
 
     var body: some View {
