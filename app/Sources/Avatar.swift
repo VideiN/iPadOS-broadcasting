@@ -196,6 +196,8 @@ final class AvatarRenderer {
 
     private var neck: BoneRest?
     private var head: BoneRest?
+    /// VRM의 기본 자세는 팔을 옆으로 편 T 자세: 위팔을 아래로 내리는 회전 (모델 공간)
+    private var arms: [(bone: BoneRest, turn: simd_quatf)] = []
     private var facesPlusZ = true
     private var faceMap = FaceMap()
     private var headDelta = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
@@ -317,6 +319,15 @@ final class AvatarRenderer {
 
         neck = rest(of: .neck, in: entity)
         head = rest(of: .head, in: entity)
+        arms = []
+        for (upper, lower) in [(HumanoidBone.leftUpperArm, HumanoidBone.leftLowerArm), (.rightUpperArm, .rightLowerArm)] {
+            guard let bone = rest(of: upper, in: entity), let pose = entity.pose,
+                let lowerIndex = entity.humanoid.nodeIndex(for: lower)
+            else { continue }
+            // 팔이 +X로 뻗었으면 Z축으로 -65°, -X면 +65° 돌려 아래로
+            let reach = pose.modelMatrix(ofNode: lowerIndex).columns.3.x - pose.modelMatrix(ofNode: bone.index).columns.3.x
+            arms.append((bone, simd_quatf(angle: (reach > 0 ? -65 : 65) * .pi / 180, axis: [0, 0, 1])))
+        }
         faceMap = Self.faceMap(for: entity)
         headDelta = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
         neutral = true
@@ -414,6 +425,7 @@ final class AvatarRenderer {
             turn(neck, by: simd_slerp(identity, headDelta, 0.5))
         }
         turn(head, by: headDelta)
+        for arm in arms { turn(arm.bone, by: arm.turn) }
     }
 
     /// FaceLink의 값(Unity 왼손 좌표, 사용자 기준) → 표정, 고개(headDelta), 시선
