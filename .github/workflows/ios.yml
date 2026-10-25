@@ -269,7 +269,8 @@ jobs:
           # 앱이 "ui autotest: shot <이름>"을 남기면 찍고 tmp/autotest-shot을 만든다(앱은 그때까지 기다린다).
           # "ui autotest: rotate …"면 기기를 돌린다
           for event in 'shot 1-portrait' 'shot 2-settings' 'rotate landscape' 'shot 3-settings-landscape' 'shot 4-landscape' \
-            'shot 5-add-source' 'shot 6-properties' 'shot 7-no-chat' 'rotate portrait' 'shot 8-portrait'; do
+            'shot 5-add-source' 'shot 6-properties' 'shot 7-no-chat' 'rotate portrait' 'shot 8-portrait' \
+            'shot 9-glass-portrait' 'rotate landscape' 'shot 10-glass-landscape'; do
             for _ in $(seq 1 60); do
               grep -q "ui autotest: $event" app-run/app-relaunch.log && break
               sleep 0.5
@@ -280,7 +281,7 @@ jobs:
             esac
           done
           for _ in $(seq 1 30); do
-            grep -q 'srt autotest: done' app-run/app-relaunch.log && grep -q 'ui autotest: done' app-run/app-relaunch.log && break
+            grep -q 'srt autotest: done' app-run/app-relaunch.log && grep -qE 'ui autotest: glass (finished|skipped)' app-run/app-relaunch.log && break
             sleep 2
           done
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
@@ -409,6 +410,10 @@ jobs:
             echo '::warning::the simulator device did not rotate; the app asked for the window orientation instead'
           fi
           grep -q 'layout: .* (side column)' app-run/app.log
+          # Liquid Glass 화면 (개발자 옵션, P10): 화면 시험 끝에 켜서 세로·가로로 찍는다
+          grep -q 'screen: Liquid Glass' app-run/app-relaunch.log
+          grep -q 'layout: .*, glass)' app-run/app-relaunch.log
+          grep -q 'ui autotest: glass finished' app-run/app-relaunch.log
           # 상태 표시줄 (설정 › 화면): 기본은 보이고 그 높이만큼 비운다. 화면 시험이 숨기면 화면(layout 높이)이 커져야 한다
           grep -E 'status bar: ' app-run/app-relaunch.log
           grep -q 'status bar: shown' app-run/app.log

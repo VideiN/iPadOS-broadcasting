@@ -12,19 +12,22 @@ struct ContentView: View {
     @AppStorage("showDiagnostics") private var showDiagnostics = true
     @AppStorage(AppSettings.chatPanelShown) private var chatShown = true
     @AppStorage(AppSettings.statusBarShown) private var statusBarShown = true
+    @AppStorage(AppSettings.developerMode) private var developerMode = false
+    @AppStorage(AppSettings.glassUI) private var glassUI = false
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geometry in
-            studio(wide: StudioLayout.isWide(geometry.size))
+            screen(geometry.size)
                 // 가로·세로를 돌리면 배치가 바뀐다 (CI가 이 줄로 방향 시험을 확인한다)
                 .onChange(of: geometry.size, initial: true) { _, size in
                     ScreenOrientation.windowSize = size
                     appLog(
                         "layout: \(Int(size.width))x\(Int(size.height)) "
-                            + "(\(StudioLayout.isWide(size) ? "side column" : "stacked"))")
+                            + "(\(StudioLayout.isWide(size) ? "side column" : "stacked")\(glass ? ", glass" : ""))")
                 }
+                .onChange(of: glass) { _, glass in appLog("screen: \(glass ? "Liquid Glass" : "classic")") }
         }
         // 상태 표시줄을 보이면 그 높이만큼 안전 영역이 생겨 화면은 그 아래부터 그리고, 그 자리는 이 검정만 남는다
         .background(Color.black.ignoresSafeArea())
@@ -43,6 +46,25 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             // 백그라운드로 가거나 끝나기 전에 씬 구성을 저장한다
             if phase != .active && core.isRunning { model.saveNow() }
+        }
+    }
+
+    /// Liquid Glass 화면 (개발자 옵션, iOS 26+)
+    private var glass: Bool {
+        guard #available(iOS 26, *) else { return false }
+        return developerMode && glassUI
+    }
+
+    @ViewBuilder
+    private func screen(_ size: CGSize) -> some View {
+        if glass {
+            if #available(iOS 26, *) {
+                GlassStudio(
+                    core: core, outputs: outputs, model: model, diagnostics: diagnostics, sheets: sheets, size: size,
+                    showDiagnostics: $showDiagnostics, chatShown: $chatShown)
+            }
+        } else {
+            studio(wide: StudioLayout.isWide(size))
         }
     }
 
@@ -186,6 +208,7 @@ struct Dock<Content: View, Toolbar: View>: View {
     let title: String
     let content: Content
     let toolbar: Toolbar
+    @Environment(\.dockChrome) private var chrome
 
     init(_ title: String, @ViewBuilder content: () -> Content, @ViewBuilder toolbar: () -> Toolbar) {
         self.title = title
@@ -201,7 +224,7 @@ struct Dock<Content: View, Toolbar: View>: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
                 .frame(height: 28)
-                .background(Color(white: 0.14))
+                .background(chrome == .glass ? Color.clear : Color(white: 0.14))
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             if Toolbar.self != EmptyView.self {
@@ -210,10 +233,10 @@ struct Dock<Content: View, Toolbar: View>: View {
                     .padding(.horizontal, 4)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .frame(height: 36)
-                    .background(Color(white: 0.12))
+                    .background(chrome == .glass ? Color.clear : Color(white: 0.12))
             }
         }
-        .background(Color(white: 0.09))
+        .background(chrome == .glass ? Color.clear : Color(white: 0.09))
         .clipped()
     }
 }
@@ -391,6 +414,7 @@ private struct StudioSheetsModifier: ViewModifier {
 struct StatusBar: View {
     @ObservedObject var outputs: Outputs
     @ObservedObject var diagnostics: Diagnostics
+    @Environment(\.dockChrome) private var chrome
 
     var body: some View {
         let stats = outputs.stats
@@ -425,9 +449,9 @@ struct StatusBar: View {
         .font(.caption.monospacedDigit())
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(white: 0.07))
+        .padding(.horizontal, chrome == .glass ? 16 : 10)
+        .frame(maxWidth: chrome == .glass ? nil : .infinity, maxHeight: chrome == .glass ? nil : .infinity)
+        .background(chrome == .glass ? Color.clear : Color(white: 0.07))
     }
 
     /// 네트워크가 못 따라가 버린 프레임 (PC OBS의 "Dropped Frames")
@@ -915,16 +939,8 @@ struct ControlsDock: View {
         }
     }
 
-    private var streamTitle: String {
-        if outputs.streamPreparing { return "방송 준비 중…" }
-        if outputs.streamStopping { return "멈추는 중 (누르면 강제)" }
-        return outputs.stats.streaming ? "송출 중지" : "송출 시작"
-    }
-
-    private var recordTitle: String {
-        if outputs.recordStopping { return "멈추는 중 (누르면 강제)" }
-        return outputs.stats.recording ? "녹화 중지" : "녹화 시작"
-    }
+    private var streamTitle: String { outputs.streamButtonTitle }
+    private var recordTitle: String { outputs.recordButtonTitle }
 
     @ViewBuilder
     private func control(
@@ -1171,5 +1187,20 @@ enum UIAutotest {
         await rotate(landscape: false)
         await shot("8-portrait")
         appLog("ui autotest: done")
+
+        // Liquid Glass 화면 (개발자 옵션, P10): 바꾸면 프리뷰를 다시 만들므로 위 시험(디스플레이가 그대로인지)이 끝난 뒤에.
+        // 세로·가로로 찍고 원래 화면으로 되돌린다
+        guard #available(iOS 26, *) else {
+            appLog("ui autotest: glass skipped (iOS 26 or later)")
+            return
+        }
+        UserDefaults.standard.set(true, forKey: AppSettings.developerMode)
+        UserDefaults.standard.set(true, forKey: AppSettings.glassUI)
+        await shot("9-glass-portrait")
+        await rotate(landscape: true)
+        await shot("10-glass-landscape")
+        UserDefaults.standard.set(false, forKey: AppSettings.glassUI)
+        UserDefaults.standard.set(false, forKey: AppSettings.developerMode)
+        appLog("ui autotest: glass finished")
     }
 }
