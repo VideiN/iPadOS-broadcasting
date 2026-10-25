@@ -261,6 +261,8 @@ final class StudioSheets: ObservableObject {
     }
 
     @Published var settings = false
+    /// 설정을 열 때 보일 페이지 (nil이면 마지막으로 본 페이지)
+    var settingsPage: SettingsPage?
     @Published var addingSource = false
     @Published var properties: Source?
     @Published var filters: Source?
@@ -268,6 +270,11 @@ final class StudioSheets: ObservableObject {
     @Published var renameText = ""
     /// 소스 추가 시트에서 넣은 소스. 시트가 닫히면 바로 그 속성을 연다
     var added: String?
+
+    func openSettings(_ page: SettingsPage? = nil) {
+        settingsPage = page
+        settings = true
+    }
 
     func editProperties(_ name: String) { properties = Source(name: name) }
     func editFilters(_ name: String) { filters = Source(name: name) }
@@ -278,6 +285,17 @@ final class StudioSheets: ObservableObject {
     }
 }
 
+/// iOS 18 이상: 시트를 페이지 크기로 (설정의 왼쪽 목록과 오른쪽 내용이 나란히 보이게)
+private struct PageSheetSizing: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 18, *) {
+            content.presentationSizing(.page)
+        } else {
+            content
+        }
+    }
+}
+
 private struct StudioSheetsModifier: ViewModifier {
     @ObservedObject var sheets: StudioSheets
     let model: SceneModel
@@ -285,8 +303,10 @@ private struct StudioSheetsModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .sheet(isPresented: $sheets.settings) {
-                SettingsView(core: Core.shared, outputs: outputs)
+            .sheet(isPresented: $sheets.settings, onDismiss: { sheets.settingsPage = nil }) {
+                SettingsView(core: Core.shared, outputs: outputs, initialPage: sheets.settingsPage)
+                    // 왼쪽 목록이 보일 만큼 넓게
+                    .modifier(PageSheetSizing())
                     // 가로·세로를 돌려도 열린 시트가 남는지 CI가 이 줄로 본다
                     .onAppear { appLog("settings sheet: shown") }
                     .onDisappear { appLog("settings sheet: closed") }
@@ -836,8 +856,8 @@ struct ControlsDock: View {
                 VStack(spacing: 6) {
                     control(streamTitle, outputs.stats.streaming ? "stop.circle.fill" : "dot.radiowaves.left.and.right",
                             .blue, prominent: true) {
-                        // 송출 서버를 정하지 않았거나 YouTube에 로그인하지 않았으면 설정을 연다
-                        if !outputs.toggleStreaming() { sheets.settings = true }
+                        // 송출 서버를 정하지 않았거나 YouTube에 로그인하지 않았으면 설정의 송출 페이지를 연다
+                        if !outputs.toggleStreaming() { sheets.openSettings(.stream) }
                     }
                     .disabled(outputs.streamPreparing)
 

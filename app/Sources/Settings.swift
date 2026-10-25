@@ -35,6 +35,9 @@ enum AppSettings {
     static let faceLinkToken = "faceLinkToken"  // 페어링 코드 (QR에 들어감)
     static let faceLinkAcceptVMC = "faceLinkAcceptVMC"  // 페어링 코드 없이 VMC로 보내는 다른 앱도 받기
     static let faceLinkAllowed = "faceLinkAllowed"  // 코드 없이 받기로 허락한 아이폰 (기기 이름|주소)
+    static let settingsPage = "settingsPage"  // 설정에서 마지막으로 본 페이지
+    static let developerMode = "developerMode"  // 개발자 옵션 (정보의 빌드 줄을 7번 누르면 켜진다)
+    static let glassUI = "glassUI"  // Liquid Glass 새 화면 (개발자 옵션, iOS 26+)
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -166,30 +169,248 @@ enum RecordingFolder {
     }
 }
 
-// MARK: - 설정 화면
+/// MARK: - 설정 화면
 
+/// 설정 화면의 페이지 (왼쪽 사이드바 목록)
+enum SettingsPage: String, CaseIterable, Identifiable {
+    case stream, record, replay, canvas, display, faceTracking, about, developer
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .stream: "송출"
+        case .record: "녹화"
+        case .replay: "리플레이 버퍼"
+        case .canvas: "캔버스"
+        case .display: "화면"
+        case .faceTracking: "얼굴 추적"
+        case .about: "정보"
+        case .developer: "개발자"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .stream: "dot.radiowaves.left.and.right"
+        case .record: "record.circle"
+        case .replay: "gobackward"
+        case .canvas: "rectangle.dashed"
+        case .display: "ipad.landscape"
+        case .faceTracking: "face.smiling"
+        case .about: "info.circle"
+        case .developer: "hammer"
+        }
+    }
+}
+
+/// 설정 시트: 왼쪽은 페이지 목록, 오른쪽은 고른 페이지. 시트 폭이 좁으면 목록에서 눌러 들어가는 방식으로 바뀐다
 struct SettingsView: View {
     @ObservedObject var core: Core
     @ObservedObject var outputs: Outputs
+    /// 열 때 보일 페이지 (송출을 시작하지 못해 열면 송출). nil이면 마지막으로 본 페이지
+    var initialPage: SettingsPage?
 
+    @AppStorage(AppSettings.settingsPage) private var savedPage = SettingsPage.stream.rawValue
+    @AppStorage(AppSettings.developerMode) private var developerMode = false
+    @State private var page: SettingsPage?
+    @State private var columns = NavigationSplitViewVisibility.all
+    @Environment(\.dismiss) private var dismiss
+
+    private var pages: [SettingsPage] {
+        SettingsPage.allCases.filter { $0 != .developer || developerMode }
+    }
+
+    var body: some View {
+        NavigationSplitView(columnVisibility: $columns) {
+            List(pages, selection: $page) { page in
+                NavigationLink(value: page) {
+                    Label(page.title, systemImage: page.icon)
+                }
+            }
+            .navigationTitle("설정")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(removing: .sidebarToggle)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("완료") { dismiss() }
+                }
+            }
+        } detail: {
+            // 페이지를 바꾸면 그 안에서 들어간 화면(진단과 로그 등)은 닫는다
+            NavigationStack {
+                detail(page ?? .stream)
+                    .navigationTitle((page ?? .stream).title)
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+            .id(page)
+        }
+        .navigationSplitViewStyle(.balanced)
+        .onAppear {
+            let saved = SettingsPage(rawValue: savedPage) ?? .stream
+            page = initialPage ?? (pages.contains(saved) ? saved : .stream)
+            appLog("settings: page \(page?.rawValue ?? "-")")
+        }
+        .onChange(of: page) { _, page in
+            if let page { savedPage = page.rawValue }
+        }
+        .onChange(of: developerMode) { _, on in
+            if !on && page == .developer { page = .about }
+        }
+    }
+
+    @ViewBuilder
+    private func detail(_ page: SettingsPage) -> some View {
+        switch page {
+        case .stream: StreamSettingsPage(outputs: outputs)
+        case .record: RecordSettingsPage(outputs: outputs)
+        case .replay: ReplaySettingsPage(outputs: outputs)
+        case .canvas: CanvasSettingsPage(core: core, outputs: outputs)
+        case .display: DisplaySettingsPage()
+        case .faceTracking: FaceLinkSettingsView()
+        case .about: AboutSettingsPage()
+        case .developer: DeveloperSettingsPage()
+        }
+    }
+}
+
+private let audioBitrates = [96, 128, 160, 192, 256, 320]
+
+private struct StreamSettingsPage: View {
+    @ObservedObject var outputs: Outputs
+    @ObservedObject private var youtube = YouTubeAccount.shared
     @AppStorage(AppSettings.streamServer) private var server = ""
     @AppStorage(AppSettings.streamMode) private var streamMode = "manual"
-    @ObservedObject private var youtube = YouTubeAccount.shared
     @AppStorage(AppSettings.streamCodec) private var streamCodec = "h264"
     @AppStorage(AppSettings.streamBitrate) private var streamBitrate = 6000
     @AppStorage(AppSettings.streamAudioBitrate) private var streamAudioBitrate = 160
+    @State private var streamKey = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("방식", selection: $streamMode) {
+                    Text("서버·스트림 키 입력").tag("manual")
+                    Text("YouTube 계정").tag("youtube")
+                }
+                if streamMode == "youtube" {
+                    YouTubeAccountRows(account: youtube)
+                } else {
+                    TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
+                        .keyboardType(.URL)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    SecureField("스트림 키", text: $streamKey)
+                        .onChange(of: streamKey) { _, key in StreamKeyStore.save(key) }
+                }
+            } header: {
+                Text("보낼 곳")
+            } footer: {
+                if streamMode == "youtube" {
+                    Text("YouTube 계정으로 로그인하면 송출할 때 스트림 키를 자동으로 받습니다. 로그인 정보는 Keychain에 저장합니다.")
+                } else {
+                    Text(
+                        "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. 스트림 키는 Keychain에 저장합니다."
+                    )
+                }
+            }
+            .disabled(outputs.stats.streaming)
+
+            if streamMode == "youtube" && youtube.loggedIn {
+                YouTubeBroadcastSection()
+                    .disabled(outputs.stats.streaming)
+            }
+
+            Section {
+                Picker("코덱", selection: $streamCodec) {
+                    Text("H.264").tag("h264")
+                    Text("HEVC (Enhanced RTMP)").tag("hevc")
+                }
+                Stepper("비디오 \(streamBitrate) kbps (CBR)", value: $streamBitrate, in: 1000...50000, step: 500)
+                Picker("오디오 (AAC)", selection: $streamAudioBitrate) {
+                    ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+                }
+            } header: {
+                Text("인코딩")
+            } footer: {
+                Text(streamMode == "youtube" ? "HEVC는 YouTube가 받습니다 (Enhanced RTMP)." : "HEVC는 받는 플랫폼이 지원할 때만 쓰세요.")
+            }
+            .disabled(outputs.stats.streaming)
+        }
+        .onAppear { streamKey = StreamKeyStore.load() }
+    }
+}
+
+private struct RecordSettingsPage: View {
+    @ObservedObject var outputs: Outputs
     @AppStorage(AppSettings.recordCodec) private var recordCodec = "hevc"
     @AppStorage(AppSettings.recordBitrate) private var recordBitrate = 20000
     @AppStorage(AppSettings.recordAudioBitrate) private var recordAudioBitrate = 192
-    @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
-    @AppStorage(AppSettings.statusBarShown) private var statusBarShown = true
-
-    @State private var streamKey = ""
-    @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
     @State private var pickingFolder = false
     @State private var folderName = RecordingFolder.displayName
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("코덱", selection: $recordCodec) {
+                    Text("HEVC").tag("hevc")
+                    Text("H.264").tag("h264")
+                }
+                Stepper("비디오 \(recordBitrate / 1000) Mbps", value: $recordBitrate, in: 5000...150000, step: 5000)
+                Picker("오디오 (AAC)", selection: $recordAudioBitrate) {
+                    ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+                }
+            } header: {
+                Text("Hybrid MP4")
+            } footer: {
+                Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다.")
+            }
+
+            Section("저장 위치") {
+                LabeledContent("폴더", value: folderName)
+                Button("다른 폴더 선택… (외장 저장장치 등)") { pickingFolder = true }
+                if UserDefaults.standard.data(forKey: AppSettings.recordFolderBookmark) != nil {
+                    Button("앱 문서 폴더로 되돌리기") {
+                        RecordingFolder.forget()
+                        folderName = RecordingFolder.displayName
+                    }
+                }
+            }
+        }
+        .disabled(outputs.stats.recording)
+        .fileImporter(isPresented: $pickingFolder, allowedContentTypes: [.folder]) { result in
+            if case .success(let url) = result, RecordingFolder.remember(url) {
+                folderName = RecordingFolder.displayName
+            }
+        }
+    }
+}
+
+private struct ReplaySettingsPage: View {
+    @ObservedObject var outputs: Outputs
+    @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("길이", selection: $replaySeconds) {
+                    ForEach([10, 15, 30, 60, 120, 300], id: \.self) { seconds in
+                        Text(seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분").tag(seconds)
+                    }
+                }
+            } footer: {
+                Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 녹화 코덱·비트레이트를 같이 씁니다.")
+            }
+            .disabled(outputs.stats.replay_active)
+        }
+    }
+}
+
+private struct CanvasSettingsPage: View {
+    @ObservedObject var core: Core
+    @ObservedObject var outputs: Outputs
+    @State private var canvas = CanvasChoice(width: 1920, height: 1080, fps: 60)
     @State private var canvasMessage = ""
-    @Environment(\.dismiss) private var dismiss
 
     struct CanvasChoice: Hashable {
         var width: UInt32
@@ -200,163 +421,63 @@ struct SettingsView: View {
     private let resolutions: [(String, UInt32, UInt32)] = [
         ("1280×720", 1280, 720), ("1920×1080", 1920, 1080), ("2560×1440", 2560, 1440), ("3840×2160", 3840, 2160),
     ]
-    private let audioBitrates = [96, 128, 160, 192, 256, 320]
 
     var body: some View {
-        NavigationStack {
-            Form {
-                streamSection
-                if streamMode == "youtube" && youtube.loggedIn {
-                    YouTubeBroadcastSection()
-                        .disabled(outputs.stats.streaming)
+        Form {
+            Section {
+                Picker("해상도", selection: $canvas) {
+                    ForEach(resolutions, id: \.0) { resolution in
+                        Text(resolution.0).tag(CanvasChoice(width: resolution.1, height: resolution.2, fps: canvas.fps))
+                    }
                 }
-                recordSection
-                replaySection
-                canvasSection
-
-                Section {
-                    Toggle("상태 표시줄 보이기", isOn: $statusBarShown)
-                } header: {
-                    Text("화면")
-                } footer: {
-                    Text("iPad 맨 위의 시계·배터리·Wi-Fi 줄입니다. 보이게 하면 그 자리는 비워 두고 앱 화면은 그 아래부터 그립니다.")
+                Picker("프레임", selection: $canvas.fps) {
+                    Text("30 fps").tag(UInt32(30))
+                    Text("60 fps").tag(UInt32(60))
                 }
-
-                Section("얼굴 추적") {
-                    NavigationLink("아이폰에서 받기") { FaceLinkSettingsView() }
+                Button("적용") {
+                    canvasMessage = core.applyCanvas(width: canvas.width, height: canvas.height, fps: canvas.fps)
+                        ? "바꿨습니다. 맞지 않는 소스는 ⋯ 메뉴의 '화면에 맞추기'를 쓰세요."
+                        : "바꾸지 못했습니다. 녹화·송출을 멈춘 뒤 다시 해 보세요."
                 }
-
-                Section("정보") {
-                    BuildInfoRows()
-                    NavigationLink("진단과 로그") { DiagnosticsView() }
-                    NavigationLink("오픈소스 라이선스") { LicensesView() }
-                    LabeledContent("버전", value: appVersion)
+                .disabled(
+                    outputs.stats.recording || outputs.stats.streaming
+                        || canvas == CanvasChoice(width: core.width, height: core.height, fps: core.fps))
+                if !canvasMessage.isEmpty {
+                    Text(canvasMessage).font(.footnote).foregroundStyle(.secondary)
                 }
-            }
-            .navigationTitle("설정")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("완료") { dismiss() }
-                }
+            } footer: {
+                Text("녹화·송출 중에는 바꿀 수 없습니다.")
             }
         }
-        .onAppear {
-            streamKey = StreamKeyStore.load()
-            canvas = CanvasChoice(width: core.width, height: core.height, fps: core.fps)
-        }
-        .fileImporter(isPresented: $pickingFolder, allowedContentTypes: [.folder]) { result in
-            if case .success(let url) = result, RecordingFolder.remember(url) {
-                folderName = RecordingFolder.displayName
+        .onAppear { canvas = CanvasChoice(width: core.width, height: core.height, fps: core.fps) }
+    }
+}
+
+private struct DisplaySettingsPage: View {
+    @AppStorage(AppSettings.statusBarShown) private var statusBarShown = true
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("상태 표시줄 보이기", isOn: $statusBarShown)
+            } footer: {
+                Text("iPad 맨 위의 시계·배터리·Wi-Fi 줄입니다. 보이게 하면 그 자리는 비워 두고 앱 화면은 그 아래부터 그립니다.")
             }
         }
     }
+}
 
-    private var streamSection: some View {
-        Section {
-            Picker("방식", selection: $streamMode) {
-                Text("서버·스트림 키 입력").tag("manual")
-                Text("YouTube 계정").tag("youtube")
+private struct AboutSettingsPage: View {
+    var body: some View {
+        Form {
+            Section {
+                BuildInfoRows()
+                LabeledContent("버전", value: appVersion)
             }
-            if streamMode == "youtube" {
-                YouTubeAccountRows(account: youtube)
-            } else {
-                TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
-                    .keyboardType(.URL)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("스트림 키", text: $streamKey)
-                    .onChange(of: streamKey) { _, key in StreamKeyStore.save(key) }
+            Section {
+                NavigationLink("진단과 로그") { DiagnosticsView() }
+                NavigationLink("오픈소스 라이선스") { LicensesView() }
             }
-            Picker("코덱", selection: $streamCodec) {
-                Text("H.264").tag("h264")
-                Text("HEVC (Enhanced RTMP)").tag("hevc")
-            }
-            Stepper("비디오 \(streamBitrate) kbps (CBR)", value: $streamBitrate, in: 1000...50000, step: 500)
-            Picker("오디오 (AAC)", selection: $streamAudioBitrate) {
-                ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
-            }
-        } header: {
-            Text("송출")
-        } footer: {
-            if streamMode == "youtube" {
-                Text("YouTube 계정으로 로그인하면 송출할 때 스트림 키를 자동으로 받습니다. 로그인 정보는 Keychain에 저장합니다. HEVC는 YouTube가 받습니다 (Enhanced RTMP).")
-            } else {
-                Text(
-                    "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. HEVC는 받는 플랫폼이 지원할 때만 쓰세요. 스트림 키는 Keychain에 저장합니다."
-                )
-            }
-        }
-        .disabled(outputs.stats.streaming)
-    }
-
-    private var recordSection: some View {
-        Section {
-            Picker("코덱", selection: $recordCodec) {
-                Text("HEVC").tag("hevc")
-                Text("H.264").tag("h264")
-            }
-            Stepper("비디오 \(recordBitrate / 1000) Mbps", value: $recordBitrate, in: 5000...150000, step: 5000)
-            Picker("오디오 (AAC)", selection: $recordAudioBitrate) {
-                ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
-            }
-            LabeledContent("저장 위치", value: folderName)
-            Button("다른 폴더 선택… (외장 저장장치 등)") { pickingFolder = true }
-            if UserDefaults.standard.data(forKey: AppSettings.recordFolderBookmark) != nil {
-                Button("앱 문서 폴더로 되돌리기") {
-                    RecordingFolder.forget()
-                    folderName = RecordingFolder.displayName
-                }
-            }
-        } header: {
-            Text("녹화 (Hybrid MP4)")
-        } footer: {
-            Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다.")
-        }
-        .disabled(outputs.stats.recording)
-    }
-
-    private var replaySection: some View {
-        Section {
-            Picker("길이", selection: $replaySeconds) {
-                ForEach([10, 15, 30, 60, 120, 300], id: \.self) { seconds in
-                    Text(seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분").tag(seconds)
-                }
-            }
-        } header: {
-            Text("리플레이 버퍼")
-        } footer: {
-            Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 녹화 코덱·비트레이트를 같이 씁니다.")
-        }
-        .disabled(outputs.stats.replay_active)
-    }
-
-    private var canvasSection: some View {
-        Section {
-            Picker("해상도", selection: $canvas) {
-                ForEach(resolutions, id: \.0) { resolution in
-                    Text(resolution.0).tag(CanvasChoice(width: resolution.1, height: resolution.2, fps: canvas.fps))
-                }
-            }
-            Picker("프레임", selection: $canvas.fps) {
-                Text("30 fps").tag(UInt32(30))
-                Text("60 fps").tag(UInt32(60))
-            }
-            Button("적용") {
-                canvasMessage = core.applyCanvas(width: canvas.width, height: canvas.height, fps: canvas.fps)
-                    ? "바꿨습니다. 맞지 않는 소스는 ⋯ 메뉴의 '화면에 맞추기'를 쓰세요."
-                    : "바꾸지 못했습니다. 녹화·송출을 멈춘 뒤 다시 해 보세요."
-            }
-            .disabled(
-                outputs.stats.recording || outputs.stats.streaming
-                    || canvas == CanvasChoice(width: core.width, height: core.height, fps: core.fps))
-            if !canvasMessage.isEmpty {
-                Text(canvasMessage).font(.footnote).foregroundStyle(.secondary)
-            }
-        } header: {
-            Text("캔버스")
-        } footer: {
-            Text("녹화·송출 중에는 바꿀 수 없습니다.")
         }
     }
 
@@ -368,7 +489,34 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - 진단 화면
+/// 개발자 옵션 (정보의 빌드 줄을 7번 누르면 보인다)
+private struct DeveloperSettingsPage: View {
+    @AppStorage(AppSettings.developerMode) private var developerMode = false
+    @AppStorage(AppSettings.glassUI) private var glassUI = false
+
+    var body: some View {
+        Form {
+            Section {
+                if #available(iOS 26, *) {
+                    Toggle("Liquid Glass 화면 (시험)", isOn: $glassUI)
+                } else {
+                    LabeledContent("Liquid Glass 화면", value: "iPadOS 26 이상")
+                }
+            } footer: {
+                Text("프리뷰를 화면 가득 두고 장면·소스·오디오·채팅을 떠 있는 유리 패널로 여는 새 화면입니다. 아직 시험 중입니다.")
+            }
+            Section {
+                Button("개발자 옵션 숨기기", role: .destructive) {
+                    glassUI = false
+                    developerMode = false
+                    appLog("developer options hidden")
+                }
+            }
+        }
+    }
+}
+
+/ MARK: - 진단 화면
 
 struct DiagnosticsView: View {
     @State private var lines: [String] = []

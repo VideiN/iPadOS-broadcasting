@@ -112,10 +112,27 @@ struct BuildOverlayLine: View {
 /// 설정 › 정보의 빌드 줄들
 struct BuildInfoRows: View {
     @ObservedObject private var check = BuildCheck.shared
+    @AppStorage(AppSettings.developerMode) private var developerMode = false
+    @State private var taps = 0
     private let build = BuildInfo.current
 
     var body: some View {
+        // 7번 누르면 개발자 옵션 (안드로이드처럼, 4번째부터 남은 횟수를 보인다)
         LabeledContent("빌드", value: build.label)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard !developerMode else { return }
+                taps += 1
+                if taps >= 7 {
+                    developerMode = true
+                    appLog("developer options shown")
+                }
+            }
+        if developerMode && taps >= 7 {
+            Text("개발자 옵션을 켰습니다. 설정 목록 맨 아래에 있습니다.").font(.footnote).foregroundStyle(.secondary)
+        } else if !developerMode && taps >= 4 {
+            Text("개발자 옵션까지 \(7 - taps)번").font(.footnote).foregroundStyle(.secondary)
+        }
         if build.isCI {
             LabeledContent("커밋", value: build.shortCommit)
             if let time = build.time {
