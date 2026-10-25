@@ -51,7 +51,7 @@ OBS Studio의 libobs 코어를 이용한 iPadOS용 방송/녹화 앱. 개인 사
 
 Apple 개발자 계정이 있으면 CI가 기기용 빌드를 정식 서명해 App Store Connect에 올리고, iPad의 TestFlight 앱으로 설치합니다 (맥이 없어도 됩니다). 내부 테스터는 심사 없이 받고, 한 빌드는 90일 동안 쓸 수 있습니다.
 
-- 언제 올리나: main에 푸시할 때, 그리고 Actions에서 수동 실행할 때 "TestFlight에 올리기"를 고르면. PR에서는 올리지 않습니다
+- 언제 올리나: main이나 testflight 브랜치에 푸시할 때(PR 머지 포함), 그리고 Actions에서 수동 실행할 때 "TestFlight에 올리기"를 고르면. PR에서는 올리지 않습니다
 - 하는 일(`ios/scripts/testflight.sh`): 가짜 서명 IPA를 받아 프로필이 App Store용이고 이 앱의 App ID이며 그 인증서로 만든 것인지 확인한 뒤, 이 실행만 쓰는 키체인으로 다시 서명해 `altool`로 올립니다. 다음 작업이 App Store Connect API(`ios/scripts/asc.py`)로 처리 완료를 기다립니다
 - 서명된 IPA는 아티팩트로 남기지 않고, 인증서 이름(계정 주인 이름)은 로그에 찍지 않습니다
 - 비밀값: 저장소 Settings > Environments에 `testflight` 환경을 만들고(배포 브랜치는 main 등 올릴 브랜치만), 그 환경에 넣습니다. 비밀값이 하나도 없으면 올리지 않고 넘어갑니다
@@ -90,7 +90,7 @@ YouTube 로그인과 채팅은 가짜 Google·YouTube 서버(`ios/scripts/youtub
 | `obs-studio/plugins/` 의 iOS 이식 | `mac-avcapture`(카메라), `mac-videotoolbox`(인코더), `coreaudio-encoder`(AAC), `image-source`, `obs-filters`(오디오 필터, RNNoise), `obs-ffmpeg`(SRT용 MPEG-TS 출력만) |
 | `ios/deps/` | 의존성 iOS arm64 크로스컴파일 스크립트: FFmpeg(이미지 디코더·MPEG-TS 먹서 등 최소 구성, nonfree 없음), mbedtls, libsrt, jansson 등 |
 | `ios/scripts/` | 시뮬레이터 테스트 실행 스크립트, CI용 가짜 Google·YouTube 서버, TestFlight 서명·업로드(`testflight.sh`, `asc.py`) |
-| `.github/workflows/ios.yml` | CI: 의존성 빌드 → libobs·플러그인·앱 빌드 → 시뮬레이터 단위 테스트 → 시뮬레이터에서 앱 자동 시험 → IPA → (main·수동) TestFlight 업로드와 처리 확인 |
+| `.github/workflows/ios.yml` | CI: 의존성 빌드 → libobs·플러그인·앱 빌드 → 시뮬레이터 단위 테스트 → 시뮬레이터에서 앱 자동 시험 → IPA → (main·testflight 푸시, 수동) TestFlight 업로드와 처리 확인 |
 | `app/Resources/Assets.xcassets` | 앱 아이콘 (임시, `app/Resources/make-app-icon.py`로 만듦) |
 
 ### 정적 모듈 등록

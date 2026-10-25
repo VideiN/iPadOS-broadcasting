@@ -528,7 +528,7 @@ jobs:
     env: *libobs-env
     steps: *libobs-steps
 
-  # TestFlight (2026-10-24): main에 푸시할 때와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
+  # TestFlight (2026-10-24): main·testflight 브랜치에 푸시할 때(PR 머지 포함)와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
   # 기기용 빌드가 만든 가짜 서명 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다 (ios/scripts/testflight.sh).
   # 서명 비밀값은 testflight 환경에만 있고, 그 환경은 허락한 브랜치에서만 열린다. PR에서는 돌지 않는다.
   # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 기기용 빌드가 끝나면 바로 올린다 (시뮬레이터 시험은 기다리지 않는다)
@@ -536,7 +536,7 @@ jobs:
     name: TestFlight upload
     needs: libobs-device
     if: >-
-      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testflight')) ||
       (github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     environment: testflight
