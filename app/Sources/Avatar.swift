@@ -466,6 +466,8 @@ final class AvatarRenderer {
 
         // 고개: 거울이면 좌우(x)를 뒤집고, Unity(+Z 앞, +X 오른쪽, 왼손) → 모델 공간(오른손)으로
         var q = face.headRotation
+        // 실기기(아이폰 FaceLink): 위아래(x축 회전)가 반대로 움직였다. 받은 값의 x축 성분을 뒤집는다 (좌우·기울기는 맞음)
+        q = simd_quatf(ix: -q.imag.x, iy: q.imag.y, iz: q.imag.z, r: q.real)
         if mirror { q = simd_quatf(ix: q.imag.x, iy: -q.imag.y, iz: -q.imag.z, r: q.real) }
         q = facesPlusZ
             ? simd_quatf(ix: q.imag.x, iy: -q.imag.y, iz: -q.imag.z, r: q.real)
