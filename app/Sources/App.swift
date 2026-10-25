@@ -24,6 +24,18 @@ struct BroadcastApp: App {
         }
         Core.shared.start()
 
+        // 아이폰 얼굴 추적 받기 (P9). CI(`-autotest-facelink <페어링 코드>`)는 그 코드로 켜고 합성 송신기를 받는다
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-autotest-facelink"), index + 1 < args.count {
+            let defaults = UserDefaults.standard
+            defaults.set(true, forKey: AppSettings.faceLinkEnabled)
+            defaults.set(args[index + 1], forKey: AppSettings.faceLinkToken)
+            defaults.set(false, forKey: AppSettings.faceLinkAcceptVMC)
+            defaults.set(39539, forKey: AppSettings.faceLinkPort)
+            Task { @MainActor in await FaceLinkReceiver.shared.runAutotest() }
+        }
+        FaceLinkReceiver.shared.applySettings()
+
         // 같은 브랜치에 더 새 빌드가 있는지 (오버레이·설정에 보인다). 시작 작업이 끝난 뒤에
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(5))

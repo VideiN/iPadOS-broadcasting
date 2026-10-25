@@ -30,6 +30,10 @@ enum AppSettings {
     static let youtubeOpenBroadcast = "youtubeOpenBroadcast"  // 이 앱이 만들어 아직 끝내지 않은 방송
     static let chatPanelShown = "chatPanelShown"  // 오른쪽 채팅 패널 (숨겨도 패널 페이지는 창 뒤에서 계속 돈다)
     static let statusBarShown = "statusBarShown"  // iPad 상태 표시줄 (시계·배터리). 보이면 그 자리는 비우고 아래부터 그린다
+    static let faceLinkEnabled = "faceLinkEnabled"  // 아이폰 얼굴 추적 받기 (P9, UDP)
+    static let faceLinkPort = "faceLinkPort"
+    static let faceLinkToken = "faceLinkToken"  // 페어링 코드 (QR에 들어감)
+    static let faceLinkAcceptVMC = "faceLinkAcceptVMC"  // 페어링 코드 없이 VMC로 보내는 다른 앱도 받기
 
     static func register() {
         UserDefaults.standard.register(defaults: [
@@ -50,6 +54,9 @@ enum AppSettings {
             youtubeLatency: "normal",
             chatPanelShown: true,
             statusBarShown: true,
+            faceLinkEnabled: false,
+            faceLinkPort: 39539,
+            faceLinkAcceptVMC: false,
         ])
     }
 
@@ -212,6 +219,10 @@ struct SettingsView: View {
                     Text("화면")
                 } footer: {
                     Text("iPad 맨 위의 시계·배터리·Wi-Fi 줄입니다. 보이게 하면 그 자리는 비워 두고 앱 화면은 그 아래부터 그립니다.")
+                }
+
+                Section("얼굴 추적") {
+                    NavigationLink("아이폰에서 받기") { FaceLinkSettingsView() }
                 }
 
                 Section("정보") {

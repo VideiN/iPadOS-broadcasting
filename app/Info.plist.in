@@ -102,6 +102,12 @@
 	<string>카메라와 캡처 장치를 방송 소스로 사용합니다.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>마이크와 오디오 인터페이스 입력을 방송에 사용합니다.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>같은 Wi-Fi의 아이폰에서 얼굴 추적 값을 받습니다.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_facelink._udp</string>
+	</array>
 	<key>BroadcastYouTubeClient</key>
 	<string>@APP_YOUTUBE_CLIENT_HEX@</string>
 </dict>

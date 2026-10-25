@@ -163,6 +163,10 @@ jobs:
           # 채팅(P7)도 같은 서버: 유튜브 웹 채팅(페이지·get_live_chat)과 공식 API liveChatMessages 흉내
           python3 ios/scripts/youtube-mock.py 8098 > app-run/youtube-mock.log 2> app-run/youtube-mock-access.log &
           youtube_mock_pid=$!
+          # 얼굴 추적 받기 (P9): 아이폰 컴패니언 앱 대신 합성 값을 보내는 송신기. 앱이 받기 시작하면(첫 Ack) 단계를
+          # 밟고 스스로 끝난다 (docs/face-link.md)
+          python3 ios/scripts/facelink-sender.py 127.0.0.1 39539 ci-facelink > app-run/facelink-sender.log 2>&1 &
+          facelink_pid=$!
 
           # 가로 화면 (iPad는 대부분 가로로 두고 쓴다): simctl에는 기기를 돌리는 명령이 없어 Simulator 앱의 기기 메뉴를 누른다.
           # 안 되면(손쉬운 사용 권한 등) 앱의 -orientation과 화면 시험이 창 방향을 바꿔 달라고 한다
@@ -198,10 +202,11 @@ jobs:
           # 처음 실행은 기기를 가로로 두고 띄운다
           # -autotest-scenes: 씬·소스 조작을 한 바퀴 돌리고 "시험 장면"을 남겨 저장한다 (P4)
           # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
+          # -autotest-facelink: 그 페어링 코드로 얼굴 추적 받기를 켜고 합성 송신기를 받는다 (P9)
           rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
-            -autotest-chat http://127.0.0.1:8098 > app-run/app.log 2>&1 &
+            -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -325,6 +330,15 @@ jobs:
                s == 2 && /^broadcast ok/ { s = 3 } s == 3 && /^bind ok/ { s = 4 } END { exit s == 4 ? 0 : 1 }' app-run/youtube-mock.log
           # 토큰은 로그에 남지 않아야 한다
           if grep -E 'mock-(access|refresh)|mock-code' app-run/app.log; then echo 'token in app log'; exit 1; fi
+          # 얼굴 추적 받기 (P9): 합성 송신기의 블렌드셰이프 52개·머리·눈, 정면 맞추기 명령, 얼굴 놓침, 끊김.
+          # 틀린 페어링 코드·코드 없는 VMC·깨진 패킷·지난 순번은 버리고, 보내기가 멈추면 Ack도 멈춘다
+          (sleep 10; kill "$facelink_pid" 2> /dev/null) &
+          wait "$facelink_pid" || true
+          cat app-run/facelink-sender.log
+          grep -E 'facelink( autotest)?: ' app-run/app.log | sed -n '1,40p'
+          grep -q 'facelink autotest: ok' app-run/app.log
+          grep -q 'facelink sender: calibrate received' app-run/facelink-sender.log
+          if grep -q '^FAIL' app-run/facelink-sender.log; then exit 1; fi
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
