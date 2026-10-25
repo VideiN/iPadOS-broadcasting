@@ -150,8 +150,10 @@ final class Outputs: ObservableObject {
         guard !streamPreparing else { return true }
         let active = stats.streaming
         let defaults = AppSettings.defaults
-        let youtube = defaults.string(forKey: AppSettings.streamMode) == "youtube"
-        let server = defaults.string(forKey: AppSettings.streamServer) ?? ""
+        let mode = defaults.string(forKey: AppSettings.streamMode)
+        let youtube = mode == "youtube"
+        let chzzk = mode == "chzzk"
+        let server = chzzk ? Chzzk.server : defaults.string(forKey: AppSettings.streamServer) ?? ""
 
         if !active && youtube {
             // YouTube 계정: 방송을 만들고 받은 주소·키로 보낸다
@@ -161,7 +163,9 @@ final class Outputs: ObservableObject {
             Task {
                 do {
                     let target = try await YouTubeAccount.shared.prepareStream()
-                    await MainActor.run { self.startStreaming(server: target.server, key: target.key) }
+                    await MainActor.run {
+                        self.startStreaming(server: target.server, key: target.key, encoding: .current(chzzk: false))
+                    }
                 } catch {
                     appLog("youtube: stream preparation failed: \(error.localizedDescription)")
                     await MainActor.run {
@@ -183,26 +187,30 @@ final class Outputs: ObservableObject {
                 DispatchQueue.main.async { self.update() }
             }
         } else {
+            // 치지직은 스트림 키가 있어야 한다 (없으면 설정을 연다)
+            let key = chzzk ? Chzzk.keyStore.load() : StreamKeyStore.load()
+            guard !chzzk || !key.isEmpty else { return false }
             streamPrepareError = ""
-            startStreaming(server: server, key: StreamKeyStore.load())
+            startStreaming(server: server, key: key, encoding: .current(chzzk: chzzk))
         }
         return true
     }
 
-    private func startStreaming(server: String, key: String) {
-        let defaults = AppSettings.defaults
-        let codec = defaults.string(forKey: AppSettings.streamCodec) ?? "h264"
-        let videoKbps = Int32(defaults.integer(forKey: AppSettings.streamBitrate))
-        let audioKbps = Int32(defaults.integer(forKey: AppSettings.streamAudioBitrate))
-
+    private func startStreaming(server: String, key: String, encoding: StreamEncoding) {
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = core_streaming_start(server, key, codec, videoKbps, audioKbps)
+            let ok = Self.start(server: server, key: key, encoding: encoding)
             appLog("streaming start \(ok ? "requested" : "failed")")
             DispatchQueue.main.async {
                 self.streamPreparing = false
                 self.update()
             }
         }
+    }
+
+    private static func start(server: String, key: String, encoding: StreamEncoding) -> Bool {
+        core_streaming_start(
+            server, key, encoding.codec, Int32(encoding.videoKbps), Int32(encoding.audioKbps),
+            Int32(encoding.keyintSeconds), encoding.bframes)
     }
 
     /// CI용: `-autotest-output <초> <RTMP 서버 URL>`로 띄우면 입력 소스가 준비된 뒤
@@ -237,10 +245,16 @@ final class Outputs: ObservableObject {
 
     private func runOutputAutotest(seconds: Double, path: String, server: String, key: String) {
         appLog("autotest: recording and streaming for \(seconds) s to \(server)")
+        // -autotest-chzzk: 송출을 치지직 권장값(키프레임 1초, B프레임 없음)으로. CI가 받은 영상의 키프레임 간격을 본다
+        var encoding = StreamEncoding(codec: "h264", videoKbps: 4000, audioKbps: 160)
+        if ProcessInfo.processInfo.arguments.contains("-autotest-chzzk") {
+            encoding = encoding.forChzzk()
+            appLog("autotest: streaming with the chzzk encoding")
+        }
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
             let recording = core_recording_start(path, "hevc", 20000, 192)
-            let streaming = core_streaming_start(server, key, "h264", 4000, 160)
+            let streaming = Self.start(server: server, key: key, encoding: encoding)
             // 리플레이 버퍼(10초)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5)
             let replay = core_replay_start(RecordingFolder.defaultFolder.path, 10, "hevc", 20000, 192)
             appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
@@ -291,7 +305,8 @@ final class Outputs: ObservableObject {
 
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
-            let started = core_streaming_start(server, "autotest", "h264", 3000, 160)
+            let started = Self.start(
+                server: server, key: "autotest", encoding: StreamEncoding(codec: "h264", videoKbps: 3000, audioKbps: 160))
             appLog("srt autotest: started \(started)")
 
             queue.asyncAfter(deadline: .now() + seconds) {

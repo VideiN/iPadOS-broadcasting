@@ -154,7 +154,9 @@ void core_recording_stop(bool force);
 
 // RTMP/RTMPS 송출 (비디오 CBR + AAC). codec "hevc"는 Enhanced RTMP (받는 쪽이 지원해야 함).
 // 연결은 비동기로 하고 결과는 상태와 마지막 오류로 본다.
-bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps);
+// keyint_sec: 키프레임 간격(초), bframes: B프레임 (치지직은 1초·없음, 그 밖은 2초·있음)
+bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps,
+			  int keyint_sec, bool bframes);
 void core_streaming_stop(bool force);
 bool core_outputs_active(void);
 

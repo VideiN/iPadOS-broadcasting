@@ -208,11 +208,12 @@ jobs:
           # -autotest-chat: 로그인 뒤 그 방송의 채팅을 직접 → 패널 → 공식 API 순서로 받아 본다 (P7)
           # -autotest-facelink: 그 페어링 코드로 얼굴 추적 받기를 켜고 합성 송신기를 받는다 (P9)
           # -autotest-avatar: 씬 시험이 아바타 소스를 첫 모델로 넣고, 그려서 움직이는지 본 뒤 다음 모델로 바꾼다 (P9)
+          # -autotest-chzzk: RTMP 송출을 치지직 권장값(키프레임 1초, B프레임 없음)으로 보낸다 (P10)
           rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
             -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink \
-            -autotest-avatar test-avatar.vrm,test-avatar0.vrm > app-run/app.log 2>&1 &
+            -autotest-avatar test-avatar.vrm,test-avatar0.vrm -autotest-chzzk > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -447,6 +448,14 @@ jobs:
           echo "sent by the app: recording ${record_s:-?} s, RTMP ${rtmp_s:-?} s, SRT ${srt_s:-?} s"
           check_media app-run/autotest.mp4 'hevc|h264' "$(sent_min "${record_s:-12.5}")"
           check_media app-run/received.flv 'h264' "$(sent_min "${rtmp_s:-12.5}")"
+          # 치지직 권장값 (P10): 키프레임이 30프레임(캔버스 30 fps에서 1초)마다, B프레임이 없어 모든 패킷의 pts = dts
+          grep -q 'autotest: streaming with the chzzk encoding' app-run/app.log
+          grep -q 'keyframe 1 s, no B-frames, AAC' app-run/app.log
+          ffprobe -v error -select_streams v:0 -show_entries packet=pts,dts,flags -of csv=p=0 app-run/received.flv \
+            > app-run/received-packets.csv
+          awk -F, '{ n++; if ($1 != $2) reordered++ } $3 ~ /K/ { if (last && n - last > gap) gap = n - last; last = n }
+                   END { printf "received video packets %d, longest keyframe gap %d packets, reordered %d\n", n, gap, reordered
+                         exit (gap > 0 && gap <= 31 && reordered == 0) ? 0 : 1 }' app-run/received-packets.csv
           # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
           grep -q '\[app\] replay saved: ' app-run/app.log
           check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5

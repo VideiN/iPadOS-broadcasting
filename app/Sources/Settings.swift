@@ -19,7 +19,7 @@ enum AppSettings {
     static let canvasFPSDen = "canvasFPSDen"
     static let previewEnabled = "previewEnabled"  // 끄면 프리뷰 디스플레이를 없앤다 (출력용 캔버스는 계속 그린다)
     static let replaySeconds = "replaySeconds"  // 리플레이 버퍼 길이 (녹화 코덱·비트레이트를 같이 쓴다)
-    static let streamMode = "streamMode"  // "manual"(서버·스트림 키 직접 입력) | "youtube"(계정, P8)
+    static let streamMode = "streamMode"  // "manual"(서버·스트림 키 직접 입력) | "youtube"(계정, P8) | "chzzk"(치지직 스트림 키, P10)
     static let youtubeClientID = "youtubeClientID"  // 사용자가 만든 Google OAuth 클라이언트 (iOS 유형)
     static let youtubeTokenClientID = "youtubeTokenClientID"  // 갱신 토큰을 받은 클라이언트 (빌드에 든 것 또는 위의 것)
     static let youtubeChannelTitle = "youtubeChannelTitle"  // 로그인한 채널 이름 (화면 표시용)
@@ -116,6 +116,41 @@ enum StreamKeyStore {
 
     static func load() -> String { item.load() }
     static func save(_ key: String) { item.save(key) }
+}
+
+/// 치지직 (P10, 1단계: 스트림 키로 송출). 서버와 권장값은 OBS rtmp-services의 CHZZK 항목
+enum Chzzk {
+    static let server = "rtmp://global-rtmp.lip2.navercorp.com:8080/relay"
+    static let keyPage = URL(string: "https://studio.chzzk.naver.com/setting")!
+    static let maxVideoKbps = 8000
+    static let maxAudioKbps = 192
+    static let maxFPS = 60.0
+    /// 치지직 스트림 키는 직접 입력한 키와 따로 둔다 (방식을 바꿔도 섞이지 않게)
+    static let keyStore = SecretItem(service: "io.github.videin.broadcast.stream-key.chzzk", fallbackKey: "chzzkStreamKey")
+}
+
+/// 송출 인코딩. 설정값을 쓰고, 치지직이면 그 권장값(H.264, 키프레임 1초, B프레임 없음, 최대 비트레이트)으로 덮어쓴다
+struct StreamEncoding {
+    var codec: String
+    var videoKbps: Int
+    var audioKbps: Int
+    var keyintSeconds = 2
+    var bframes = true
+
+    static func current(chzzk: Bool) -> StreamEncoding {
+        let defaults = AppSettings.defaults
+        let encoding = StreamEncoding(
+            codec: defaults.string(forKey: AppSettings.streamCodec) ?? "h264",
+            videoKbps: defaults.integer(forKey: AppSettings.streamBitrate),
+            audioKbps: defaults.integer(forKey: AppSettings.streamAudioBitrate))
+        return chzzk ? encoding.forChzzk() : encoding
+    }
+
+    func forChzzk() -> StreamEncoding {
+        StreamEncoding(
+            codec: "h264", videoKbps: min(videoKbps, Chzzk.maxVideoKbps), audioKbps: min(audioKbps, Chzzk.maxAudioKbps),
+            keyintSeconds: 1, bframes: false)
+    }
 }
 
 /// 녹화 폴더: 기본은 Documents/Recordings, 고르면 그 폴더(외장 SSD 등)를 보안 범위 북마크로 기억한다
@@ -281,12 +316,14 @@ private let audioBitrates = [96, 128, 160, 192, 256, 320]
 private struct StreamSettingsPage: View {
     @ObservedObject var outputs: Outputs
     @ObservedObject private var youtube = YouTubeAccount.shared
+    @ObservedObject private var core = Core.shared
     @AppStorage(AppSettings.streamServer) private var server = ""
     @AppStorage(AppSettings.streamMode) private var streamMode = "manual"
     @AppStorage(AppSettings.streamCodec) private var streamCodec = "h264"
     @AppStorage(AppSettings.streamBitrate) private var streamBitrate = 6000
     @AppStorage(AppSettings.streamAudioBitrate) private var streamAudioBitrate = 160
     @State private var streamKey = ""
+    @State private var chzzkKey = ""
 
     var body: some View {
         Form {
@@ -294,10 +331,19 @@ private struct StreamSettingsPage: View {
                 Picker("방식", selection: $streamMode) {
                     Text("서버·스트림 키 입력").tag("manual")
                     Text("YouTube 계정").tag("youtube")
+                    Text("치지직").tag("chzzk")
                 }
-                if streamMode == "youtube" {
+                switch streamMode {
+                case "youtube":
                     YouTubeAccountRows(account: youtube)
-                } else {
+                case "chzzk":
+                    LabeledContent("서버") {
+                        Text(Chzzk.server).font(.footnote).textSelection(.enabled)
+                    }
+                    SecureField("스트림 키", text: $chzzkKey)
+                        .onChange(of: chzzkKey) { _, key in Chzzk.keyStore.save(key) }
+                    Link("스트림 키 받기 (치지직 스튜디오)", destination: Chzzk.keyPage)
+                default:
                     TextField("rtmp://…, rtmps://… 또는 srt://…", text: $server)
                         .keyboardType(.URL)
                         .textInputAutocapitalization(.never)
@@ -308,9 +354,12 @@ private struct StreamSettingsPage: View {
             } header: {
                 Text("보낼 곳")
             } footer: {
-                if streamMode == "youtube" {
+                switch streamMode {
+                case "youtube":
                     Text("YouTube 계정으로 로그인하면 송출할 때 스트림 키를 자동으로 받습니다. 로그인 정보는 Keychain에 저장합니다.")
-                } else {
+                case "chzzk":
+                    Text("치지직 스튜디오의 방송 설정에서 스트림 키를 복사해 넣으세요. 키는 Keychain에 저장합니다.")
+                default:
                     Text(
                         "예: rtmp://live.twitch.tv/app, rtmps://a.rtmps.youtube.com:443/live2, srt://서버:포트. SRT는 스트림 키를 streamid로 보내고, 암호는 URL 끝에 ?passphrase=… 로 넣습니다. 스트림 키는 Keychain에 저장합니다."
                     )
@@ -324,9 +373,13 @@ private struct StreamSettingsPage: View {
             }
 
             Section {
-                Picker("코덱", selection: $streamCodec) {
-                    Text("H.264").tag("h264")
-                    Text("HEVC (Enhanced RTMP)").tag("hevc")
+                if streamMode == "chzzk" {
+                    LabeledContent("코덱", value: "H.264 (치지직)")
+                } else {
+                    Picker("코덱", selection: $streamCodec) {
+                        Text("H.264").tag("h264")
+                        Text("HEVC (Enhanced RTMP)").tag("hevc")
+                    }
                 }
                 Stepper("비디오 \(streamBitrate) kbps (CBR)", value: $streamBitrate, in: 1000...50000, step: 500)
                 Picker("오디오 (AAC)", selection: $streamAudioBitrate) {
@@ -335,11 +388,31 @@ private struct StreamSettingsPage: View {
             } header: {
                 Text("인코딩")
             } footer: {
-                Text(streamMode == "youtube" ? "HEVC는 YouTube가 받습니다 (Enhanced RTMP)." : "HEVC는 받는 플랫폼이 지원할 때만 쓰세요.")
+                switch streamMode {
+                case "youtube":
+                    Text("HEVC는 YouTube가 받습니다 (Enhanced RTMP).")
+                case "chzzk":
+                    chzzkFooter
+                default:
+                    Text("HEVC는 받는 플랫폼이 지원할 때만 쓰세요.")
+                }
             }
             .disabled(outputs.stats.streaming)
         }
-        .onAppear { streamKey = StreamKeyStore.load() }
+        .onAppear {
+            streamKey = StreamKeyStore.load()
+            chzzkKey = Chzzk.keyStore.load()
+        }
+    }
+
+    /// 치지직 권장값으로 실제 보낼 값
+    private var chzzkFooter: Text {
+        let encoding = StreamEncoding(codec: streamCodec, videoKbps: streamBitrate, audioKbps: streamAudioBitrate).forChzzk()
+        var text = "치지직 권장값으로 보냅니다: H.264, 키프레임 1초, B프레임 없음, 비디오 최대 \(Chzzk.maxVideoKbps)·오디오 최대 \(Chzzk.maxAudioKbps) kbps. 지금 설정으로는 비디오 \(encoding.videoKbps) kbps, 오디오 \(encoding.audioKbps) kbps."
+        if core.fps > Chzzk.maxFPS + 0.01 {
+            text += " 캔버스가 60 fps를 넘습니다. 치지직은 60 fps까지 받으니 캔버스를 60 이하로 바꾸세요."
+        }
+        return Text(text)
     }
 }
 
