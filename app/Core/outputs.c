@@ -220,6 +220,61 @@ static obs_output_t *create_output(const char *id, const char *name, bool is_str
 
 #pragma mark - 인코더
 
+static const char *codec_name(int codec)
+{
+	return codec == CORE_CODEC_HEVC ? "hevc" : "h264";
+}
+
+static const char *rate_control_name(int rate_control)
+{
+	switch (rate_control) {
+	case CORE_RC_ABR:
+		return "ABR";
+	case CORE_RC_CRF:
+		return "CRF";
+	default:
+		return "CBR";
+	}
+}
+
+// mac-videotoolbox의 profile 값. HEVC는 main만 쓴다 (8비트 캔버스)
+static const char *profile_name(const struct core_video_encoding *video)
+{
+	if (video->codec == CORE_CODEC_HEVC)
+		return "main";
+	switch (video->profile) {
+	case CORE_PROFILE_BASELINE:
+		return "baseline";
+	case CORE_PROFILE_MAIN:
+		return "main";
+	default:
+		return "high";
+	}
+}
+
+// 앱이 넘긴 값을 인코더가 받을 수 있는 범위로 맞춘다
+static struct core_video_encoding checked_video(const struct core_video_encoding *video)
+{
+	struct core_video_encoding checked = *video;
+	if (checked.bitrate_kbps < 50)
+		checked.bitrate_kbps = 6000;
+	if (checked.quality < 0 || checked.quality > 100)
+		checked.quality = 60;
+	if (checked.max_bitrate_kbps < 50)
+		checked.max_bitrate_kbps = checked.bitrate_kbps;
+	if (!(checked.max_bitrate_window > 0.0))
+		checked.max_bitrate_window = 1.5;
+	if (checked.keyint_sec < 1)
+		checked.keyint_sec = 2;
+	if (checked.keyint_sec > 20)
+		checked.keyint_sec = 20;
+	if (!checked.width || !checked.height)
+		checked.width = checked.height = 0;
+	if (checked.scale_type <= OBS_SCALE_DISABLE || checked.scale_type > OBS_SCALE_AREA)
+		checked.scale_type = OBS_SCALE_BICUBIC;
+	return checked;
+}
+
 // codec("h264"/"hevc")을 내는 첫 비디오 인코더. iPad에서는 VideoToolbox 하드웨어 인코더뿐이다.
 static const char *find_video_encoder(const char *codec)
 {
@@ -231,9 +286,9 @@ static const char *find_video_encoder(const char *codec)
 	return NULL;
 }
 
-static obs_encoder_t *create_video_encoder(const char *codec, const char *name, const char *rate_control,
-					   int bitrate_kbps, int keyint_sec, bool bframes)
+static obs_encoder_t *create_video_encoder(const struct core_video_encoding *video, const char *name)
 {
+	const char *codec = codec_name(video->codec);
 	const char *id = find_video_encoder(codec);
 	if (!id) {
 		blog(LOG_WARNING, "[app] no %s video encoder", codec);
@@ -241,25 +296,47 @@ static obs_encoder_t *create_video_encoder(const char *codec, const char *name, 
 	}
 
 	obs_data_t *settings = obs_data_create();
-	obs_data_set_string(settings, "rate_control", rate_control);
-	obs_data_set_int(settings, "bitrate", bitrate_kbps);
-	obs_data_set_int(settings, "keyint_sec", keyint_sec);
-	obs_data_set_bool(settings, "bframes", bframes);
+	obs_data_set_string(settings, "rate_control", rate_control_name(video->rate_control));
+	obs_data_set_int(settings, "bitrate", video->bitrate_kbps);
+	obs_data_set_int(settings, "quality", video->quality);
+	obs_data_set_bool(settings, "limit_bitrate", video->limit_bitrate);
+	obs_data_set_int(settings, "max_bitrate", video->max_bitrate_kbps);
+	obs_data_set_double(settings, "max_bitrate_window", video->max_bitrate_window);
+	obs_data_set_int(settings, "keyint_sec", video->keyint_sec);
+	obs_data_set_string(settings, "profile", profile_name(video));
+	obs_data_set_bool(settings, "bframes", video->bframes);
 	obs_encoder_t *encoder = obs_video_encoder_create(id, name, settings, NULL);
 	obs_data_release(settings);
+	if (!encoder)
+		return NULL;
 
-	if (encoder) {
-		obs_encoder_set_video(encoder, obs_get_video());
-		blog(LOG_INFO, "[app] %s: %s, %s %d kbps, keyframe %d s, %s", name, id, rate_control, bitrate_kbps,
-		     keyint_sec, bframes ? "B-frames" : "no B-frames");
+	obs_encoder_set_video(encoder, obs_get_video());
+	// 캔버스와 다른 출력 크기는 GPU에서 줄인다 (인코더만 쓰는 비디오 믹스가 생긴다)
+	if (video->width && video->height) {
+		obs_encoder_set_scaled_size(encoder, video->width, video->height);
+		obs_encoder_set_gpu_scale_type(encoder, (enum obs_scale_type)video->scale_type);
 	}
+
+	char rate[64];
+	if (video->rate_control == CORE_RC_CRF)
+		snprintf(rate, sizeof(rate), "CRF quality %d", video->quality);
+	else
+		snprintf(rate, sizeof(rate), "%s %d kbps", rate_control_name(video->rate_control), video->bitrate_kbps);
+	char limit[64] = "";
+	if (video->limit_bitrate && video->rate_control != CORE_RC_CBR)
+		snprintf(limit, sizeof(limit), " (max %d kbps over %.2f s)", video->max_bitrate_kbps,
+			 video->max_bitrate_window);
+	blog(LOG_INFO, "[app] %s: %s, %s%s, keyframe %d s, %s, profile %s, output %ux%u", name, id, rate, limit,
+	     video->keyint_sec, video->bframes ? "B-frames" : "no B-frames", profile_name(video),
+	     obs_encoder_get_width(encoder), obs_encoder_get_height(encoder));
 	return encoder;
 }
 
-static obs_encoder_t *create_audio_encoder(const char *name, int bitrate_kbps)
+static obs_encoder_t *create_audio_encoder(const struct core_audio_encoding *audio, const char *name)
 {
 	obs_data_t *settings = obs_data_create();
-	obs_data_set_int(settings, "bitrate", bitrate_kbps);
+	obs_data_set_int(settings, "bitrate", audio->bitrate_kbps);
+	obs_data_set_bool(settings, "allow he-aac", audio->he_aac);
 	obs_encoder_t *encoder = obs_audio_encoder_create("CoreAudio_AAC", name, settings, 0, NULL);
 	obs_data_release(settings);
 
@@ -270,45 +347,32 @@ static obs_encoder_t *create_audio_encoder(const char *name, int bitrate_kbps)
 	return encoder;
 }
 
-// 인코더를 원하는 코덱·설정으로 맞춘다. 쓰는 중이면 그대로 둔다.
-// 캔버스를 바꿨을 수 있으므로 지금 비디오 출력에 다시 붙인다.
-static obs_encoder_t *prepare_video_encoder(obs_encoder_t *encoder, const char *codec, const char *name,
-					    const char *rate_control, int bitrate_kbps, int keyint_sec, bool bframes)
+// 쓰는 중인 인코더는 그대로 둔다 (녹화와 리플레이가 같이 쓴다). 쉬고 있으면 새로 만든다:
+// 코덱·출력 크기·스케일은 만든 인코더에서 바꿀 수 없고, 캔버스를 바꿨을 수도 있다.
+static obs_encoder_t *prepare_video_encoder(obs_encoder_t *encoder, const struct core_video_encoding *video,
+					    const char *name)
 {
 	if (encoder && obs_encoder_active(encoder))
 		return encoder;
-
-	if (encoder && strcmp(obs_encoder_get_codec(encoder), codec) != 0) {
-		obs_encoder_release(encoder);
-		encoder = NULL;
-	}
-	if (!encoder)
-		return create_video_encoder(codec, name, rate_control, bitrate_kbps, keyint_sec, bframes);
-
-	obs_data_t *settings = obs_encoder_get_settings(encoder);
-	obs_data_set_string(settings, "rate_control", rate_control);
-	obs_data_set_int(settings, "bitrate", bitrate_kbps);
-	obs_data_set_int(settings, "keyint_sec", keyint_sec);
-	obs_data_set_bool(settings, "bframes", bframes);
-	obs_encoder_update(encoder, settings);
-	obs_data_release(settings);
-
-	obs_encoder_set_video(encoder, obs_get_video());
-	return encoder;
+	obs_encoder_release(encoder);
+	return create_video_encoder(video, name);
 }
 
-static obs_encoder_t *prepare_audio_encoder(obs_encoder_t *encoder, const char *name, int bitrate_kbps)
+static obs_encoder_t *prepare_audio_encoder(obs_encoder_t *encoder, const struct core_audio_encoding *audio,
+					    const char *name)
 {
 	if (encoder && obs_encoder_active(encoder))
 		return encoder;
-	if (!encoder)
-		return create_audio_encoder(name, bitrate_kbps);
+	obs_encoder_release(encoder);
+	return create_audio_encoder(audio, name);
+}
 
-	obs_data_t *settings = obs_encoder_get_settings(encoder);
-	obs_data_set_int(settings, "bitrate", bitrate_kbps);
-	obs_encoder_update(encoder, settings);
-	obs_data_release(settings);
-	return encoder;
+static struct core_audio_encoding checked_audio(const struct core_audio_encoding *audio)
+{
+	struct core_audio_encoding checked = *audio;
+	if (checked.bitrate_kbps < 32)
+		checked.bitrate_kbps = 160;
+	return checked;
 }
 
 bool core_outputs_active(void)
@@ -319,10 +383,11 @@ bool core_outputs_active(void)
 
 #pragma mark - 녹화
 
-static bool start_recording_with(const char *codec, const char *path, int video_kbps, int audio_kbps)
+static bool start_recording_with(const char *path, const struct core_video_encoding *video,
+				 const struct core_audio_encoding *audio)
 {
-	out.record_video = prepare_video_encoder(out.record_video, codec, "Record Video", "ABR", video_kbps, 2, true);
-	out.record_audio = prepare_audio_encoder(out.record_audio, "Record Audio", audio_kbps);
+	out.record_video = prepare_video_encoder(out.record_video, video, "Record Video");
+	out.record_audio = prepare_audio_encoder(out.record_audio, audio, "Record Audio");
 	if (!out.recording)
 		out.recording = create_output("mp4_output", "Recording", false);
 	if (!out.recording || !out.record_video || !out.record_audio)
@@ -336,8 +401,10 @@ static bool start_recording_with(const char *codec, const char *path, int video_
 	obs_output_set_video_encoder(out.recording, out.record_video);
 	obs_output_set_audio_encoder(out.recording, out.record_audio, 0);
 
+	const char *codec = obs_encoder_get_codec(out.record_video);
 	if (obs_output_start(out.recording)) {
-		blog(LOG_INFO, "[app] recording to %s (%s %d kbps, AAC %d kbps)", path, codec, video_kbps, audio_kbps);
+		blog(LOG_INFO, "[app] recording to %s (%s %d kbps, AAC %d kbps)", path, codec, video->bitrate_kbps,
+		     audio->bitrate_kbps);
 		return true;
 	}
 
@@ -346,7 +413,8 @@ static bool start_recording_with(const char *codec, const char *path, int video_
 	return false;
 }
 
-bool core_recording_start(const char *path, const char *codec, int video_kbps, int audio_kbps)
+bool core_recording_start(const char *path, const struct core_video_encoding *video_in,
+			  const struct core_audio_encoding *audio_in)
 {
 	if (out.recording && obs_output_active(out.recording))
 		return true;
@@ -355,12 +423,16 @@ bool core_recording_start(const char *path, const char *codec, int video_kbps, i
 	out.record_error[0] = 0;
 	pthread_mutex_unlock(&out.mutex);
 
-	if (start_recording_with(codec, path, video_kbps, audio_kbps))
+	struct core_video_encoding video = checked_video(video_in);
+	struct core_audio_encoding audio = checked_audio(audio_in);
+	if (start_recording_with(path, &video, &audio))
 		return true;
 
 	// 그 코덱의 인코더를 만들 수 없는 환경(예: 시뮬레이터)에서는 H.264로 다시 시도한다
-	if (strcmp(codec, "h264") != 0)
-		return start_recording_with("h264", path, video_kbps, audio_kbps);
+	if (video.codec != CORE_CODEC_H264) {
+		video.codec = CORE_CODEC_H264;
+		return start_recording_with(path, &video, &audio);
+	}
 	return false;
 }
 
@@ -380,19 +452,19 @@ void core_recording_stop(bool force)
 
 #pragma mark - 송출
 
-// codec이 "hevc"면 Enhanced RTMP로 HEVC를 보낸다 (받는 쪽이 지원해야 한다, O4)
-bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps,
-			  int keyint_sec, bool bframes)
+// HEVC는 Enhanced RTMP로 보낸다 (받는 쪽이 지원해야 한다, O4)
+bool core_streaming_start(const char *server, const char *key, const struct core_video_encoding *video_in,
+			  const struct core_audio_encoding *audio_in, const struct core_stream_options *options)
 {
-	if (keyint_sec < 1)
-		keyint_sec = 2;
-
 	if (out.streaming && obs_output_active(out.streaming))
 		return true;
 
 	pthread_mutex_lock(&out.mutex);
 	out.stream_error[0] = 0;
 	pthread_mutex_unlock(&out.mutex);
+
+	const struct core_video_encoding video = checked_video(video_in);
+	const struct core_audio_encoding audio = checked_audio(audio_in);
 
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "server", server);
@@ -403,23 +475,33 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 		obs_service_update(out.service, settings);
 	obs_data_release(settings);
 
-	out.stream_video = prepare_video_encoder(out.stream_video, codec, "Stream Video", "CBR", video_kbps, keyint_sec,
-						 bframes);
-	out.stream_audio = prepare_audio_encoder(out.stream_audio, "Stream Audio", audio_kbps);
+	out.stream_video = prepare_video_encoder(out.stream_video, &video, "Stream Video");
+	out.stream_audio = prepare_audio_encoder(out.stream_audio, &audio, "Stream Audio");
 
 	// RTMP/RTMPS는 rtmp_output, SRT는 obs-ffmpeg의 mpegts 출력 (P5). 프로토콜이 바뀌면 출력을 다시 만든다
-	const char *output_id = is_srt_url(server) ? "ffmpeg_mpegts_muxer" : "rtmp_output";
+	const bool srt = is_srt_url(server);
+	const char *output_id = srt ? "ffmpeg_mpegts_muxer" : "rtmp_output";
 	if (out.streaming && strcmp(obs_output_get_id(out.streaming), output_id) != 0) {
 		obs_output_release(out.streaming);
 		out.streaming = NULL;
 	}
-	if (!out.streaming) {
+	if (!out.streaming)
 		out.streaming = create_output(output_id, "Streaming", true);
-		if (out.streaming)
-			obs_output_set_reconnect_settings(out.streaming, 20, 5);
-	}
 	if (!out.service || !out.stream_video || !out.stream_audio || !out.streaming)
 		return false;
+
+	// 연결 옵션 (P11): 재연결, 송출 지연, 네트워크가 막힐 때 비트레이트 조절(rtmp_output만)
+	const int retries = options->reconnect ? (options->retries > 0 ? options->retries : 20) : 0;
+	const int retry_sec = options->retry_sec > 0 ? options->retry_sec : 5;
+	const int delay_sec = options->delay_sec > 0 ? options->delay_sec : 0;
+	obs_output_set_reconnect_settings(out.streaming, retries, retry_sec);
+	obs_output_set_delay(out.streaming, (uint32_t)delay_sec, OBS_OUTPUT_DELAY_PRESERVE);
+	if (!srt) {
+		obs_data_t *output_settings = obs_data_create();
+		obs_data_set_bool(output_settings, "dyn_bitrate", options->dyn_bitrate);
+		obs_output_update(out.streaming, output_settings);
+		obs_data_release(output_settings);
+	}
 
 	obs_output_set_service(out.streaming, out.service);
 	obs_output_set_video_encoder(out.streaming, out.stream_video);
@@ -435,12 +517,17 @@ bool core_streaming_start(const char *server, const char *key, const char *codec
 	}
 
 	// 서버 주소는 남기되 스트림 키와 URL의 옵션(SRT passphrase 등)은 로그에 남기지 않는다
-	video_t *video = obs_encoder_video(out.stream_video);
+	video_t *video_out = obs_encoder_video(out.stream_video);
 	const char *query = strchr(server, '?');
-	blog(LOG_INFO, "[app] streaming to %.*s%s (%s %d kbps at %.2f fps %ux%u, keyframe %d s, %s, AAC %d kbps)",
-	     query ? (int)(query - server) : (int)strlen(server), server, query ? "?…" : "", codec, video_kbps,
-	     video ? video_output_get_frame_rate(video) : 0.0, obs_encoder_get_width(out.stream_video),
-	     obs_encoder_get_height(out.stream_video), keyint_sec, bframes ? "B-frames" : "no B-frames", audio_kbps);
+	blog(LOG_INFO, "[app] streaming to %.*s%s (%s %s %d kbps at %.2f fps %ux%u, keyframe %d s, %s, AAC %d kbps)",
+	     query ? (int)(query - server) : (int)strlen(server), server, query ? "?…" : "",
+	     obs_encoder_get_codec(out.stream_video), rate_control_name(video.rate_control), video.bitrate_kbps,
+	     video_out ? video_output_get_frame_rate(video_out) : 0.0, obs_encoder_get_width(out.stream_video),
+	     obs_encoder_get_height(out.stream_video), video.keyint_sec, video.bframes ? "B-frames" : "no B-frames",
+	     audio.bitrate_kbps);
+	blog(LOG_INFO, "[app] streaming options: reconnect %s (%d x %d s), delay %d s, dynamic bitrate %s",
+	     retries ? "on" : "off", retries, retry_sec, delay_sec,
+	     srt ? "n/a (SRT)" : (options->dyn_bitrate ? (delay_sec ? "off (delay)" : "on") : "off"));
 	return true;
 }
 
@@ -482,10 +569,11 @@ static void replay_stopped(void *param, calldata_t *cd)
 	     stop_code_text(code), code);
 }
 
-static bool start_replay_with(const char *codec, const char *directory, int seconds, int video_kbps, int audio_kbps)
+static bool start_replay_with(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video,
+			      const struct core_audio_encoding *audio)
 {
-	out.record_video = prepare_video_encoder(out.record_video, codec, "Record Video", "ABR", video_kbps, 2, true);
-	out.record_audio = prepare_audio_encoder(out.record_audio, "Record Audio", audio_kbps);
+	out.record_video = prepare_video_encoder(out.record_video, video, "Record Video");
+	out.record_audio = prepare_audio_encoder(out.record_audio, audio, "Record Audio");
 	if (!out.replay) {
 		out.replay = obs_output_create("ios_replay_buffer", "Replay Buffer", NULL, NULL);
 		if (out.replay) {
@@ -500,6 +588,7 @@ static bool start_replay_with(const char *codec, const char *directory, int seco
 	obs_data_t *settings = obs_data_create();
 	obs_data_set_string(settings, "directory", directory);
 	obs_data_set_int(settings, "max_time_sec", seconds);
+	obs_data_set_int(settings, "max_size_mb", max_mb);
 	obs_output_update(out.replay, settings);
 	obs_data_release(settings);
 
@@ -507,25 +596,36 @@ static bool start_replay_with(const char *codec, const char *directory, int seco
 	obs_output_set_audio_encoder(out.replay, out.record_audio, 0);
 
 	if (obs_output_start(out.replay)) {
-		blog(LOG_INFO, "[app] replay buffer: last %d s to %s (%s)", seconds, directory,
+		blog(LOG_INFO, "[app] replay buffer: last %d s (up to %d MB) to %s (%s)", seconds, max_mb, directory,
 		     obs_encoder_get_codec(out.record_video));
 		return true;
 	}
 
 	const char *error = obs_output_get_last_error(out.replay);
-	blog(LOG_WARNING, "[app] replay buffer failed to start with %s: %s", codec, error ? error : "unknown error");
+	blog(LOG_WARNING, "[app] replay buffer failed to start with %s: %s", codec_name(video->codec),
+	     error ? error : "unknown error");
 	return false;
 }
 
-bool core_replay_start(const char *directory, int seconds, const char *codec, int video_kbps, int audio_kbps)
+bool core_replay_start(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video_in,
+		       const struct core_audio_encoding *audio_in)
 {
 	if (out.replay && obs_output_active(out.replay))
 		return true;
-	if (start_replay_with(codec, directory, seconds, video_kbps, audio_kbps))
+	if (seconds < 1)
+		seconds = 30;
+	if (max_mb < 64)
+		max_mb = 2048;
+
+	struct core_video_encoding video = checked_video(video_in);
+	const struct core_audio_encoding audio = checked_audio(audio_in);
+	if (start_replay_with(directory, seconds, max_mb, &video, &audio))
 		return true;
 	// 녹화와 같이 그 코덱을 쓸 수 없으면 H.264로
-	if (strcmp(codec, "h264") != 0)
-		return start_replay_with("h264", directory, seconds, video_kbps, audio_kbps);
+	if (video.codec != CORE_CODEC_H264) {
+		video.codec = CORE_CODEC_H264;
+		return start_replay_with(directory, seconds, max_mb, &video, &audio);
+	}
 	return false;
 }
 

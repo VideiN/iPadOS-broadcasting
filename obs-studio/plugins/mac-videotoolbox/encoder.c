@@ -565,7 +565,10 @@ static OSStatus create_encoder(struct vt_encoder *enc)
 					     kVTCompressionPropertyKey_AllowFrameReordering,
 					     kVTCompressionPropertyKey_ProfileLevel};
 
-		int actual_frame_rate = enc->fps_num / enc->fps_den;
+		/* iOS port: round instead of truncating, so 29.97 fps (30000/1001)
+		 * gives 30 rather than 29 and the keyframe interval matches the
+		 * requested seconds */
+		int actual_frame_rate = (int)(((uint64_t)enc->fps_num + enc->fps_den / 2) / enc->fps_den);
 		int key_frame_interval = enc->keyint * actual_frame_rate;
 
 		CFNumberRef MaxKeyFrameInterval =

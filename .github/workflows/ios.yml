@@ -257,10 +257,13 @@ jobs:
           ffmpeg_srt_pid=$!
           # 화면 시험(-autotest-ui)도 함께: 세로로 띄워 송출 중에 설정 시트를 연 채로 가로로 돌리고,
           # 가로에서 시트를 하나씩 연 뒤 다시 세로로
+          # P11: 캔버스 색 Rec.601 전체 범위, 오디오 44.1 kHz 모노로 띄우고, SRT를 보내는 동안 다른 인코딩
+          # 설정(ABR + 최대 비트레이트, 키프레임 1초, B프레임 없음, H.264 main, 절반 크기)으로 녹화한다
           rotate_device portrait
           app_tmp=$(xcrun simctl get_app_container "$SIM_UDID" "$bundle_id" data)/tmp
           mkdir -p "$app_tmp"
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation portrait \
+            -canvas-color 601,full -audio 44100,mono \
             -autotest-srt 10 srt://127.0.0.1:9000 -autotest-ui > app-run/app-relaunch.log 2>&1 &
           for _ in $(seq 1 60); do
             grep -q 'capture started' app-run/app-relaunch.log && break
@@ -286,6 +289,7 @@ jobs:
           done
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
+          cp "$data_dir/Documents/Recordings/encoding-test.mp4" app-run/ || true
           (sleep 5; kill "$ffmpeg_srt_pid" 2> /dev/null) &
           wait "$ffmpeg_srt_pid" || true
           cat app-run/ffmpeg-srt.log
@@ -462,15 +466,41 @@ jobs:
           awk -F, '{ n++; if ($1 != $2) reordered++ } $3 ~ /K/ { if (last && n - last > gap) gap = n - last; last = n }
                    END { printf "received video packets %d, longest keyframe gap %d packets, reordered %d\n", n, gap, reordered
                          exit (gap > 0 && gap <= 31 && reordered == 0) ? 0 : 1 }' app-run/received-packets.csv
-          # 리플레이 버퍼 10초: 키프레임(2초 간격)부터 시작하므로 8~11초
+          # 리플레이 버퍼 7초 (목록에 없는 직접 입력 값, P11): 키프레임(2초 간격)부터 시작하므로 5~8초
+          grep -q 'replay buffer: last 7 s (up to 2048 MB)' app-run/app.log
           grep -q '\[app\] replay saved: ' app-run/app.log
-          check_media app-run/replay.mp4 'hevc|h264' 7.5 11.5
+          check_media app-run/replay.mp4 'hevc|h264' 4.5 8.5
+          # 송출 연결 옵션 (P11): 혼잡 시 비트레이트 조절을 켠 RTMP
+          grep -q 'streaming options: reconnect on (20 x 5 s), delay 0 s, dynamic bitrate on' app-run/app.log
+          grep -q 'Dynamic bitrate using default interpolation' app-run/app.log
+          # 인코딩 설정 녹화 (P11, 다시 띄운 실행): 320x180(캔버스 640x360의 절반), H.264 Main, B프레임 없음,
+          # 키프레임 1초(30프레임), Rec.601 전체 범위, AAC 44.1 kHz 모노
+          grep -q 'core started (640x360 @ 30.000 fps, 30/1), color 601 full, audio 44100 Hz mono' app-run/app-relaunch.log
+          grep -q 'Record Video: .*ABR 2500 kbps (max 3000 kbps over 1.50 s), keyframe 1 s, no B-frames, profile main, output 320x180' \
+            app-run/app-relaunch.log
+          ffprobe -v error -show_entries stream=codec_name,profile,width,height,has_b_frames,color_range,color_space,color_primaries,sample_rate,channels:format=duration \
+            -of default=noprint_wrappers=1 app-run/encoding-test.mp4 | tee app-run/encoding-test.txt
+          grep -q 'codec_name=h264' app-run/encoding-test.txt
+          grep -q 'profile=Main' app-run/encoding-test.txt
+          grep -q 'width=320' app-run/encoding-test.txt
+          grep -q 'height=180' app-run/encoding-test.txt
+          grep -q 'has_b_frames=0' app-run/encoding-test.txt
+          grep -q 'color_range=pc' app-run/encoding-test.txt
+          grep -Eq 'color_space=(smpte170m|bt470bg)' app-run/encoding-test.txt
+          grep -q 'sample_rate=44100' app-run/encoding-test.txt
+          grep -q 'channels=1' app-run/encoding-test.txt
+          ffprobe -v error -select_streams v:0 -show_entries packet=pts,dts,flags -of csv=p=0 app-run/encoding-test.mp4 \
+            > app-run/encoding-test-packets.csv
+          awk -F, '{ n++; if ($1 != $2) reordered++ } $3 ~ /K/ { if (last && n - last > gap) gap = n - last; last = n }
+                   END { printf "encoding test packets %d, longest keyframe gap %d packets, reordered %d\n", n, gap, reordered
+                         exit (n > 60 && gap > 0 && gap <= 31 && reordered == 0) ? 0 : 1 }' app-run/encoding-test-packets.csv
           # SRT 송출 10초 (P5)
           grep -q 'srt autotest: started true' app-run/app-relaunch.log
           grep -q "srt autotest: done (stream error '')" app-run/app-relaunch.log
           check_media app-run/received-srt.ts 'h264' "$(sent_min "${srt_s:-9.5}")"
           # 통과하면 큰 미디어 파일은 아티팩트에서 뺀다 (실패하면 남겨서 내려받아 볼 수 있게)
-          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts
+          rm -f app-run/autotest.mp4 app-run/received.flv app-run/replay.mp4 app-run/test-media.mp4 app-run/received-srt.ts \
+            app-run/encoding-test.mp4
 
       - uses: actions/upload-artifact@v7
         if: always() && matrix.platform == 'iphonesimulator'

@@ -75,10 +75,19 @@ final class Core: ObservableObject {
     @Published private(set) var frameRate: FrameRateChoice
 
     var fps: Double { frameRate.fps }
+    /// 캔버스 색 (P11). `-canvas-color 601,full`로 띄우면 그 값 (저장하지 않음)
+    @Published private(set) var color: CanvasColor
+    /// 이 실행이 시작할 때 쓴 오디오 형식 (설정을 바꾸면 다시 열어야 적용된다)
+    private(set) var audioFormat = (sampleRate: 48000, channels: 2)
 
     private init() {
         AppSettings.register()
         let defaults = AppSettings.defaults
+        color =
+            Self.colorFromArguments()
+            ?? CanvasColor(
+                colorSpace: defaults.integer(forKey: AppSettings.canvasColorSpace),
+                range: defaults.integer(forKey: AppSettings.canvasRange))
         if let canvas = Self.canvasFromArguments() {
             (width, height, frameRate) = canvas
         } else {
@@ -95,13 +104,18 @@ final class Core: ObservableObject {
     }
 
     /// 캔버스를 바꾸고 저장한다. 녹화·송출 중이면 바꾸지 않는다.
-    func applyCanvas(width: UInt32, height: UInt32, frameRate: FrameRateChoice) -> Bool {
-        guard frameRate.numerator > 0, frameRate.denominator > 0,
-            core_reset_canvas(width, height, UInt32(frameRate.numerator), UInt32(frameRate.denominator))
-        else { return false }
+    func applyCanvas(width: UInt32, height: UInt32, frameRate: FrameRateChoice, color: CanvasColor? = nil) -> Bool {
+        let color = color ?? self.color
+        guard frameRate.numerator > 0, frameRate.denominator > 0 else { return false }
+        core_set_canvas_color(Int32(color.colorSpace), Int32(color.range))
+        guard core_reset_canvas(width, height, UInt32(frameRate.numerator), UInt32(frameRate.denominator)) else {
+            core_set_canvas_color(Int32(self.color.colorSpace), Int32(self.color.range))
+            return false
+        }
         self.width = width
         self.height = height
         self.frameRate = frameRate
+        self.color = color
 
         let defaults = AppSettings.defaults
         defaults.set(Int(width), forKey: AppSettings.canvasWidth)
@@ -109,8 +123,33 @@ final class Core: ObservableObject {
         defaults.set(frameRate.numerator, forKey: AppSettings.canvasFPSNum)
         defaults.set(frameRate.denominator, forKey: AppSettings.canvasFPSDen)
         defaults.set(Int(frameRate.fps.rounded()), forKey: AppSettings.canvasFPS)
-        appLog("canvas set to \(width)x\(height) @ \(frameRate.logText)")
+        defaults.set(color.colorSpace, forKey: AppSettings.canvasColorSpace)
+        defaults.set(color.range, forKey: AppSettings.canvasRange)
+        appLog("canvas set to \(width)x\(height) @ \(frameRate.logText), \(color.logText)")
         return true
+    }
+
+    /// `-canvas-color 601,full`
+    private static func colorFromArguments() -> CanvasColor? {
+        let args = ProcessInfo.processInfo.arguments
+        guard let index = args.firstIndex(of: "-canvas-color"), index + 1 < args.count else { return nil }
+        let parts = args[index + 1].split(separator: ",").map(String.init)
+        guard parts.count == 2, let space = CanvasColor.spaces.first(where: { $0.name == parts[0] }) else { return nil }
+        return CanvasColor(colorSpace: space.value, range: parts[1] == "full" ? 2 : 1)
+    }
+
+    /// 오디오 출력 형식 (P11): 설정값, 또는 `-audio 44100,mono`. 시작할 때만 정해진다
+    private static func startupAudioFormat() -> (sampleRate: UInt32, channels: Int32) {
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-audio"), index + 1 < args.count {
+            let parts = args[index + 1].split(separator: ",")
+            if parts.count == 2, let rate = UInt32(parts[0]) {
+                return (rate, parts[1] == "mono" ? 1 : 2)
+            }
+        }
+        let defaults = AppSettings.defaults
+        return (UInt32(defaults.integer(forKey: AppSettings.audioSampleRate)),
+                Int32(defaults.integer(forKey: AppSettings.audioChannels)))
     }
 
     /// `-canvas 640x360@30`, `@30000/1001`, `@29.97`
@@ -148,6 +187,10 @@ final class Core: ObservableObject {
 
         let (width, height) = (width, height)
         let (fpsNum, fpsDen) = (UInt32(frameRate.numerator), UInt32(frameRate.denominator))
+        core_set_canvas_color(Int32(color.colorSpace), Int32(color.range))
+        let audio = Self.startupAudioFormat()
+        core_set_audio_format(audio.sampleRate, audio.channels)
+        audioFormat = (Int(audio.sampleRate), Int(audio.channels))
         var ok = false
         ready.enter()
         DispatchQueue.global(qos: .userInitiated).async {
