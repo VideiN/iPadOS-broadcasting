@@ -40,8 +40,62 @@ enum AppSettings {
     static let settingsPage = "settingsPage"  // 설정에서 마지막으로 본 페이지
     static let developerMode = "developerMode"  // 개발자 옵션 (정보의 빌드 줄을 7번 누르면 켜진다)
     static let glassUI = "glassUI"  // Liquid Glass 새 화면 (개발자 옵션, iOS 26+)
+    static let replayMaxMB = "replayMaxMB"  // 리플레이 버퍼가 메모리에 둘 최대 크기 (P11)
+    static let chzzkKeyint = "chzzkKeyint"  // 치지직 키프레임 간격 (권장 1초, 2초도 받는다)
+    static let canvasColorSpace = "canvasColorSpace"  // enum video_colorspace (1 601, 2 709, 3 sRGB)
+    static let canvasRange = "canvasRange"  // enum video_range_type (1 제한, 2 전체)
+    static let canvasScale = "canvasScale"  // 출력 크기가 다를 때의 스케일 필터 (enum obs_scale_type)
+    static let audioSampleRate = "audioSampleRate"  // 다음 실행부터
+    static let audioChannels = "audioChannels"
+    // 송출 연결 (P11)
+    static let streamDynBitrate = "streamDynBitrate"
+    static let streamReconnect = "streamReconnect"
+    static let streamRetries = "streamRetries"
+    static let streamRetrySeconds = "streamRetrySeconds"
+    static let streamDelay = "streamDelay"
+
+    /// 인코딩 설정 키 (P11): 송출은 "stream…", 녹화(리플레이 포함)는 "record…"
+    enum EncoderKey: String, CaseIterable {
+        case codec = "Codec", bitrate = "Bitrate", audioBitrate = "AudioBitrate"  // 예전부터 있던 키
+        case rateControl = "RateControl", quality = "Quality", limitBitrate = "LimitBitrate"
+        case maxBitrate = "MaxBitrate", maxBitrateWindow = "MaxBitrateWindow", keyint = "Keyint"
+        case profile = "Profile", bframes = "BFrames", outputHeight = "OutputHeight", heAAC = "HEAAC"
+    }
+
+    static func key(_ target: EncoderSettings.Target, _ key: EncoderKey) -> String {
+        target.rawValue + key.rawValue
+    }
 
     static func register() {
+        var encoderDefaults: [String: Any] = [:]
+        for target in EncoderSettings.Target.allCases {
+            let base = EncoderSettings.defaults(target)
+            encoderDefaults[key(target, .rateControl)] = base.rateControl
+            encoderDefaults[key(target, .quality)] = base.quality
+            encoderDefaults[key(target, .limitBitrate)] = base.limitBitrate
+            encoderDefaults[key(target, .maxBitrate)] = base.maxBitrateKbps
+            encoderDefaults[key(target, .maxBitrateWindow)] = base.maxBitrateWindow
+            encoderDefaults[key(target, .keyint)] = base.keyintSeconds
+            encoderDefaults[key(target, .profile)] = base.profile
+            encoderDefaults[key(target, .bframes)] = base.bframes
+            encoderDefaults[key(target, .outputHeight)] = 0
+            encoderDefaults[key(target, .heAAC)] = false
+        }
+        UserDefaults.standard.register(defaults: encoderDefaults)
+        UserDefaults.standard.register(defaults: [
+            replayMaxMB: 2048,
+            chzzkKeyint: 1,
+            canvasColorSpace: 2,
+            canvasRange: 1,
+            canvasScale: 2,
+            audioSampleRate: 48000,
+            audioChannels: 2,
+            streamDynBitrate: false,
+            streamReconnect: true,
+            streamRetries: 20,
+            streamRetrySeconds: 5,
+            streamDelay: 0,
+        ])
         UserDefaults.standard.register(defaults: [
             streamCodec: "h264",
             streamBitrate: 6000,
@@ -125,31 +179,133 @@ enum Chzzk {
     static let maxVideoKbps = 8000
     static let maxAudioKbps = 192
     static let maxFPS = 60.0
+    static let maxHeight = 1080
+    static let maxKeyint = 2
     /// 치지직 스트림 키는 직접 입력한 키와 따로 둔다 (방식을 바꿔도 섞이지 않게)
     static let keyStore = SecretItem(service: "io.github.videin.broadcast.stream-key.chzzk", fallbackKey: "chzzkStreamKey")
 }
 
-/// 송출 인코딩. 설정값을 쓰고, 치지직이면 그 권장값(H.264, 키프레임 1초, B프레임 없음, 최대 비트레이트)으로 덮어쓴다
-struct StreamEncoding {
-    var codec: String
-    var videoKbps: Int
-    var audioKbps: Int
-    var keyintSeconds = 2
-    var bframes = true
-
-    static func current(chzzk: Bool) -> StreamEncoding {
-        let defaults = AppSettings.defaults
-        let encoding = StreamEncoding(
-            codec: defaults.string(forKey: AppSettings.streamCodec) ?? "h264",
-            videoKbps: defaults.integer(forKey: AppSettings.streamBitrate),
-            audioKbps: defaults.integer(forKey: AppSettings.streamAudioBitrate))
-        return chzzk ? encoding.forChzzk() : encoding
+/// 비디오·오디오 인코딩 (P11). 송출과 녹화(리플레이 포함)가 각자의 키로 저장한다.
+/// 치지직이면 그 권장값(H.264, CBR, B프레임 없음, 최대 비트레이트·1080p)으로 덮어쓴다 (키프레임은 1·2초 중 고른 값)
+struct EncoderSettings: Equatable {
+    enum Target: String, CaseIterable {
+        case stream, record
     }
 
-    func forChzzk() -> StreamEncoding {
-        StreamEncoding(
-            codec: "h264", videoKbps: min(videoKbps, Chzzk.maxVideoKbps), audioKbps: min(audioKbps, Chzzk.maxAudioKbps),
-            keyintSeconds: 1, bframes: false)
+    var codec = "h264"  // "h264" | "hevc"
+    var rateControl = "CBR"  // "CBR" | "ABR" | "CRF"
+    var videoKbps = 6000
+    var quality = 60  // CRF 0~100
+    var limitBitrate = false  // ABR·CRF만
+    var maxBitrateKbps = 0  // 0이면 비디오 비트레이트
+    var maxBitrateWindow = 1.5  // 초
+    var keyintSeconds = 2
+    var profile = "high"  // H.264: "baseline" | "main" | "high"
+    var bframes = true
+    var outputHeight = 0  // 0이면 캔버스 크기. 폭은 캔버스 비율을 따른다
+    var audioKbps = 160
+    var heAAC = false
+
+    static func defaults(_ target: Target) -> EncoderSettings {
+        switch target {
+        case .stream: EncoderSettings()
+        case .record: EncoderSettings(codec: "hevc", rateControl: "ABR", videoKbps: 20000, audioKbps: 192)
+        }
+    }
+
+    static func load(_ target: Target) -> EncoderSettings {
+        let defaults = AppSettings.defaults
+        func key(_ key: AppSettings.EncoderKey) -> String { AppSettings.key(target, key) }
+        let base = Self.defaults(target)
+        var settings = base
+        settings.codec = defaults.string(forKey: key(.codec)) ?? base.codec
+        settings.rateControl = defaults.string(forKey: key(.rateControl)) ?? base.rateControl
+        settings.videoKbps = defaults.integer(forKey: key(.bitrate))
+        settings.quality = defaults.integer(forKey: key(.quality))
+        settings.limitBitrate = defaults.bool(forKey: key(.limitBitrate))
+        settings.maxBitrateKbps = defaults.integer(forKey: key(.maxBitrate))
+        settings.maxBitrateWindow = defaults.double(forKey: key(.maxBitrateWindow))
+        settings.keyintSeconds = defaults.integer(forKey: key(.keyint))
+        settings.profile = defaults.string(forKey: key(.profile)) ?? base.profile
+        settings.bframes = defaults.bool(forKey: key(.bframes))
+        settings.outputHeight = defaults.integer(forKey: key(.outputHeight))
+        settings.audioKbps = defaults.integer(forKey: key(.audioBitrate))
+        settings.heAAC = defaults.bool(forKey: key(.heAAC))
+        return settings
+    }
+
+    static func stream(chzzk: Bool, canvasHeight: UInt32) -> EncoderSettings {
+        let settings = load(.stream)
+        return chzzk ? settings.forChzzk(canvasHeight: canvasHeight) : settings
+    }
+
+    func forChzzk(
+        keyint: Int = max(AppSettings.defaults.integer(forKey: AppSettings.chzzkKeyint), 1), canvasHeight: UInt32
+    ) -> EncoderSettings {
+        var settings = self
+        settings.codec = "h264"
+        settings.rateControl = "CBR"
+        settings.videoKbps = min(videoKbps, Chzzk.maxVideoKbps)
+        settings.keyintSeconds = min(keyint, Chzzk.maxKeyint)
+        settings.bframes = false
+        settings.audioKbps = min(audioKbps, Chzzk.maxAudioKbps)
+        // 치지직은 1920×1080까지 받는다. 캔버스가 더 크면 1080p로 줄여 보낸다
+        let height = outputHeight > 0 ? min(outputHeight, Int(canvasHeight)) : Int(canvasHeight)
+        if height > Chzzk.maxHeight { settings.outputHeight = Chzzk.maxHeight }
+        return settings
+    }
+
+    /// 실제 출력 크기 (캔버스 비율, 짝수). 캔버스와 같으면 nil
+    func outputSize(canvasWidth: UInt32, canvasHeight: UInt32) -> (width: UInt32, height: UInt32)? {
+        guard outputHeight > 0, outputHeight < Int(canvasHeight), canvasHeight > 0 else { return nil }
+        let height = UInt32(outputHeight / 2 * 2)
+        let width = UInt32((Double(canvasWidth) * Double(height) / Double(canvasHeight) / 2).rounded()) * 2
+        return width >= 16 && height >= 16 ? (width, height) : nil
+    }
+
+    func video(canvasWidth: UInt32, canvasHeight: UInt32) -> core_video_encoding {
+        var video = core_video_encoding()
+        video.codec = Int32(codec == "hevc" ? CORE_CODEC_HEVC.rawValue : CORE_CODEC_H264.rawValue)
+        video.rate_control = Int32(
+            rateControl == "CRF" ? CORE_RC_CRF.rawValue : rateControl == "ABR" ? CORE_RC_ABR.rawValue : CORE_RC_CBR.rawValue)
+        video.bitrate_kbps = Int32(videoKbps)
+        video.quality = Int32(quality)
+        video.limit_bitrate = limitBitrate
+        video.max_bitrate_kbps = Int32(maxBitrateKbps > 0 ? maxBitrateKbps : videoKbps)
+        video.max_bitrate_window = maxBitrateWindow
+        video.keyint_sec = Int32(keyintSeconds)
+        video.profile = Int32(
+            profile == "baseline"
+                ? CORE_PROFILE_BASELINE.rawValue : profile == "main" ? CORE_PROFILE_MAIN.rawValue : CORE_PROFILE_HIGH.rawValue)
+        video.bframes = bframes
+        if let size = outputSize(canvasWidth: canvasWidth, canvasHeight: canvasHeight) {
+            (video.width, video.height) = size
+        }
+        video.scale_type = Int32(AppSettings.defaults.integer(forKey: AppSettings.canvasScale))
+        return video
+    }
+
+    var audio: core_audio_encoding {
+        core_audio_encoding(bitrate_kbps: Int32(audioKbps), he_aac: heAAC && audioKbps <= 64)
+    }
+
+    /// 화면용 요약: "CBR 6000 kbps, 키프레임 2초, B프레임"
+    var summary: String {
+        let rate = rateControl == "CRF" ? "CRF 품질 \(quality)" : "\(rateControl) \(videoKbps) kbps"
+        return "\(rate), 키프레임 \(keyintSeconds)초, \(bframes ? "B프레임" : "B프레임 없음")"
+    }
+}
+
+/// 송출 연결 옵션 (P11)
+enum StreamOptions {
+    static func current() -> core_stream_options {
+        let defaults = AppSettings.defaults
+        return core_stream_options(
+            dyn_bitrate: defaults.bool(forKey: AppSettings.streamDynBitrate),
+            reconnect: defaults.bool(forKey: AppSettings.streamReconnect),
+            retries: Int32(defaults.integer(forKey: AppSettings.streamRetries)),
+            retry_sec: Int32(defaults.integer(forKey: AppSettings.streamRetrySeconds)),
+            delay_sec: Int32(defaults.integer(forKey: AppSettings.streamDelay)))
     }
 }
 
@@ -210,7 +366,7 @@ enum RecordingFolder {
 
 /// 설정 화면의 페이지 (왼쪽 사이드바 목록)
 enum SettingsPage: String, CaseIterable, Identifiable {
-    case stream, record, replay, canvas, display, faceTracking, about, developer
+    case stream, record, canvas, display, faceTracking, about, developer
 
     var id: String { rawValue }
 
@@ -218,7 +374,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .stream: "송출"
         case .record: "녹화"
-        case .replay: "리플레이 버퍼"
         case .canvas: "캔버스"
         case .display: "화면"
         case .faceTracking: "얼굴 추적"
@@ -231,7 +386,6 @@ enum SettingsPage: String, CaseIterable, Identifiable {
         switch self {
         case .stream: "dot.radiowaves.left.and.right"
         case .record: "record.circle"
-        case .replay: "gobackward"
         case .canvas: "rectangle.dashed"
         case .display: "ipad.landscape"
         case .faceTracking: "face.smiling"
@@ -284,7 +438,8 @@ struct SettingsView: View {
         }
         .navigationSplitViewStyle(.balanced)
         .onAppear {
-            let saved = SettingsPage(rawValue: savedPage) ?? .stream
+            // 리플레이 버퍼는 녹화 페이지로 옮겼다 (P11)
+            let saved: SettingsPage = savedPage == "replay" ? .record : SettingsPage(rawValue: savedPage) ?? .stream
             page = initialPage ?? (pages.contains(saved) ? saved : .stream)
             appLog("settings: page \(page?.rawValue ?? "-")")
         }
@@ -301,7 +456,6 @@ struct SettingsView: View {
         switch page {
         case .stream: StreamSettingsPage(outputs: outputs)
         case .record: RecordSettingsPage(outputs: outputs)
-        case .replay: ReplaySettingsPage(outputs: outputs)
         case .canvas: CanvasSettingsPage(core: core, outputs: outputs)
         case .display: DisplaySettingsPage()
         case .faceTracking: FaceLinkSettingsView()
@@ -311,7 +465,7 @@ struct SettingsView: View {
     }
 }
 
-private let audioBitrates = [96, 128, 160, 192, 256, 320]
+private let audioBitrates = [32, 48, 64, 96, 128, 160, 192, 256, 320]
 
 private struct StreamSettingsPage: View {
     @ObservedObject var outputs: Outputs
@@ -319,11 +473,15 @@ private struct StreamSettingsPage: View {
     @ObservedObject private var core = Core.shared
     @AppStorage(AppSettings.streamServer) private var server = ""
     @AppStorage(AppSettings.streamMode) private var streamMode = "manual"
-    @AppStorage(AppSettings.streamCodec) private var streamCodec = "h264"
-    @AppStorage(AppSettings.streamBitrate) private var streamBitrate = 6000
-    @AppStorage(AppSettings.streamAudioBitrate) private var streamAudioBitrate = 160
+    @AppStorage(AppSettings.streamDynBitrate) private var dynBitrate = false
+    @AppStorage(AppSettings.streamReconnect) private var reconnect = true
+    @AppStorage(AppSettings.streamRetries) private var retries = 20
+    @AppStorage(AppSettings.streamRetrySeconds) private var retrySeconds = 5
+    @AppStorage(AppSettings.streamDelay) private var delay = 0
     @State private var streamKey = ""
     @State private var chzzkKey = ""
+
+    private var srt: Bool { streamMode == "manual" && server.lowercased().hasPrefix("srt://") }
 
     var body: some View {
         Form {
@@ -372,29 +530,29 @@ private struct StreamSettingsPage: View {
                     .disabled(outputs.stats.streaming)
             }
 
+            EncoderSection(target: .stream, chzzk: streamMode == "chzzk", footer: encodingFooter)
+                .disabled(outputs.stats.streaming)
+
             Section {
-                if streamMode == "chzzk" {
-                    LabeledContent("코덱", value: "H.264 (치지직)")
-                } else {
-                    Picker("코덱", selection: $streamCodec) {
-                        Text("H.264").tag("h264")
-                        Text("HEVC (Enhanced RTMP)").tag("hevc")
-                    }
+                Toggle("끊기면 다시 연결", isOn: $reconnect)
+                if reconnect {
+                    Stepper("최대 \(retries)번", value: $retries, in: 1...100)
+                    Stepper("\(retrySeconds)초 간격", value: $retrySeconds, in: 1...60)
                 }
-                Stepper("비디오 \(streamBitrate) kbps (CBR)", value: $streamBitrate, in: 1000...50000, step: 500)
-                Picker("오디오 (AAC)", selection: $streamAudioBitrate) {
-                    ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+                Stepper(delay == 0 ? "송출 지연 없음" : "송출 지연 \(delay)초", value: $delay, in: 0...60)
+                if !srt {
+                    Toggle("네트워크가 막히면 비트레이트 낮추기", isOn: $dynBitrate)
+                        .disabled(delay > 0)
                 }
             } header: {
-                Text("인코딩")
+                Text("연결")
             } footer: {
-                switch streamMode {
-                case "youtube":
-                    Text("HEVC는 YouTube가 받습니다 (Enhanced RTMP).")
-                case "chzzk":
-                    chzzkFooter
-                default:
-                    Text("HEVC는 받는 플랫폼이 지원할 때만 쓰세요.")
+                if delay > 0 && !srt {
+                    Text("송출 지연을 쓰는 동안은 비트레이트 자동 조절이 꺼집니다. 지연은 화면을 그만큼 늦게 보냅니다 (스포일러·사고 방지).")
+                } else if !srt {
+                    Text("비트레이트 자동 조절은 보내는 속도가 밀리면 비디오 비트레이트를 잠시 낮췄다가 되돌립니다 (RTMP만).")
+                } else {
+                    Text("SRT는 자체 재전송을 쓰므로 비트레이트 자동 조절이 없습니다.")
                 }
             }
             .disabled(outputs.stats.streaming)
@@ -405,10 +563,24 @@ private struct StreamSettingsPage: View {
         }
     }
 
+    private var encodingFooter: Text {
+        switch streamMode {
+        case "youtube":
+            return Text("HEVC는 YouTube가 받습니다 (Enhanced RTMP).")
+        case "chzzk":
+            return chzzkFooter
+        default:
+            return Text("HEVC는 받는 플랫폼이 지원할 때만 쓰세요.")
+        }
+    }
+
     /// 치지직 권장값으로 실제 보낼 값
     private var chzzkFooter: Text {
-        let encoding = StreamEncoding(codec: streamCodec, videoKbps: streamBitrate, audioKbps: streamAudioBitrate).forChzzk()
-        var text = "치지직 권장값으로 보냅니다: H.264, 키프레임 1초, B프레임 없음, 비디오 최대 \(Chzzk.maxVideoKbps)·오디오 최대 \(Chzzk.maxAudioKbps) kbps. 지금 설정으로는 비디오 \(encoding.videoKbps) kbps, 오디오 \(encoding.audioKbps) kbps."
+        let encoding = EncoderSettings.stream(chzzk: true, canvasHeight: core.height)
+        let size = encoding.outputSize(canvasWidth: core.width, canvasHeight: core.height)
+        var text =
+            "치지직 권장값으로 보냅니다: H.264, CBR, B프레임 없음, 비디오 최대 \(Chzzk.maxVideoKbps)·오디오 최대 \(Chzzk.maxAudioKbps) kbps, 1080p까지. 지금 설정으로는 비디오 \(encoding.videoKbps) kbps, 오디오 \(encoding.audioKbps) kbps, 키프레임 \(encoding.keyintSeconds)초"
+        text += size.map { ", \($0.width)×\($0.height)로 줄여서." } ?? "."
         if core.fps > Chzzk.maxFPS + 0.01 {
             text += " 캔버스가 60 fps를 넘습니다. 치지직은 60 fps까지 받으니 캔버스를 60 이하로 바꾸세요."
         }
@@ -416,30 +588,195 @@ private struct StreamSettingsPage: View {
     }
 }
 
+/// 송출·녹화의 비디오·오디오 인코딩 (P11). 치지직이면 권장값으로 덮어쓰는 항목은 고정해 보인다
+private struct EncoderSection: View {
+    let target: EncoderSettings.Target
+    var chzzk = false
+    let footer: Text
+
+    @ObservedObject private var core = Core.shared
+    @AppStorage private var codec: String
+    @AppStorage private var rateControl: String
+    @AppStorage private var bitrate: Int
+    @AppStorage private var quality: Int
+    @AppStorage private var limitBitrate: Bool
+    @AppStorage private var maxBitrate: Int
+    @AppStorage private var maxBitrateWindow: Double
+    @AppStorage private var keyint: Int
+    @AppStorage private var profile: String
+    @AppStorage private var bframes: Bool
+    @AppStorage private var outputHeight: Int
+    @AppStorage private var audioBitrate: Int
+    @AppStorage private var heAAC: Bool
+    @AppStorage(AppSettings.chzzkKeyint) private var chzzkKeyint = 1
+    @State private var customHeight = false
+    @State private var heightText = ""
+
+    init(target: EncoderSettings.Target, chzzk: Bool = false, footer: Text) {
+        self.target = target
+        self.chzzk = chzzk
+        self.footer = footer
+        let base = EncoderSettings.defaults(target)
+        func key(_ key: AppSettings.EncoderKey) -> String { AppSettings.key(target, key) }
+        _codec = AppStorage(wrappedValue: base.codec, key(.codec))
+        _rateControl = AppStorage(wrappedValue: base.rateControl, key(.rateControl))
+        _bitrate = AppStorage(wrappedValue: base.videoKbps, key(.bitrate))
+        _quality = AppStorage(wrappedValue: base.quality, key(.quality))
+        _limitBitrate = AppStorage(wrappedValue: base.limitBitrate, key(.limitBitrate))
+        _maxBitrate = AppStorage(wrappedValue: base.maxBitrateKbps, key(.maxBitrate))
+        _maxBitrateWindow = AppStorage(wrappedValue: base.maxBitrateWindow, key(.maxBitrateWindow))
+        _keyint = AppStorage(wrappedValue: base.keyintSeconds, key(.keyint))
+        _profile = AppStorage(wrappedValue: base.profile, key(.profile))
+        _bframes = AppStorage(wrappedValue: base.bframes, key(.bframes))
+        _outputHeight = AppStorage(wrappedValue: 0, key(.outputHeight))
+        _audioBitrate = AppStorage(wrappedValue: base.audioKbps, key(.audioBitrate))
+        _heAAC = AppStorage(wrappedValue: false, key(.heAAC))
+    }
+
+    private var record: Bool { target == .record }
+    private var rateControls: [String] { record ? ["ABR", "CBR", "CRF"] : ["CBR", "ABR"] }
+    /// 고를 수 있는 출력 높이 (캔버스보다 작은 것만)
+    private var heights: [Int] { [1440, 1080, 900, 720, 540, 480, 360].filter { $0 < Int(core.height) } }
+
+    var body: some View {
+        Section {
+            if chzzk {
+                LabeledContent("코덱", value: "H.264 (치지직)")
+                LabeledContent("레이트 컨트롤", value: "CBR (치지직)")
+            } else {
+                Picker("코덱", selection: $codec) {
+                    Text("H.264").tag("h264")
+                    Text(record ? "HEVC" : "HEVC (Enhanced RTMP)").tag("hevc")
+                }
+                Picker("레이트 컨트롤", selection: $rateControl) {
+                    ForEach(rateControls, id: \.self) { Text(Self.rateControlTitle($0)).tag($0) }
+                }
+            }
+            if rateControl == "CRF" && !chzzk {
+                LabeledContent("품질 \(quality)") {
+                    Slider(value: Binding(get: { Double(quality) }, set: { quality = Int($0) }), in: 0...100, step: 1)
+                        .frame(maxWidth: 260)
+                }
+            } else if record {
+                Stepper("비디오 \(bitrate / 1000) Mbps", value: $bitrate, in: 5000...150000, step: 5000)
+            } else {
+                Stepper("비디오 \(bitrate) kbps", value: $bitrate, in: 1000...50000, step: 500)
+            }
+            if chzzk {
+                Picker("키프레임 간격", selection: $chzzkKeyint) {
+                    Text("1초 (권장)").tag(1)
+                    Text("2초").tag(2)
+                }
+                LabeledContent("B프레임", value: "없음 (치지직)")
+            } else {
+                Picker("키프레임 간격", selection: $keyint) {
+                    ForEach(1...10, id: \.self) { Text("\($0)초").tag($0) }
+                }
+                Toggle("B프레임", isOn: $bframes)
+            }
+            outputSizeRows
+            Picker("오디오 (AAC)", selection: $audioBitrate) {
+                ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
+            }
+            DisclosureGroup("고급") {
+                if codec == "h264" || chzzk {
+                    Picker("프로파일", selection: $profile) {
+                        Text("High").tag("high")
+                        Text("Main").tag("main")
+                        Text("Baseline").tag("baseline")
+                    }
+                } else {
+                    LabeledContent("프로파일", value: "Main")
+                }
+                if rateControl != "CBR" && !chzzk {
+                    Toggle("최대 비트레이트 제한", isOn: $limitBitrate)
+                    if limitBitrate {
+                        Stepper(
+                            "최대 \(maxBitrate > 0 ? maxBitrate : bitrate) kbps",
+                            value: Binding(get: { maxBitrate > 0 ? maxBitrate : bitrate }, set: { maxBitrate = $0 }),
+                            in: 500...200000, step: 500)
+                        Stepper(
+                            String(format: "%.1f초 동안", maxBitrateWindow), value: $maxBitrateWindow, in: 0.5...10,
+                            step: 0.5)
+                    }
+                }
+                Toggle("HE-AAC (64 kbps 이하)", isOn: $heAAC)
+                    .disabled(audioBitrate > 64)
+            }
+        } header: {
+            Text(record ? "Hybrid MP4" : "인코딩")
+        } footer: {
+            footer
+        }
+        .onAppear {
+            customHeight = outputHeight > 0 && !heights.contains(outputHeight)
+            heightText = customHeight ? "\(outputHeight)" : ""
+        }
+    }
+
+    @ViewBuilder
+    private var outputSizeRows: some View {
+        Picker("출력 해상도", selection: heightTag) {
+            Text("캔버스와 같게 (\(core.width)×\(core.height))").tag(0)
+            ForEach(heights, id: \.self) { height in
+                Text(sizeText(height)).tag(height)
+            }
+            Text("직접 입력…").tag(-1)
+        }
+        if customHeight {
+            TextField("세로 픽셀 (예: 810)", text: $heightText)
+                .keyboardType(.numberPad)
+                .onChange(of: heightText) { _, text in
+                    if let height = Int(text), height >= 16, height < Int(core.height) { outputHeight = height }
+                }
+            if let height = Int(heightText), height >= 16, height < Int(core.height) {
+                LabeledContent("적용할 값", value: sizeText(height))
+            } else if !heightText.isEmpty {
+                Text("16 이상, 캔버스 높이(\(core.height))보다 작은 값을 넣으세요.").font(.footnote).foregroundStyle(.red)
+            }
+        }
+    }
+
+    private var heightTag: Binding<Int> {
+        Binding(
+            get: { customHeight ? -1 : (heights.contains(outputHeight) ? outputHeight : 0) },
+            set: { tag in
+                customHeight = tag == -1
+                if tag >= 0 {
+                    outputHeight = tag
+                } else {
+                    heightText = outputHeight > 0 ? "\(outputHeight)" : ""
+                }
+            })
+    }
+
+    private func sizeText(_ height: Int) -> String {
+        let settings = EncoderSettings(outputHeight: height)
+        guard let size = settings.outputSize(canvasWidth: core.width, canvasHeight: core.height) else { return "\(height)p" }
+        return "\(size.width)×\(size.height)"
+    }
+
+    private static func rateControlTitle(_ rateControl: String) -> String {
+        switch rateControl {
+        case "ABR": "ABR (평균 비트레이트)"
+        case "CRF": "CRF (품질 고정)"
+        default: "CBR (고정 비트레이트)"
+        }
+    }
+}
+
 private struct RecordSettingsPage: View {
     @ObservedObject var outputs: Outputs
-    @AppStorage(AppSettings.recordCodec) private var recordCodec = "hevc"
-    @AppStorage(AppSettings.recordBitrate) private var recordBitrate = 20000
-    @AppStorage(AppSettings.recordAudioBitrate) private var recordAudioBitrate = 192
     @State private var pickingFolder = false
     @State private var folderName = RecordingFolder.displayName
 
     var body: some View {
         Form {
-            Section {
-                Picker("코덱", selection: $recordCodec) {
-                    Text("HEVC").tag("hevc")
-                    Text("H.264").tag("h264")
-                }
-                Stepper("비디오 \(recordBitrate / 1000) Mbps", value: $recordBitrate, in: 5000...150000, step: 5000)
-                Picker("오디오 (AAC)", selection: $recordAudioBitrate) {
-                    ForEach(audioBitrates, id: \.self) { Text("\($0) kbps").tag($0) }
-                }
-            } header: {
-                Text("Hybrid MP4")
-            } footer: {
-                Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다.")
-            }
+            EncoderSection(
+                target: .record,
+                footer: Text("녹화 중에 앱이 강제로 끝나도 파일을 살릴 수 있는 형식입니다. CRF는 비트레이트 대신 품질을 고정합니다. 리플레이 버퍼도 이 설정을 같이 씁니다.")
+            )
+            .disabled(outputs.stats.recording || outputs.stats.replay_active)
 
             Section("저장 위치") {
                 LabeledContent("폴더", value: folderName)
@@ -451,8 +788,11 @@ private struct RecordSettingsPage: View {
                     }
                 }
             }
+            .disabled(outputs.stats.recording)
+
+            ReplaySection()
+                .disabled(outputs.stats.replay_active)
         }
-        .disabled(outputs.stats.recording)
         .fileImporter(isPresented: $pickingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result, RecordingFolder.remember(url) {
                 folderName = RecordingFolder.displayName
@@ -461,23 +801,114 @@ private struct RecordSettingsPage: View {
     }
 }
 
-private struct ReplaySettingsPage: View {
-    @ObservedObject var outputs: Outputs
+/// 리플레이 버퍼 길이: 목록 또는 직접 입력 ("90", "1:30", "2m", "1분 30초")
+enum ReplayDuration {
+    static let presets = [10, 15, 30, 60, 120, 300]
+    static let range = 1...3600
+
+    static func parse(_ text: String) -> Int? {
+        let text = text.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !text.isEmpty else { return nil }
+        var seconds: Int?
+        let colon = text.split(separator: ":", omittingEmptySubsequences: false)
+        if colon.count == 2, let minutes = Int(colon[0]), let rest = Int(colon[1]), (0..<60).contains(rest) {
+            seconds = minutes * 60 + rest
+        } else if let value = Int(text) {
+            seconds = value
+        } else {
+            // "2m", "90s", "1m30s", "2분", "90초", "1분 30초"
+            var total = 0
+            var number = ""
+            var matched = false
+            for character in text.replacingOccurrences(of: " ", with: "") {
+                if character.isNumber {
+                    number.append(character)
+                } else if let value = Int(number), "m분".contains(character) || "s초".contains(character) {
+                    total += "m분".contains(character) ? value * 60 : value
+                    number = ""
+                    matched = true
+                } else {
+                    return nil
+                }
+            }
+            seconds = matched && number.isEmpty ? total : nil
+        }
+        return seconds.flatMap { range.contains($0) ? $0 : nil }
+    }
+
+    static func text(_ seconds: Int) -> String {
+        let (minutes, rest) = (seconds / 60, seconds % 60)
+        if minutes == 0 { return "\(rest)초" }
+        return rest == 0 ? "\(minutes)분" : "\(minutes)분 \(rest)초"
+    }
+}
+
+private struct ReplaySection: View {
     @AppStorage(AppSettings.replaySeconds) private var replaySeconds = 30
+    @AppStorage(AppSettings.replayMaxMB) private var maxMB = 2048
+    @State private var custom = false
+    @State private var customText = ""
 
     var body: some View {
-        Form {
-            Section {
-                Picker("길이", selection: $replaySeconds) {
-                    ForEach([10, 15, 30, 60, 120, 300], id: \.self) { seconds in
-                        Text(seconds < 60 ? "\(seconds)초" : "\(seconds / 60)분").tag(seconds)
-                    }
-                }
-            } footer: {
-                Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 녹화 코덱·비트레이트를 같이 씁니다.")
+        Section {
+            Picker("길이", selection: tag) {
+                ForEach(ReplayDuration.presets, id: \.self) { Text(ReplayDuration.text($0)).tag($0) }
+                Text("직접 입력…").tag(-1)
             }
-            .disabled(outputs.stats.replay_active)
+            if custom {
+                TextField("예: 90, 1:30, 2분", text: $customText)
+                    .keyboardType(.numbersAndPunctuation)
+                    .autocorrectionDisabled()
+                    .onChange(of: customText) { _, text in
+                        if let seconds = ReplayDuration.parse(text) { replaySeconds = seconds }
+                    }
+                if let seconds = ReplayDuration.parse(customText) {
+                    LabeledContent("적용할 값", value: ReplayDuration.text(seconds))
+                } else if !customText.isEmpty {
+                    Text("1초~60분 사이로 넣으세요 (90, 1:30, 2분, 1분 30초).").font(.footnote).foregroundStyle(.red)
+                }
+            }
+            Stepper("메모리 최대 \(maxMB) MB", value: $maxMB, in: 256...8192, step: 256)
+            Text(estimate).font(.footnote).foregroundStyle(estimateTooBig ? .orange : .secondary)
+        } header: {
+            Text("리플레이 버퍼")
+        } footer: {
+            Text("켜 두면 마지막 장면을 메모리에 두었다가 \"리플레이 저장\"을 누를 때 앱의 Recordings 폴더에 MP4로 저장합니다. 위의 녹화 인코딩을 같이 씁니다.")
         }
+        .onAppear {
+            custom = !ReplayDuration.presets.contains(replaySeconds)
+            customText = custom ? "\(replaySeconds)" : ""
+        }
+    }
+
+    private var tag: Binding<Int> {
+        Binding(
+            get: { custom ? -1 : replaySeconds },
+            set: { tag in
+                custom = tag == -1
+                if tag > 0 {
+                    replaySeconds = tag
+                } else {
+                    customText = "\(replaySeconds)"
+                }
+            })
+    }
+
+    /// 녹화 비트레이트로 어림한 메모리
+    private var estimatedMB: Int? {
+        let encoding = EncoderSettings.load(.record)
+        guard encoding.rateControl != "CRF" else { return nil }
+        return (encoding.videoKbps + encoding.audioKbps) * replaySeconds / 8000
+    }
+
+    private var estimateTooBig: Bool { (estimatedMB ?? 0) > maxMB }
+
+    private var estimate: String {
+        guard let estimatedMB else { return "CRF(품질 고정)는 크기를 미리 알 수 없습니다. 최대를 넘으면 오래된 부분부터 버립니다." }
+        if estimateTooBig {
+            return "예상 \(estimatedMB) MB로 최대를 넘습니다. 앞부분이 잘려 \(ReplayDuration.text(max(1, replaySeconds * maxMB / max(estimatedMB, 1)))) 정도만 남습니다."
+        }
+        return "예상 메모리 약 \(estimatedMB) MB (녹화 비트레이트 기준)"
     }
 }
 
@@ -525,6 +956,25 @@ extension FrameRateChoice {
     }
 }
 
+/// 캔버스 색 (P11): enum video_colorspace·video_range_type의 값. 8비트 SDR만
+struct CanvasColor: Hashable {
+    var colorSpace = 2  // 1 Rec.601, 2 Rec.709, 3 sRGB
+    var range = 1  // 1 제한, 2 전체
+
+    static let spaces: [(name: String, title: String, value: Int)] = [
+        ("709", "Rec.709", 2), ("601", "Rec.601", 1), ("srgb", "sRGB", 3),
+    ]
+
+    init(colorSpace: Int = 2, range: Int = 1) {
+        self.colorSpace = Self.spaces.contains { $0.value == colorSpace } ? colorSpace : 2
+        self.range = range == 2 ? 2 : 1
+    }
+
+    var logText: String {
+        "\(Self.spaces.first { $0.value == colorSpace }?.name ?? "709") \(range == 2 ? "full" : "partial")"
+    }
+}
+
 private struct CanvasSettingsPage: View {
     @ObservedObject var core: Core
     @ObservedObject var outputs: Outputs
@@ -532,7 +982,11 @@ private struct CanvasSettingsPage: View {
     /// 목록에서 고른 값 ("분자/분모") 또는 "custom"
     @State private var rateTag = "60/1"
     @State private var customText = ""
+    @State private var color = CanvasColor()
     @State private var canvasMessage = ""
+    @AppStorage(AppSettings.canvasScale) private var scaleType = 2
+    @AppStorage(AppSettings.audioSampleRate) private var sampleRate = 48000
+    @AppStorage(AppSettings.audioChannels) private var channels = 2
 
     struct CanvasSize: Hashable {
         var width: UInt32
@@ -574,27 +1028,71 @@ private struct CanvasSettingsPage: View {
                         Text("1~120 fps 사이의 숫자나 분수(분자/분모)를 넣으세요.").font(.footnote).foregroundStyle(.red)
                     }
                 }
+                Picker("색 공간", selection: $color.colorSpace) {
+                    ForEach(CanvasColor.spaces, id: \.value) { Text($0.title).tag($0.value) }
+                }
+                Picker("색 범위", selection: $color.range) {
+                    Text("제한 (16–235)").tag(1)
+                    Text("전체 (0–255)").tag(2)
+                }
                 Button("적용") {
                     guard let frameRate else { return }
-                    canvasMessage = core.applyCanvas(width: size.width, height: size.height, frameRate: frameRate)
+                    canvasMessage =
+                        core.applyCanvas(width: size.width, height: size.height, frameRate: frameRate, color: color)
                         ? "바꿨습니다. 맞지 않는 소스는 ⋯ 메뉴의 '화면에 맞추기'를 쓰세요."
                         : "바꾸지 못했습니다. 녹화·송출을 멈춘 뒤 다시 해 보세요."
                 }
                 .disabled(
-                    outputs.stats.recording || outputs.stats.streaming || frameRate == nil
-                        || (size == CanvasSize(width: core.width, height: core.height) && frameRate == core.frameRate))
+                    outputs.stats.recording || outputs.stats.streaming || outputs.stats.replay_active || frameRate == nil
+                        || (size == CanvasSize(width: core.width, height: core.height) && frameRate == core.frameRate
+                            && color == core.color))
                 if !canvasMessage.isEmpty {
                     Text(canvasMessage).font(.footnote).foregroundStyle(.secondary)
                 }
             } footer: {
                 if let frameRate, frameRate.fps > 60.01 {
                     Text("녹화·송출 중에는 바꿀 수 없습니다. 송출 플랫폼 대부분은 60 fps까지 받습니다.")
+                } else if color != CanvasColor() {
+                    Text("녹화·송출 중에는 바꿀 수 없습니다. 송출은 Rec.709·제한 범위를 권장합니다 (플랫폼 대부분이 그렇게 가정합니다).")
                 } else {
                     Text("녹화·송출 중에는 바꿀 수 없습니다. 29.97·59.94처럼 방송 장비와 맞출 값은 분수(30000/1001)로 정확히 들어갑니다.")
                 }
             }
+
+            Section {
+                Picker("스케일 필터", selection: $scaleType) {
+                    Text("바이리니어 (빠름)").tag(3)
+                    Text("바이큐빅").tag(2)
+                    Text("란초스 (선명)").tag(4)
+                    Text("영역 (축소에 좋음)").tag(5)
+                }
+            } header: {
+                Text("출력 크기 줄이기")
+            } footer: {
+                Text("송출·녹화의 출력 해상도를 캔버스보다 작게 골랐을 때 GPU가 줄이는 방법입니다. 다음 송출·녹화부터 적용됩니다.")
+            }
+
+            Section {
+                Picker("샘플레이트", selection: $sampleRate) {
+                    Text("48 kHz").tag(48000)
+                    Text("44.1 kHz").tag(44100)
+                }
+                Picker("채널", selection: $channels) {
+                    Text("스테레오").tag(2)
+                    Text("모노").tag(1)
+                }
+            } header: {
+                Text("오디오")
+            } footer: {
+                if core.audioFormat != (sampleRate, channels) {
+                    Text("앱을 다시 열면 적용됩니다.").foregroundStyle(.orange)
+                } else {
+                    Text("바꾸면 앱을 다시 열 때 적용됩니다.")
+                }
+            }
         }
         .onAppear {
+            color = core.color
             size = CanvasSize(width: core.width, height: core.height)
             if FrameRateChoice.canvasPresets.contains(core.frameRate) {
                 rateTag = Self.tag(core.frameRate)

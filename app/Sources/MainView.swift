@@ -289,6 +289,8 @@ final class StudioSheets: ObservableObject {
     @Published var addingSource = false
     @Published var properties: Source?
     @Published var filters: Source?
+    /// 변형 편집 시트 (P11)
+    @Published var transformItem: SceneItem?
     @Published var renaming: Renaming?
     @Published var renameText = ""
     /// 소스 추가 시트에서 넣은 소스. 시트가 닫히면 바로 그 속성을 연다
@@ -357,6 +359,18 @@ private struct StudioSheetsModifier: ViewModifier {
                         }
                 }
             }
+            .sheet(item: $sheets.transformItem) { item in
+                NavigationStack {
+                    TransformEditor(model: model, item: item)
+                        .navigationTitle("\(item.name) 변형")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .confirmationAction) {
+                                Button("완료") { sheets.transformItem = nil }
+                            }
+                        }
+                }
+            }
             .sheet(item: $sheets.filters) { source in
                 NavigationStack {
                     FiltersView(sourceName: source.name) { model.setNeedsSave() }
@@ -392,6 +406,7 @@ private struct StudioSheetsModifier: ViewModifier {
                 case .addSource: sheets.addingSource = true
                 case .properties: if let item = model.selectedItem { sheets.editProperties(item.name) }
                 case .toggleStream: if !outputs.toggleStreaming() { sheets.openSettings(.stream) }
+                case .transform: sheets.transformItem = model.selectedItem
                 case nil: break
                 }
             }
@@ -485,15 +500,23 @@ func formatClock(_ seconds: Double) -> String {
 
 // MARK: - 프리뷰와 터치 편집
 
-/// 프리뷰. 누르면 그 자리의 소스를 고르고, 끌면 옮기고, 두 손가락으로 벌리거나 오므리면 크기를 바꾼다.
+/// 프리뷰. 누르면 그 자리의 소스를 고르고, 끌면 옮기고, 두 손가락으로 벌리거나 오므리면 크기를, 돌리면 회전을 바꾼다.
+/// 고른 소스에는 핸들(모서리·변: 크기 또는 자르기, 위: 회전)과 작은 도구 막대가 붙는다 (P11)
 struct PreviewArea: View {
     @ObservedObject var core: Core
     @ObservedObject var model: SceneModel
 
     @State private var dragging = false
-    @State private var lastTranslation: CGSize = .zero
     @State private var lastMagnification: CGFloat = 1
+    @State private var rotationStart: Double?
     @AppStorage(AppSettings.previewEnabled) private var previewEnabled = true
+
+    /// 핸들을 잡는 거리 (pt). 보이는 점보다 넓다
+    private static let handleReach: CGFloat = 22
+    /// 회전 핸들이 위 변에서 떨어진 거리 (pt)
+    private static let rotateHandleOffset: CGFloat = 30
+    /// 캔버스 가장자리·가운데선에 붙는 거리 (pt)
+    private static let snapPoints: CGFloat = 10
 
     var body: some View {
         ZStack {
@@ -514,7 +537,7 @@ struct PreviewArea: View {
                     .aspectRatio(CGFloat(core.width) / CGFloat(core.height), contentMode: .fit)
                     .overlay {
                         GeometryReader { geometry in
-                            interaction(viewToCanvas: CGFloat(core.width) / max(geometry.size.width, 1))
+                            interaction(viewToCanvas: CGFloat(core.width) / max(geometry.size.width, 1), size: geometry.size)
                         }
                     }
             } else {
@@ -525,47 +548,185 @@ struct PreviewArea: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func interaction(viewToCanvas scale: CGFloat) -> some View {
-        ZStack {
-            if model.selectionBox.count == 4 {
+    // MARK: 핸들
+
+    private struct Handle {
+        let point: CGPoint  // 화면 좌표
+        let kind: SceneModel.DragKind
+    }
+
+    /// 선택 상자(화면 좌표)의 핸들: 모서리 4, 변 4, 회전 1
+    private func handles(_ box: [CGPoint]) -> [Handle] {
+        guard box.count == 4 else { return [] }
+        func mid(_ a: CGPoint, _ b: CGPoint) -> CGPoint { CGPoint(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2) }
+        let left = Int32(CORE_HANDLE_LEFT.rawValue), right = Int32(CORE_HANDLE_RIGHT.rawValue)
+        let top = Int32(CORE_HANDLE_TOP.rawValue), bottom = Int32(CORE_HANDLE_BOTTOM.rawValue)
+        var result = [
+            Handle(point: box[0], kind: .handle(left | top)), Handle(point: box[1], kind: .handle(right | top)),
+            Handle(point: box[2], kind: .handle(right | bottom)), Handle(point: box[3], kind: .handle(left | bottom)),
+            Handle(point: mid(box[0], box[1]), kind: .handle(top)), Handle(point: mid(box[1], box[2]), kind: .handle(right)),
+            Handle(point: mid(box[2], box[3]), kind: .handle(bottom)), Handle(point: mid(box[3], box[0]), kind: .handle(left)),
+        ]
+        if !model.cropMode, let rotate = rotateHandle(box) {
+            result.append(Handle(point: rotate, kind: .rotate))
+        }
+        return result
+    }
+
+    /// 위 변 가운데에서 상자 바깥쪽으로 뻗은 점
+    private func rotateHandle(_ box: [CGPoint]) -> CGPoint? {
+        guard box.count == 4 else { return nil }
+        let topMid = CGPoint(x: (box[0].x + box[1].x) / 2, y: (box[0].y + box[1].y) / 2)
+        // 위 변에 수직인 바깥 방향 (왼쪽 위 → 왼쪽 아래의 반대)
+        let dx = box[0].x - box[3].x, dy = box[0].y - box[3].y
+        let length = max(sqrt(dx * dx + dy * dy), 0.001)
+        return CGPoint(
+            x: topMid.x + dx / length * Self.rotateHandleOffset, y: topMid.y + dy / length * Self.rotateHandleOffset)
+    }
+
+    private func handle(at point: CGPoint, in box: [CGPoint]) -> Handle? {
+        guard let item = model.selectedItem, !item.locked else { return nil }
+        let candidates = handles(box).map { ($0, hypot($0.point.x - point.x, $0.point.y - point.y)) }
+        return candidates.filter { $0.1 <= Self.handleReach }.min { $0.1 < $1.1 }?.0
+    }
+
+    // MARK: 화면
+
+    private func interaction(viewToCanvas scale: CGFloat, size: CGSize) -> some View {
+        let box = model.selectionBox.map { CGPoint(x: $0.x / scale, y: $0.y / scale) }
+        let locked = model.selectedItem?.locked == true
+        let accent = model.cropMode ? Color.orange : Color.yellow
+
+        return ZStack {
+            // 붙은 캔버스 안내선
+            Path { path in
+                if let x = model.guides.x {
+                    path.move(to: CGPoint(x: x / scale, y: 0))
+                    path.addLine(to: CGPoint(x: x / scale, y: size.height))
+                }
+                if let y = model.guides.y {
+                    path.move(to: CGPoint(x: 0, y: y / scale))
+                    path.addLine(to: CGPoint(x: size.width, y: y / scale))
+                }
+            }
+            .stroke(Color.cyan, style: StrokeStyle(lineWidth: 1, dash: [6, 4]))
+            .allowsHitTesting(false)
+
+            // 자르기 모드: 잘린 부분까지의 원본 테두리
+            if model.uncroppedBox.count == 4 {
                 Path { path in
-                    path.addLines(model.selectionBox.map { CGPoint(x: $0.x / scale, y: $0.y / scale) })
+                    path.addLines(model.uncroppedBox.map { CGPoint(x: $0.x / scale, y: $0.y / scale) })
                     path.closeSubpath()
                 }
-                .stroke(model.selectedItem?.locked == true ? Color.gray : Color.yellow, lineWidth: 2)
+                .stroke(Color.orange.opacity(0.8), style: StrokeStyle(lineWidth: 1, dash: [4, 4]))
                 .allowsHitTesting(false)
+            }
+
+            if box.count == 4 {
+                Path { path in
+                    path.addLines(box)
+                    path.closeSubpath()
+                }
+                .stroke(locked ? Color.gray : accent, lineWidth: 2)
+                .allowsHitTesting(false)
+
+                if !locked {
+                    if !model.cropMode, let rotate = rotateHandle(box) {
+                        Path { path in
+                            path.move(to: CGPoint(x: (box[0].x + box[1].x) / 2, y: (box[0].y + box[1].y) / 2))
+                            path.addLine(to: rotate)
+                        }
+                        .stroke(accent, lineWidth: 1.5)
+                        .allowsHitTesting(false)
+                    }
+                    ForEach(Array(handles(box).enumerated()), id: \.offset) { _, handle in
+                        handleMark(handle, accent: accent)
+                    }
+                }
             }
 
             Color.clear
                 .contentShape(Rectangle())
                 .gesture(drag(scale))
                 .simultaneousGesture(magnify(scale))
+                .simultaneousGesture(rotate())
+
+            if let angle = model.rotationLabel, box.count == 4 {
+                Text("\(Int(angle.rounded()))°")
+                    .font(.caption.monospacedDigit().bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.black.opacity(0.7), in: Capsule())
+                    .foregroundStyle(.white)
+                    .position(center(box))
+                    .allowsHitTesting(false)
+            }
+
+            if let item = model.selectedItem, !dragging, box.count == 4, item.video {
+                TransformToolbar(model: model, item: item)
+                    .fixedSize()
+                    .position(toolbarPosition(box, size: size))
+            }
         }
     }
+
+    @ViewBuilder
+    private func handleMark(_ handle: Handle, accent: Color) -> some View {
+        switch handle.kind {
+        case .rotate:
+            Circle().fill(.white).frame(width: 12, height: 12)
+                .overlay(Circle().stroke(accent, lineWidth: 2))
+                .position(handle.point)
+                .allowsHitTesting(false)
+        default:
+            Rectangle().fill(model.cropMode ? Color.orange : Color.white).frame(width: 10, height: 10)
+                .overlay(Rectangle().stroke(Color.black.opacity(0.6), lineWidth: 1))
+                .position(handle.point)
+                .allowsHitTesting(false)
+        }
+    }
+
+    private func center(_ box: [CGPoint]) -> CGPoint {
+        CGPoint(x: (box[0].x + box[2].x) / 2, y: (box[0].y + box[2].y) / 2)
+    }
+
+    /// 상자 위 (공간이 없으면 아래). 화면 밖으로 나가지 않게
+    private func toolbarPosition(_ box: [CGPoint], size: CGSize) -> CGPoint {
+        let xs = box.map(\.x), ys = box.map(\.y)
+        let x = min(max((xs.min()! + xs.max()!) / 2, 150), max(size.width - 150, 150))
+        let above = ys.min()! - Self.rotateHandleOffset - 26
+        let y = above > 22 ? above : min(ys.max()! + 30, size.height - 22)
+        return CGPoint(x: x, y: y)
+    }
+
+    // MARK: 제스처
 
     private func drag(_ scale: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { value in
+                let point = CGPoint(x: value.location.x * scale, y: value.location.y * scale)
                 if !dragging {
                     dragging = true
-                    lastTranslation = .zero
+                    let start = value.startLocation
+                    let startPoint = CGPoint(x: start.x * scale, y: start.y * scale)
+                    let box = model.selectionBox.map { CGPoint(x: $0.x / scale, y: $0.y / scale) }
 
-                    // 고른 소스 위에서 시작하면 그대로 끌고, 아니면 그 자리의 소스를 고른다 (빈 곳이면 선택 해제)
-                    let point = CGPoint(x: value.startLocation.x * scale, y: value.startLocation.y * scale)
-                    if !Self.contains(model.selectionBox, point) {
-                        model.select(model.item(at: point))
+                    if let hit = handle(at: start, in: box) {
+                        model.beginDrag(hit.kind, at: startPoint)
+                        if case .rotate = hit.kind { model.beginRotationLabel() }
+                    } else {
+                        // 고른 소스 위에서 시작하면 그대로 끌고, 아니면 그 자리의 소스를 고른다 (빈 곳이면 선택 해제)
+                        if !Self.contains(model.selectionBox, startPoint) {
+                            model.select(model.item(at: startPoint))
+                        }
+                        model.beginDrag(.move, at: startPoint)
                     }
                 }
-
-                let delta = CGSize(
-                    width: (value.translation.width - lastTranslation.width) * scale,
-                    height: (value.translation.height - lastTranslation.height) * scale)
-                lastTranslation = value.translation
-                if delta != .zero { model.translateSelection(by: delta) }
+                model.drag(to: point, snap: Self.snapPoints * scale)
             }
-            .onEnded { value in
+            .onEnded { _ in
                 dragging = false
-                if value.translation != .zero { model.transformEnded() }
+                model.endDrag()
             }
     }
 
@@ -579,6 +740,19 @@ struct PreviewArea: View {
             }
             .onEnded { _ in
                 lastMagnification = 1
+                model.transformEnded()
+            }
+    }
+
+    private func rotate() -> some Gesture {
+        RotateGesture(minimumAngleDelta: .degrees(2))
+            .onChanged { value in
+                if rotationStart == nil { rotationStart = model.transform?.rotation ?? 0 }
+                model.rotateSelection(to: (rotationStart ?? 0) + value.rotation.degrees)
+            }
+            .onEnded { _ in
+                rotationStart = nil
+                model.endDrag()
                 model.transformEnded()
             }
     }
@@ -600,6 +774,55 @@ struct PreviewArea: View {
             }
         }
         return true
+    }
+}
+
+/// 고른 소스 위의 작은 도구 막대: 자르기, 90° 돌리기, 뒤집기, 맞추기, 원래대로, 변형 편집
+private struct TransformToolbar: View {
+    @ObservedObject var model: SceneModel
+    let item: SceneItem
+
+    var body: some View {
+        HStack(spacing: 2) {
+            if model.cropMode {
+                Button {
+                    model.cropMode = false
+                } label: {
+                    Label("자르기 완료", systemImage: "checkmark").labelStyle(.titleAndIcon)
+                }
+                .tint(.orange)
+            } else {
+                button("자르기", "crop") { model.cropMode = true }
+                button("왼쪽으로 90° 돌리기", "rotate.left") { model.rotate(item, by: -90) }
+                button("오른쪽으로 90° 돌리기", "rotate.right") { model.rotate(item, by: 90) }
+                button("좌우 뒤집기", "arrow.left.and.right.righttriangle.left.righttriangle.right") {
+                    model.flip(item, horizontal: true)
+                }
+                button("상하 뒤집기", "arrow.up.and.down.righttriangle.up.righttriangle.down") {
+                    model.flip(item, horizontal: false)
+                }
+                button("화면에 맞추기", "arrow.up.left.and.arrow.down.right") { model.fit(item) }
+                button("원래대로", "arrow.counterclockwise") { model.resetTransform(item) }
+                button("변형 편집…", "slider.horizontal.3") {
+                    NotificationCenter.default.post(name: .studioCommand, object: StudioCommand.transform.rawValue)
+                }
+            }
+        }
+        .disabled(item.locked)
+        .buttonStyle(.borderless)
+        .font(.system(size: 15, weight: .medium))
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .environment(\.colorScheme, .dark)
+    }
+
+    private func button(_ title: String, _ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).frame(width: 30, height: 28)
+        }
+        .accessibilityLabel(title)
+        .help(title)
     }
 }
 
@@ -1022,6 +1245,10 @@ struct SourceRow: View {
                 if item.video {
                     Button("화면에 맞추기", systemImage: "arrow.up.left.and.arrow.down.right") { model.fit(item) }
                     Button("원래 크기", systemImage: "arrow.counterclockwise") { model.resetTransform(item) }
+                    Button("변형 편집…", systemImage: "slider.horizontal.3") {
+                        model.select(item.id)
+                        NotificationCenter.default.post(name: .studioCommand, object: StudioCommand.transform.rawValue)
+                    }
                 }
                 Button(item.locked ? "잠금 해제" : "잠금", systemImage: item.locked ? "lock.open" : "lock") {
                     model.setLocked(item, !item.locked)
@@ -1181,6 +1408,17 @@ enum UIAutotest {
         UserDefaults.standard.set(false, forKey: AppSettings.chatPanelShown)
         UserDefaults.standard.set(false, forKey: AppSettings.statusBarShown)
         await shot("7-no-chat")
+
+        // 미리보기 편집 (P11): 장면 시험의 "시험 색"을 고르면 핸들·회전 핸들·도구 막대가, 자르기를 켜면 주황 핸들이 보인다
+        let model = SceneModel.shared
+        if let item = model.items.first(where: { $0.name == "시험 색" }) ?? model.items.first(where: \.video) {
+            model.select(item.id)
+            await shot("7b-transform")
+            model.cropMode = true
+            await shot("7c-crop")
+            model.select(nil)
+            appLog("ui autotest: transform shots of '\(item.name)'")
+        }
 
         UserDefaults.standard.set(true, forKey: AppSettings.chatPanelShown)
         UserDefaults.standard.set(true, forKey: AppSettings.statusBarShown)

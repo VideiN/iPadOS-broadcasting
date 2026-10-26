@@ -42,6 +42,10 @@ static struct {
 	uint32_t fps_num;
 	uint32_t fps_den;
 	double fps;
+	enum video_colorspace colorspace; // 캔버스 색 (P11)
+	enum video_range_type range;
+	uint32_t sample_rate;             // 오디오 출력 (P11)
+	enum speaker_layout speakers;
 
 	obs_source_t *audio_input; // 전역 오디오 입력 (출력 채널 1)
 	char *collection_path;
@@ -49,7 +53,14 @@ static struct {
 	_Atomic float audio_peak_left_db;
 	_Atomic float audio_peak_right_db;
 	_Atomic uint64_t audio_peak_time; // os_gettime_ns
-} core = {.audio_peak_left_db = -INFINITY, .audio_peak_right_db = -INFINITY};
+} core = {
+	.colorspace = VIDEO_CS_709,
+	.range = VIDEO_RANGE_PARTIAL,
+	.sample_rate = 48000,
+	.speakers = SPEAKERS_STEREO,
+	.audio_peak_left_db = -INFINITY,
+	.audio_peak_right_db = -INFINITY,
+};
 
 #pragma mark - 로그
 
@@ -181,8 +192,8 @@ static bool reset_video(uint32_t width, uint32_t height, uint32_t fps_num, uint3
 		.output_format = VIDEO_FORMAT_NV12,
 		.adapter = 0,
 		.gpu_conversion = true,
-		.colorspace = VIDEO_CS_709,
-		.range = VIDEO_RANGE_PARTIAL,
+		.colorspace = core.colorspace,
+		.range = core.range,
 		.scale_type = OBS_SCALE_BICUBIC,
 	};
 
@@ -193,6 +204,32 @@ static bool reset_video(uint32_t width, uint32_t height, uint32_t fps_num, uint3
 	}
 
 	return true;
+}
+
+static const char *colorspace_name(enum video_colorspace colorspace)
+{
+	switch (colorspace) {
+	case VIDEO_CS_601:
+		return "601";
+	case VIDEO_CS_SRGB:
+		return "sRGB";
+	default:
+		return "709";
+	}
+}
+
+void core_set_canvas_color(int colorspace, int range)
+{
+	// 8비트 SDR 캔버스만 (HDR·10비트는 아직 받지 않는다)
+	core.colorspace = (colorspace == VIDEO_CS_601 || colorspace == VIDEO_CS_SRGB) ? (enum video_colorspace)colorspace
+										       : VIDEO_CS_709;
+	core.range = range == VIDEO_RANGE_FULL ? VIDEO_RANGE_FULL : VIDEO_RANGE_PARTIAL;
+}
+
+void core_set_audio_format(uint32_t sample_rate, int channels)
+{
+	core.sample_rate = sample_rate == 44100 ? 44100 : 48000;
+	core.speakers = channels == 1 ? SPEAKERS_MONO : SPEAKERS_STEREO;
 }
 
 bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den)
@@ -219,15 +256,18 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 		return false;
 
 	const struct obs_audio_info audio = {
-		.samples_per_sec = 48000,
-		.speakers = SPEAKERS_STEREO,
+		.samples_per_sec = core.sample_rate,
+		.speakers = core.speakers,
 	};
 	obs_reset_audio(&audio);
 
 	if (!reset_video(width, height, fps_num, fps_den))
 		return false;
 
-	blog(LOG_INFO, "[app] core started (%ux%u @ %.3f fps, %u/%u)", width, height, core.fps, fps_num, fps_den);
+	blog(LOG_INFO, "[app] core started (%ux%u @ %.3f fps, %u/%u), color %s %s, audio %u Hz %s", width, height,
+	     core.fps, fps_num, fps_den, colorspace_name(core.colorspace),
+	     core.range == VIDEO_RANGE_FULL ? "full" : "partial", core.sample_rate,
+	     core.speakers == SPEAKERS_MONO ? "mono" : "stereo");
 	return true;
 }
 
@@ -242,7 +282,7 @@ bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps_num, uint32
 	}
 
 	if (!reset_video(width, height, fps_num, fps_den)) {
-		// 실패하면 원래 설정으로 되돌린다
+		// 실패하면 원래 설정으로 되돌린다 (색은 core_set_canvas_color가 이미 바꿨으므로 그대로)
 		reset_video(core.width, core.height, core.fps_num, core.fps_den);
 		return false;
 	}
@@ -252,7 +292,8 @@ bool core_reset_canvas(uint32_t width, uint32_t height, uint32_t fps_num, uint32
 	core.fps_num = fps_num;
 	core.fps_den = fps_den;
 	core.fps = (double)fps_num / fps_den;
-	blog(LOG_INFO, "[app] canvas changed to %ux%u @ %.3f fps (%u/%u)", width, height, core.fps, fps_num, fps_den);
+	blog(LOG_INFO, "[app] canvas changed to %ux%u @ %.3f fps (%u/%u), color %s %s", width, height, core.fps,
+	     fps_num, fps_den, colorspace_name(core.colorspace), core.range == VIDEO_RANGE_FULL ? "full" : "partial");
 	return true;
 }
 

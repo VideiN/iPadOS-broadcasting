@@ -35,6 +35,12 @@ void core_log_open(const char *path);
 // 앱(Swift) 로그를 같은 곳에 남긴다
 void core_log(const char *message);
 
+// 캔버스 색 (P11). colorspace는 enum video_colorspace(1 Rec.601, 2 Rec.709, 3 sRGB),
+// range는 enum video_range_type(1 제한, 2 전체). core_startup 전이나 core_reset_canvas 전에 부른다
+void core_set_canvas_color(int colorspace, int range);
+// 오디오 출력 형식 (P11). core_startup 전에만 바꿀 수 있다 (44100·48000, 1 모노·2 스테레오)
+void core_set_audio_format(uint32_t sample_rate, int channels);
+
 // libobs를 시작한다 (모듈, 오디오, 비디오). 씬은 core_start_capture가 불러오거나 만든다.
 // resource_path는 앱 번들의 리소스 경로.
 // fps는 분수 (fps_num/fps_den, 예: 30000/1001 = 29.97)
@@ -68,7 +74,49 @@ int64_t core_scene_item_at(float x, float y);
 void core_scene_item_translate(int64_t id, float dx, float dy);
 void core_scene_item_scale(int64_t id, float factor, float cx, float cy);
 void core_scene_item_fit(int64_t id);   // 캔버스에 맞추기
-void core_scene_item_reset(int64_t id); // 원래 크기, 왼쪽 위
+void core_scene_item_reset(int64_t id); // 원래 크기, 왼쪽 위, 회전·자르기 없음
+
+// 미리보기 편집 (P11). 핸들은 항목 좌표의 변(왼쪽·오른쪽·위·아래 비트, 모서리는 둘을 함께)
+enum core_item_handle {
+	CORE_HANDLE_LEFT = 1,
+	CORE_HANDLE_RIGHT = 2,
+	CORE_HANDLE_TOP = 4,
+	CORE_HANDLE_BOTTOM = 8,
+};
+enum core_drag_mode { CORE_DRAG_MOVE = 0, CORE_DRAG_STRETCH = 1, CORE_DRAG_CROP = 2, CORE_DRAG_ROTATE = 3 };
+
+struct core_drag_feedback {
+	float rotation; // 지금 회전 (도)
+	bool snap_x;    // 캔버스 세로선(x = guide_x)에 붙었다
+	float guide_x;
+	bool snap_y;    // 캔버스 가로선(y = guide_y)에 붙었다
+	float guide_y;
+};
+
+// 끌기를 시작한다 (x, y: 손가락의 캔버스 좌표). 잠긴 항목이면 false
+bool core_scene_item_drag_begin(int64_t id, int mode, int handle, float x, float y);
+// keep_aspect: 모서리를 끌 때 비율 유지. snap_distance: 캔버스 가장자리·가운데선에 붙는 거리 (0이면 안 붙음)
+void core_scene_item_drag_to(float x, float y, bool keep_aspect, float snap_distance,
+			     struct core_drag_feedback *feedback);
+void core_scene_item_drag_end(void); // 결과를 로그에 남긴다
+
+struct core_item_transform {
+	float pos_x, pos_y;   // 정렬점의 캔버스 좌표
+	float rot;            // 도
+	float scale_x, scale_y; // 음수면 뒤집힘
+	uint32_t alignment;
+	int bounds_type;      // OBS_BOUNDS_NONE(0)이 아니면 크기는 bounds
+	float bounds_x, bounds_y;
+	int crop_left, crop_top, crop_right, crop_bottom;
+	uint32_t source_width, source_height;
+	float width, height;  // 보이는 크기 (읽기 전용)
+};
+bool core_scene_item_get_transform(int64_t id, struct core_item_transform *transform);
+void core_scene_item_set_transform(int64_t id, const struct core_item_transform *transform);
+void core_scene_item_set_rotation(int64_t id, float degrees); // 상자 가운데를 기준으로
+void core_scene_item_flip(int64_t id, bool horizontal);       // 상자 가운데를 기준으로
+// 자르기 전 원본 전체의 네 모서리 (core_scene_item_box와 같은 순서). 자르지 않았거나 바운드 항목이면 false
+bool core_scene_item_uncropped_box(int64_t id, float corners[8]);
 void core_scene_item_set_visible(int64_t id, bool visible);
 void core_scene_item_set_locked(int64_t id, bool locked);
 void core_scene_item_order(int64_t id, int movement); // 0 위로, 1 아래로, 2 맨 위, 3 맨 아래 (enum obs_order_movement)
@@ -139,24 +187,59 @@ struct core_output_stats {
 	uint32_t video_total_frames;
 };
 
-// 리플레이 버퍼: 마지막 seconds초를 메모리에 두고, 저장하면 directory에 "Replay 날짜 시각.mp4"로 쓴다.
-// 녹화 인코더를 같이 쓴다 (녹화 중이면 녹화 코덱·비트레이트 그대로).
-bool core_replay_start(const char *directory, int seconds, const char *codec, int video_kbps, int audio_kbps);
+// 인코딩 설정 (P11). VideoToolbox(H.264/HEVC)와 AudioToolbox AAC의 obs 설정으로 옮긴다
+enum core_codec { CORE_CODEC_H264 = 0, CORE_CODEC_HEVC = 1 };
+enum core_rate_control { CORE_RC_CBR = 0, CORE_RC_ABR = 1, CORE_RC_CRF = 2 };
+enum core_profile { CORE_PROFILE_AUTO = 0, CORE_PROFILE_BASELINE = 1, CORE_PROFILE_MAIN = 2, CORE_PROFILE_HIGH = 3 };
+
+struct core_video_encoding {
+	int codec;                 // enum core_codec
+	int rate_control;          // enum core_rate_control
+	int bitrate_kbps;
+	int quality;               // CRF일 때 0~100
+	bool limit_bitrate;        // ABR·CRF의 최대 비트레이트 제한
+	int max_bitrate_kbps;
+	double max_bitrate_window; // 초
+	int keyint_sec;            // 키프레임 간격 (1 미만이면 2초)
+	int profile;               // enum core_profile (H.264만, HEVC는 main)
+	bool bframes;
+	uint32_t width;            // 출력 크기. 0이면 캔버스 크기 그대로
+	uint32_t height;
+	int scale_type;            // 출력 크기가 다를 때 GPU 스케일 필터 (enum obs_scale_type)
+};
+
+struct core_audio_encoding {
+	int bitrate_kbps;
+	bool he_aac; // 낮은 비트레이트에서 HE-AAC를 허용
+};
+
+// 송출 연결 옵션 (P11)
+struct core_stream_options {
+	bool dyn_bitrate; // 네트워크가 막히면 비트레이트를 낮췄다 되돌린다 (RTMP만)
+	bool reconnect;
+	int retries;
+	int retry_sec;
+	int delay_sec;    // 송출 지연. 0보다 크면 dyn_bitrate는 꺼진다 (rtmp-stream.c)
+};
+
+// 리플레이 버퍼: 마지막 seconds초(최대 max_mb MB)를 메모리에 두고, 저장하면 directory에 "Replay 날짜 시각.mp4"로 쓴다.
+// 녹화 인코더를 같이 쓴다 (녹화 중이면 녹화 인코딩 그대로).
+bool core_replay_start(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video,
+		       const struct core_audio_encoding *audio);
 void core_replay_stop(void);
 void core_replay_save(void); // 비동기. 끝나면 replay_saved_count가 늘고 core_replay_last_path가 바뀐다
 char *core_replay_last_path(void); // core_free로 해제한다
 
-// 녹화(Hybrid MP4, 비디오 ABR + AAC). codec은 "hevc"·"h264". path의 폴더는 미리 만들어 둔다.
-// 그 코덱의 인코더를 쓸 수 없으면 H.264로 녹화한다.
-bool core_recording_start(const char *path, const char *codec, int video_kbps, int audio_kbps);
+// 녹화(Hybrid MP4). path의 폴더는 미리 만들어 둔다. 그 코덱의 인코더를 쓸 수 없으면 H.264로 녹화한다.
+bool core_recording_start(const char *path, const struct core_video_encoding *video,
+			  const struct core_audio_encoding *audio);
 // force: 인코더가 밀려 보통 멈춤이 끝나지 않을 때 남은 패킷을 버리고 바로 멈춘다
 void core_recording_stop(bool force);
 
-// RTMP/RTMPS 송출 (비디오 CBR + AAC). codec "hevc"는 Enhanced RTMP (받는 쪽이 지원해야 함).
+// RTMP/RTMPS/SRT 송출. HEVC는 Enhanced RTMP (받는 쪽이 지원해야 함).
 // 연결은 비동기로 하고 결과는 상태와 마지막 오류로 본다.
-// keyint_sec: 키프레임 간격(초), bframes: B프레임 (치지직은 1초·없음, 그 밖은 2초·있음)
-bool core_streaming_start(const char *server, const char *key, const char *codec, int video_kbps, int audio_kbps,
-			  int keyint_sec, bool bframes);
+bool core_streaming_start(const char *server, const char *key, const struct core_video_encoding *video,
+			  const struct core_audio_encoding *audio, const struct core_stream_options *options);
 void core_streaming_stop(bool force);
 bool core_outputs_active(void);
 

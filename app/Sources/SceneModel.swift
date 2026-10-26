@@ -92,16 +92,24 @@ final class SceneModel: ObservableObject {
     func updateSelectionBox() {
         guard let selection else {
             if !selectionBox.isEmpty { selectionBox = [] }
+            if !uncroppedBox.isEmpty { uncroppedBox = [] }
             return
         }
 
         var corners = [Float](repeating: 0, count: 8)
         guard core_scene_item_box(selection, &corners) else {
             selectionBox = []
+            uncroppedBox = []
             return
         }
         let box = (0..<4).map { CGPoint(x: CGFloat(corners[$0 * 2]), y: CGFloat(corners[$0 * 2 + 1])) }
         if box != selectionBox { selectionBox = box }
+
+        var full: [CGPoint] = []
+        if cropMode, core_scene_item_uncropped_box(selection, &corners) {
+            full = (0..<4).map { CGPoint(x: CGFloat(corners[$0 * 2]), y: CGFloat(corners[$0 * 2 + 1])) }
+        }
+        if full != uncroppedBox { uncroppedBox = full }
     }
 
     var selectedItem: SceneItem? {
@@ -147,6 +155,7 @@ final class SceneModel: ObservableObject {
     // MARK: 항목
 
     func select(_ id: Int64?) {
+        if id != selection { cropMode = false }
         selection = id
         updateSelectionBox()
     }
@@ -224,6 +233,146 @@ final class SceneModel: ObservableObject {
     /// 끌기·확대가 끝났을 때
     func transformEnded() {
         setNeedsSave()
+    }
+
+    // MARK: 미리보기 편집 (P11): 핸들로 크기·자르기·회전, 스냅
+
+    /// 켜면 핸들이 크기 대신 자르기를 한다 (선택을 바꾸면 꺼진다)
+    @Published var cropMode = false {
+        didSet { updateSelectionBox() }
+    }
+    /// 자르기 모드에서 잘린 부분까지 포함한 원본 전체의 네 모서리 (캔버스 좌표)
+    @Published private(set) var uncroppedBox: [CGPoint] = []
+    /// 끄는 동안 붙은 캔버스 안내선 (x, y 캔버스 좌표)
+    @Published private(set) var guides: (x: CGFloat?, y: CGFloat?) = (nil, nil)
+    /// 돌리는 동안 보일 각도
+    @Published private(set) var rotationLabel: Double?
+
+    enum DragKind {
+        case move
+        case handle(Int32)  // CORE_HANDLE_* 비트
+        case rotate
+    }
+
+    private var dragging = false
+
+    /// 손가락이 닿은 곳(캔버스 좌표)에서 끌기를 시작한다
+    func beginDrag(_ kind: DragKind, at point: CGPoint) {
+        guard let item = selectedItem, !item.locked else { return }
+        let (mode, handle): (core_drag_mode, Int32) =
+            switch kind {
+            case .move: (CORE_DRAG_MOVE, 0)
+            case .handle(let edges): (cropMode ? CORE_DRAG_CROP : CORE_DRAG_STRETCH, edges)
+            case .rotate: (CORE_DRAG_ROTATE, 0)
+            }
+        dragging = core_scene_item_drag_begin(item.id, Int32(mode.rawValue), handle, Float(point.x), Float(point.y))
+    }
+
+    /// snap: 캔버스 px로 붙는 거리 (보는 크기에 따라 바뀌므로 화면이 정한다)
+    func drag(to point: CGPoint, snap: CGFloat) {
+        guard dragging else { return }
+        var feedback = core_drag_feedback()
+        core_scene_item_drag_to(Float(point.x), Float(point.y), true, Float(snap), &feedback)
+        guides = (feedback.snap_x ? CGFloat(feedback.guide_x) : nil, feedback.snap_y ? CGFloat(feedback.guide_y) : nil)
+        if case .some = rotationLabel { rotationLabel = Double(feedback.rotation) }
+        updateSelectionBox()
+    }
+
+    func beginRotationLabel() {
+        rotationLabel = transform?.rotation ?? 0
+    }
+
+    func endDrag() {
+        if dragging {
+            core_scene_item_drag_end()
+            dragging = false
+            transformEnded()
+        }
+        guides = (nil, nil)
+        rotationLabel = nil
+        updateSelectionBox()
+    }
+
+    /// 두 손가락 돌리기: 시작 각도에 더한 값. 0·90·180·270°에서 3° 안이면 붙는다
+    func rotateSelection(to degrees: Double) {
+        guard let item = selectedItem, !item.locked else { return }
+        var angle = degrees.truncatingRemainder(dividingBy: 360)
+        if angle < 0 { angle += 360 }
+        if let snapped = [0.0, 90, 180, 270, 360].first(where: { abs(angle - $0) < 3 }) { angle = snapped }
+        core_scene_item_set_rotation(item.id, Float(angle))
+        rotationLabel = angle.truncatingRemainder(dividingBy: 360)
+        updateSelectionBox()
+    }
+
+    func rotate(_ item: SceneItem, by degrees: Float) {
+        var transform = core_item_transform()
+        guard core_scene_item_get_transform(item.id, &transform) else { return }
+        core_scene_item_set_rotation(item.id, transform.rot + degrees)
+        appLog("item transform: rotate by \(Int(degrees)) to \(Int((transform.rot + degrees + 360).truncatingRemainder(dividingBy: 360)))")
+        changed()
+    }
+
+    func flip(_ item: SceneItem, horizontal: Bool) {
+        core_scene_item_flip(item.id, horizontal)
+        appLog("item transform: flip \(horizontal ? "horizontal" : "vertical")")
+        changed()
+    }
+
+    /// 변형 편집 시트가 쓰는 값
+    struct Transform: Equatable {
+        var x: Double
+        var y: Double
+        var rotation: Double
+        var width: Double
+        var height: Double
+        var cropLeft: Int
+        var cropTop: Int
+        var cropRight: Int
+        var cropBottom: Int
+        var bounded: Bool
+        var flippedX: Bool
+        var flippedY: Bool
+        var sourceWidth: Int
+        var sourceHeight: Int
+    }
+
+    var transform: Transform? { selectedItem.flatMap(transform(of:)) }
+
+    func transform(of item: SceneItem) -> Transform? {
+        var t = core_item_transform()
+        guard core_scene_item_get_transform(item.id, &t) else { return nil }
+        return Transform(
+            x: Double(t.pos_x), y: Double(t.pos_y), rotation: Double(t.rot), width: Double(t.width),
+            height: Double(t.height), cropLeft: Int(t.crop_left), cropTop: Int(t.crop_top),
+            cropRight: Int(t.crop_right), cropBottom: Int(t.crop_bottom), bounded: t.bounds_type != 0,
+            flippedX: t.scale_x < 0, flippedY: t.scale_y < 0, sourceWidth: Int(t.source_width),
+            sourceHeight: Int(t.source_height))
+    }
+
+    func setTransform(_ item: SceneItem, _ value: Transform) {
+        var t = core_item_transform()
+        guard core_scene_item_get_transform(item.id, &t) else { return }
+        t.pos_x = Float(value.x)
+        t.pos_y = Float(value.y)
+        t.rot = Float(value.rotation)
+        t.crop_left = Int32(max(value.cropLeft, 0))
+        t.crop_top = Int32(max(value.cropTop, 0))
+        t.crop_right = Int32(max(value.cropRight, 0))
+        t.crop_bottom = Int32(max(value.cropBottom, 0))
+        if value.bounded {
+            t.bounds_x = Float(max(value.width, 1))
+            t.bounds_y = Float(max(value.height, 1))
+        } else {
+            // 크기는 (원본 - 자르기) × 배율. 뒤집힘(부호)은 그대로 둔다
+            let baseWidth = Double(value.sourceWidth - value.cropLeft - value.cropRight)
+            let baseHeight = Double(value.sourceHeight - value.cropTop - value.cropBottom)
+            if baseWidth >= 1, baseHeight >= 1 {
+                t.scale_x = Float(max(value.width, 1) / baseWidth) * (value.flippedX ? -1 : 1)
+                t.scale_y = Float(max(value.height, 1) / baseHeight) * (value.flippedY ? -1 : 1)
+            }
+        }
+        core_scene_item_set_transform(item.id, &t)
+        changed()
     }
 
     // MARK: 저장
@@ -360,6 +509,49 @@ final class SceneModel: ObservableObject {
                 appLog("avatar autotest: no avatar source type")
             }
         }
+
+        // 미리보기 편집 (P11): 잠깐 넣은 200x100 색 소스를 핸들로 자르고(오른쪽 100) 모서리로 늘리고(비율 유지 150x150),
+        // 가운데를 기준으로 돌리고 뒤집은 뒤 지운다
+        var transformResult = "no test item"
+        if let transformName = addSource(type: color), let testItem = selectedItem {
+            core_source_update(
+                transformName, encodeJSON(["color": .number(Double(0xFF80_FF00)), "width": .number(200), "height": .number(100)]))
+            resetTransform(testItem)
+            translateSelection(by: CGSize(width: 40, height: 40))
+            let right = Int32(CORE_HANDLE_RIGHT.rawValue), bottom = Int32(CORE_HANDLE_BOTTOM.rawValue)
+            cropMode = true
+            beginDrag(.handle(right), at: CGPoint(x: 240, y: 90))
+            drag(to: CGPoint(x: 140, y: 90), snap: 0)
+            endDrag()
+            cropMode = false
+            let cropped = transform(of: testItem)
+            beginDrag(.handle(right | bottom), at: CGPoint(x: 140, y: 140))
+            drag(to: CGPoint(x: 190, y: 190), snap: 0)
+            endDrag()
+            let stretched = transform(of: testItem)
+            func center() -> CGPoint {
+                let box = selectionBox
+                return box.count == 4 ? CGPoint(x: (box[0].x + box[2].x) / 2, y: (box[0].y + box[2].y) / 2) : .zero
+            }
+            func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 1.5 && abs(a.y - b.y) < 1.5 }
+            let start = center()
+            rotate(testItem, by: 90)
+            let rotated = transform(of: testItem)
+            let afterRotate = center()
+            flip(testItem, horizontal: true)
+            let afterFlip = center()
+            let flipped = transform(of: testItem)
+
+            let crop = cropped.map { "\($0.cropLeft),\($0.cropTop),\($0.cropRight),\($0.cropBottom)" } ?? "?"
+            let size = stretched.map { "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))" } ?? "?"
+            let ok =
+                crop == "0,0,100,0" && size == "150x150" && Int(rotated?.rotation.rounded() ?? -1) == 90
+                && near(start, afterRotate) && near(start, afterFlip) && flipped?.flippedX == true
+            transformResult =
+                "\(ok ? "ok" : "failed") (crop \(crop), size \(size), rot \(Int(rotated?.rotation.rounded() ?? -1)), center \(Int(start.x)),\(Int(start.y)) -> \(Int(afterRotate.x)),\(Int(afterRotate.y)) -> \(Int(afterFlip.x)),\(Int(afterFlip.y)))"
+            remove(testItem)
+        }
+        appLog("transform autotest: \(transformResult)")
 
         // 형식의 fps 범위 → 고를 수 있는 값
         let sampleChoices = FrameRateChoice.choices(

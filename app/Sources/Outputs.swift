@@ -94,10 +94,7 @@ final class Outputs: ObservableObject {
         let force = recordStopping
         if active { recordStopping = true }
 
-        let defaults = AppSettings.defaults
-        let codec = defaults.string(forKey: AppSettings.recordCodec) ?? "hevc"
-        let videoKbps = Int32(defaults.integer(forKey: AppSettings.recordBitrate))
-        let audioKbps = Int32(defaults.integer(forKey: AppSettings.recordAudioBitrate))
+        let (video, audio) = Self.recordEncoding()
         let path = active ? "" : newRecordingPath()
         if !active { startingRecording = true }
 
@@ -106,7 +103,9 @@ final class Outputs: ObservableObject {
             if active {
                 core_recording_stop(force)
             } else {
-                started = core_recording_start(path, codec, videoKbps, audioKbps)
+                var video = video
+                var audio = audio
+                started = core_recording_start(path, &video, &audio)
                 appLog("recording start \(started ? "requested" : "failed"): \(path)")
             }
             DispatchQueue.main.async {
@@ -124,20 +123,28 @@ final class Outputs: ObservableObject {
         let active = stats.replay_active
         let defaults = AppSettings.defaults
         let seconds = Int32(defaults.integer(forKey: AppSettings.replaySeconds))
-        let codec = defaults.string(forKey: AppSettings.recordCodec) ?? "hevc"
-        let videoKbps = Int32(defaults.integer(forKey: AppSettings.recordBitrate))
-        let audioKbps = Int32(defaults.integer(forKey: AppSettings.recordAudioBitrate))
+        let maxMB = Int32(defaults.integer(forKey: AppSettings.replayMaxMB))
+        let (video, audio) = Self.recordEncoding()
         let directory = RecordingFolder.defaultFolder.path
 
         DispatchQueue.global(qos: .userInitiated).async {
             if active {
                 core_replay_stop()
             } else {
-                let ok = core_replay_start(directory, seconds, codec, videoKbps, audioKbps)
+                var video = video
+                var audio = audio
+                let ok = core_replay_start(directory, seconds, maxMB, &video, &audio)
                 appLog("replay buffer start \(ok ? "requested" : "failed")")
             }
             DispatchQueue.main.async { self.update() }
         }
+    }
+
+    /// 녹화와 리플레이가 같이 쓰는 인코딩 (설정 › 녹화)
+    private static func recordEncoding() -> (core_video_encoding, core_audio_encoding) {
+        let settings = EncoderSettings.load(.record)
+        let core = Core.shared
+        return (settings.video(canvasWidth: core.width, canvasHeight: core.height), settings.audio)
     }
 
     func saveReplay() {
@@ -164,7 +171,9 @@ final class Outputs: ObservableObject {
                 do {
                     let target = try await YouTubeAccount.shared.prepareStream()
                     await MainActor.run {
-                        self.startStreaming(server: target.server, key: target.key, encoding: .current(chzzk: false))
+                        self.startStreaming(
+                            server: target.server, key: target.key,
+                            encoding: .stream(chzzk: false, canvasHeight: Core.shared.height))
                     }
                 } catch {
                     appLog("youtube: stream preparation failed: \(error.localizedDescription)")
@@ -191,14 +200,16 @@ final class Outputs: ObservableObject {
             let key = chzzk ? Chzzk.keyStore.load() : StreamKeyStore.load()
             guard !chzzk || !key.isEmpty else { return false }
             streamPrepareError = ""
-            startStreaming(server: server, key: key, encoding: .current(chzzk: chzzk))
+            startStreaming(server: server, key: key, encoding: .stream(chzzk: chzzk, canvasHeight: Core.shared.height))
         }
         return true
     }
 
-    private func startStreaming(server: String, key: String, encoding: StreamEncoding) {
+    private func startStreaming(server: String, key: String, encoding: EncoderSettings) {
+        let video = Self.streamVideo(encoding)
+        let options = StreamOptions.current()
         DispatchQueue.global(qos: .userInitiated).async {
-            let ok = Self.start(server: server, key: key, encoding: encoding)
+            let ok = Self.start(server: server, key: key, video: video, audio: encoding.audio, options: options)
             appLog("streaming start \(ok ? "requested" : "failed")")
             DispatchQueue.main.async {
                 self.streamPreparing = false
@@ -207,10 +218,18 @@ final class Outputs: ObservableObject {
         }
     }
 
-    private static func start(server: String, key: String, encoding: StreamEncoding) -> Bool {
-        core_streaming_start(
-            server, key, encoding.codec, Int32(encoding.videoKbps), Int32(encoding.audioKbps),
-            Int32(encoding.keyintSeconds), encoding.bframes)
+    /// 캔버스 크기를 읽으므로 메인 스레드에서 부른다
+    private static func streamVideo(_ encoding: EncoderSettings) -> core_video_encoding {
+        encoding.video(canvasWidth: Core.shared.width, canvasHeight: Core.shared.height)
+    }
+
+    private static func start(
+        server: String, key: String, video: core_video_encoding, audio: core_audio_encoding, options: core_stream_options
+    ) -> Bool {
+        var video = video
+        var audio = audio
+        var options = options
+        return core_streaming_start(server, key, &video, &audio, &options)
     }
 
     /// CI용: `-autotest-output <초> <RTMP 서버 URL>`로 띄우면 입력 소스가 준비된 뒤
@@ -246,17 +265,25 @@ final class Outputs: ObservableObject {
     private func runOutputAutotest(seconds: Double, path: String, server: String, key: String) {
         appLog("autotest: recording and streaming for \(seconds) s to \(server)")
         // -autotest-chzzk: 송출을 치지직 권장값(키프레임 1초, B프레임 없음)으로. CI가 받은 영상의 키프레임 간격을 본다
-        var encoding = StreamEncoding(codec: "h264", videoKbps: 4000, audioKbps: 160)
+        var encoding = EncoderSettings(codec: "h264", rateControl: "CBR", videoKbps: 4000, audioKbps: 160)
         if ProcessInfo.processInfo.arguments.contains("-autotest-chzzk") {
-            encoding = encoding.forChzzk()
+            encoding = encoding.forChzzk(keyint: 1, canvasHeight: Core.shared.height)
             appLog("autotest: streaming with the chzzk encoding")
         }
+        let streamVideo = Self.streamVideo(encoding)
+        // 혼잡 시 비트레이트 조절을 켠 RTMP (P11): CI가 rtmp-stream의 "Dynamic bitrate" 줄을 본다
+        let options = core_stream_options(dyn_bitrate: true, reconnect: true, retries: 20, retry_sec: 5, delay_sec: 0)
+        let record = EncoderSettings(codec: "hevc", rateControl: "ABR", videoKbps: 20000, audioKbps: 192)
+        let recordVideo = Self.streamVideo(record)
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
-            let recording = core_recording_start(path, "hevc", 20000, 192)
-            let streaming = Self.start(server: server, key: key, encoding: encoding)
-            // 리플레이 버퍼(10초)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5)
-            let replay = core_replay_start(RecordingFolder.defaultFolder.path, 10, "hevc", 20000, 192)
+            var video = recordVideo
+            var audio = record.audio
+            let recording = core_recording_start(path, &video, &audio)
+            let streaming = Self.start(
+                server: server, key: key, video: streamVideo, audio: encoding.audio, options: options)
+            // 리플레이 버퍼(7초, 목록에 없는 직접 입력 값)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5, P11)
+            let replay = core_replay_start(RecordingFolder.defaultFolder.path, 7, 2048, &video, &audio)
             appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
 
             queue.asyncAfter(deadline: .now() + seconds) {
@@ -302,12 +329,28 @@ final class Outputs: ObservableObject {
             let seconds = Double(args[index + 1])
         else { return }
         let server = args[index + 2]
+        let encoding = EncoderSettings(codec: "h264", rateControl: "CBR", videoKbps: 3000, audioKbps: 160)
+        let streamVideo = Self.streamVideo(encoding)
+        let options = core_stream_options(dyn_bitrate: false, reconnect: true, retries: 20, retry_sec: 5, delay_sec: 0)
+
+        // 같은 시간 동안 다른 인코딩 설정으로 녹화한다 (P11): ABR + 최대 비트레이트, 키프레임 1초, B프레임 없음,
+        // H.264 main, 캔버스 높이의 절반으로 줄인 출력. CI가 ffprobe로 크기·키프레임·B프레임·색·오디오를 본다
+        let record = EncoderSettings(
+            codec: "h264", rateControl: "ABR", videoKbps: 2500, limitBitrate: true, maxBitrateKbps: 3000,
+            maxBitrateWindow: 1.5, keyintSeconds: 1, profile: "main", bframes: false,
+            outputHeight: Int(Core.shared.height) / 2, audioKbps: 128)
+        let recordVideo = Self.streamVideo(record)
+        let recordPath = RecordingFolder.defaultFolder.appendingPathComponent("encoding-test.mp4").path
 
         let queue = DispatchQueue.global(qos: .userInitiated)
         queue.asyncAfter(deadline: .now() + 3) {
             let started = Self.start(
-                server: server, key: "autotest", encoding: StreamEncoding(codec: "h264", videoKbps: 3000, audioKbps: 160))
+                server: server, key: "autotest", video: streamVideo, audio: encoding.audio, options: options)
             appLog("srt autotest: started \(started)")
+            var video = recordVideo
+            var audio = record.audio
+            let recording = core_recording_start(recordPath, &video, &audio)
+            appLog("encoding autotest: recording \(recording) (\(record.summary), output height \(record.outputHeight))")
 
             queue.asyncAfter(deadline: .now() + seconds) {
                 var stats = core_output_stats()
@@ -316,7 +359,9 @@ final class Outputs: ObservableObject {
                     String(
                         format: "srt autotest: streamed %.1f s %llu bytes, dropped %d/%d", stats.streaming_seconds,
                         stats.stream_bytes, stats.stream_dropped_frames, stats.stream_total_frames))
+                appLog(String(format: "encoding autotest: recorded %.1f s", stats.recording_seconds))
                 core_streaming_stop(false)
+                core_recording_stop(false)
 
                 queue.asyncAfter(deadline: .now() + 5) {
                     appLog("srt autotest: done (stream error '\(Self.lastError(stream: true))')")
