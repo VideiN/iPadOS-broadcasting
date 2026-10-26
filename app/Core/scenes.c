@@ -378,6 +378,8 @@ void core_scene_item_reset(int64_t id)
 
 	struct vec2 pos = {0.0f, 0.0f};
 	struct vec2 scale = {1.0f, 1.0f};
+	const struct obs_sceneitem_crop no_crop = {0};
+	obs_sceneitem_set_crop(item, &no_crop);
 	obs_sceneitem_set_bounds_type(item, OBS_BOUNDS_NONE);
 	obs_sceneitem_set_alignment(item, OBS_ALIGN_TOP | OBS_ALIGN_LEFT);
 	obs_sceneitem_set_rot(item, 0.0f);
@@ -438,6 +440,632 @@ void core_scene_item_scale(int64_t id, float factor, float cx, float cy)
 
 	obs_sceneitem_set_pos(item, &pos);
 	obs_sceneitem_release(item);
+}
+
+#pragma mark - 미리보기 편집 (P11): 핸들로 크기·자르기·회전, 스냅, 숫자 변형
+
+// OBS frontend/widgets/OBSBasicPreview.cpp의 StretchItem·CropItem·RotateItem·GetSnapOffset 계산을 옮겼다.
+// 끌기는 한 번에 하나라서 시작할 때의 값을 여기에 둔다 (메인 스레드에서만 부른다).
+static struct {
+	obs_sceneitem_t *item;
+	int mode;
+	uint32_t handle;
+	struct vec2 start_point;     // 끌기를 시작한 캔버스 좌표
+	struct vec2 start_pos;       // 그때 항목의 pos
+	struct vec2 start_size;      // 그때 보이는 크기 (GetItemSize)
+	struct obs_sceneitem_crop start_crop;
+	struct matrix4 item_to_screen; // 회전만 있는 항목 좌표 → 캔버스
+	struct matrix4 screen_to_item;
+	struct vec2 rotate_center;   // 회전: 상자 가운데
+	struct vec2 rotate_offset;   // 회전: 가운데에서 pos까지 (회전을 푼 값)
+	struct vec2 last_point;      // 옮기기: 지난번 손가락 위치
+	struct vec2 snapped;         // 옮기기: 지금 pos에 더해 둔 스냅 이동량
+} drag;
+
+static float rad(float degrees)
+{
+	return degrees * (float)M_PI / 180.0f;
+}
+
+static void rotate_vec2(struct vec2 *v, float radians)
+{
+	const float c = cosf(radians), s = sinf(radians);
+	const float x = c * v->x - s * v->y;
+	const float y = s * v->x + c * v->y;
+	vec2_set(v, x, y);
+}
+
+// 보이는 크기: 바운드가 있으면 바운드, 없으면 (원본 - 자르기) × 배율
+static struct vec2 item_size(obs_sceneitem_t *item)
+{
+	struct vec2 size;
+	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
+		obs_sceneitem_get_bounds(item, &size);
+		return size;
+	}
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	struct obs_sceneitem_crop crop;
+	struct vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+	obs_sceneitem_get_crop(item, &crop);
+	size.x = fmaxf((float)((int)obs_source_get_width(source) - crop.left - crop.right), 0.0f);
+	size.y = fmaxf((float)((int)obs_source_get_height(source) - crop.top - crop.bottom), 0.0f);
+	vec2_mul(&size, &size, &scale);
+	return size;
+}
+
+static struct vec2 box_center(obs_sceneitem_t *item)
+{
+	struct vec3 box[4];
+	item_box(item, box);
+	struct vec2 center = {(box[0].x + box[2].x) * 0.5f, (box[0].y + box[2].y) * 0.5f};
+	return center;
+}
+
+static void box_bounds(obs_sceneitem_t *item, struct vec3 *tl, struct vec3 *br)
+{
+	struct vec3 box[4];
+	item_box(item, box);
+	vec3_copy(tl, &box[0]);
+	vec3_copy(br, &box[0]);
+	for (int i = 1; i < 4; i++) {
+		vec3_min(tl, tl, &box[i]);
+		vec3_max(br, br, &box[i]);
+	}
+}
+
+// 캔버스 가장자리·가운데선에 snap 거리 안이면 붙일 만큼의 이동량. 안내선 위치를 feedback에 남긴다
+static struct vec3 snap_offset(const struct vec3 *tl, const struct vec3 *br, float distance,
+			       struct core_drag_feedback *feedback)
+{
+	struct vec3 offset;
+	vec3_zero(&offset);
+	if (distance <= 0.0f)
+		return offset;
+
+	uint32_t width, height;
+	canvas_size(&width, &height);
+	const float w = (float)width, h = (float)height;
+	const float center_x = br->x - (br->x - tl->x) / 2.0f;
+	const float center_y = br->y - (br->y - tl->y) / 2.0f;
+
+	if (fabsf(tl->x) < distance) {
+		offset.x = -tl->x;
+		feedback->snap_x = true;
+		feedback->guide_x = 0.0f;
+	} else if (fabsf(w - br->x) < distance) {
+		offset.x = w - br->x;
+		feedback->snap_x = true;
+		feedback->guide_x = w;
+	} else if (fabsf(w - (br->x - tl->x)) > distance && fabsf(w / 2.0f - center_x) < distance) {
+		offset.x = w / 2.0f - center_x;
+		feedback->snap_x = true;
+		feedback->guide_x = w / 2.0f;
+	}
+
+	if (fabsf(tl->y) < distance) {
+		offset.y = -tl->y;
+		feedback->snap_y = true;
+		feedback->guide_y = 0.0f;
+	} else if (fabsf(h - br->y) < distance) {
+		offset.y = h - br->y;
+		feedback->snap_y = true;
+		feedback->guide_y = h;
+	} else if (fabsf(h - (br->y - tl->y)) > distance && fabsf(h / 2.0f - center_y) < distance) {
+		offset.y = h / 2.0f - center_y;
+		feedback->snap_y = true;
+		feedback->guide_y = h / 2.0f;
+	}
+	return offset;
+}
+
+bool core_scene_item_drag_begin(int64_t id, int mode, int handle, float x, float y)
+{
+	core_scene_item_drag_end();
+
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return false;
+	if (obs_sceneitem_locked(item)) {
+		obs_sceneitem_release(item);
+		return false;
+	}
+
+	drag.item = item;
+	drag.mode = mode;
+	drag.handle = (uint32_t)handle;
+	vec2_set(&drag.start_point, x, y);
+	drag.last_point = drag.start_point;
+	vec2_zero(&drag.snapped);
+	obs_sceneitem_get_pos(item, &drag.start_pos);
+	obs_sceneitem_get_crop(item, &drag.start_crop);
+	drag.start_size = item_size(item);
+
+	struct matrix4 box_transform;
+	obs_sceneitem_get_box_transform(item, &box_transform);
+	const float rot = obs_sceneitem_get_rot(item);
+	struct vec3 upper_left;
+	vec3_from_vec4(&upper_left, &box_transform.t);
+
+	matrix4_identity(&drag.item_to_screen);
+	matrix4_rotate_aa4f(&drag.item_to_screen, &drag.item_to_screen, 0.0f, 0.0f, 1.0f, rad(rot));
+	matrix4_translate3f(&drag.item_to_screen, &drag.item_to_screen, upper_left.x, upper_left.y, 0.0f);
+
+	matrix4_identity(&drag.screen_to_item);
+	matrix4_translate3f(&drag.screen_to_item, &drag.screen_to_item, -upper_left.x, -upper_left.y, 0.0f);
+	matrix4_rotate_aa4f(&drag.screen_to_item, &drag.screen_to_item, 0.0f, 0.0f, 1.0f, rad(-rot));
+
+	drag.rotate_center = box_center(item);
+	drag.rotate_offset = drag.start_pos;
+	vec2_sub(&drag.rotate_offset, &drag.rotate_offset, &drag.rotate_center);
+	rotate_vec2(&drag.rotate_offset, -rad(rot));
+	return true;
+}
+
+// 손가락이 움직인 만큼 옮긴다. 두 손가락으로 크기·회전을 같이 바꾸면 pos가 따로 바뀌므로
+// 시작 위치가 아니라 지금 pos에서 (지난번 스냅을 빼고) 더한다
+static void drag_move(float x, float y, float snap, struct core_drag_feedback *feedback)
+{
+	struct vec2 pos;
+	obs_sceneitem_get_pos(drag.item, &pos);
+	pos.x += x - drag.last_point.x - drag.snapped.x;
+	pos.y += y - drag.last_point.y - drag.snapped.y;
+	vec2_set(&drag.last_point, x, y);
+	vec2_zero(&drag.snapped);
+	obs_sceneitem_set_pos(drag.item, &pos);
+
+	struct vec3 tl, br;
+	box_bounds(drag.item, &tl, &br);
+	const struct vec3 offset = snap_offset(&tl, &br, snap, feedback);
+	if (offset.x != 0.0f || offset.y != 0.0f) {
+		pos.x += offset.x;
+		pos.y += offset.y;
+		vec2_set(&drag.snapped, offset.x, offset.y);
+		obs_sceneitem_set_pos(drag.item, &pos);
+	}
+}
+
+// 모서리를 끌면 시작할 때의 비율을 지킨다 (변은 그 방향으로만)
+static void clamp_aspect(struct vec3 *tl, struct vec3 *br, struct vec2 *size)
+{
+	const uint32_t h = drag.handle;
+	const bool corner = (h & (CORE_HANDLE_LEFT | CORE_HANDLE_RIGHT)) && (h & (CORE_HANDLE_TOP | CORE_HANDLE_BOTTOM));
+	if (!corner || drag.start_size.x <= 0.0f || drag.start_size.y <= 0.0f)
+		return;
+
+	const float base_aspect = drag.start_size.x / drag.start_size.y;
+	const float aspect = size->y != 0.0f ? size->x / size->y : base_aspect;
+	const bool same_sign = (size->y >= 0.0f && size->x >= 0.0f) || (size->y <= 0.0f && size->x <= 0.0f);
+	if (aspect < base_aspect)
+		size->x = size->y * base_aspect * (same_sign ? 1.0f : -1.0f);
+	else
+		size->y = size->x / base_aspect * (same_sign ? 1.0f : -1.0f);
+
+	size->x = roundf(size->x);
+	size->y = roundf(size->y);
+	if (h & CORE_HANDLE_LEFT)
+		tl->x = br->x - size->x;
+	else if (h & CORE_HANDLE_RIGHT)
+		br->x = tl->x + size->x;
+	if (h & CORE_HANDLE_TOP)
+		tl->y = br->y - size->y;
+	else if (h & CORE_HANDLE_BOTTOM)
+		br->y = tl->y + size->y;
+}
+
+static struct vec3 transformed(float x, float y, const struct matrix4 *m)
+{
+	struct vec3 v;
+	vec3_set(&v, x, y, 0.0f);
+	vec3_transform(&v, &v, m);
+	return v;
+}
+
+static void snap_stretch(struct vec3 *tl, struct vec3 *br, float snap, struct core_drag_feedback *feedback)
+{
+	struct vec3 corners[4] = {
+		transformed(tl->x, tl->y, &drag.item_to_screen),
+		transformed(br->x, tl->y, &drag.item_to_screen),
+		transformed(tl->x, br->y, &drag.item_to_screen),
+		transformed(br->x, br->y, &drag.item_to_screen),
+	};
+	struct vec3 bound_tl = corners[0], bound_br = corners[0];
+	for (int i = 1; i < 4; i++) {
+		vec3_min(&bound_tl, &bound_tl, &corners[i]);
+		vec3_max(&bound_br, &bound_br, &corners[i]);
+	}
+
+	struct vec3 offset = snap_offset(&bound_tl, &bound_br, snap, feedback);
+	vec3_add(&offset, &offset, &corners[0]);
+	vec3_transform(&offset, &offset, &drag.screen_to_item);
+	vec3_sub(&offset, &offset, tl);
+
+	if (drag.handle & CORE_HANDLE_LEFT)
+		tl->x += offset.x;
+	else if (drag.handle & CORE_HANDLE_RIGHT)
+		br->x += offset.x;
+	if (drag.handle & CORE_HANDLE_TOP)
+		tl->y += offset.y;
+	else if (drag.handle & CORE_HANDLE_BOTTOM)
+		br->y += offset.y;
+}
+
+// 정렬점(pos)이 새 상자에서 있을 자리 (항목 좌표)
+static struct vec3 stretch_pos(const struct vec3 *tl, const struct vec3 *br)
+{
+	const uint32_t alignment = obs_sceneitem_get_alignment(drag.item);
+	struct vec3 pos;
+	vec3_zero(&pos);
+	if (alignment & OBS_ALIGN_LEFT)
+		pos.x = tl->x;
+	else if (alignment & OBS_ALIGN_RIGHT)
+		pos.x = br->x;
+	else
+		pos.x = (br->x - tl->x) * 0.5f + tl->x;
+	if (alignment & OBS_ALIGN_TOP)
+		pos.y = tl->y;
+	else if (alignment & OBS_ALIGN_BOTTOM)
+		pos.y = br->y;
+	else
+		pos.y = (br->y - tl->y) * 0.5f + tl->y;
+	return pos;
+}
+
+static void drag_stretch(float x, float y, bool keep_aspect, float snap, struct core_drag_feedback *feedback)
+{
+	struct vec3 tl, br;
+	vec3_zero(&tl);
+	vec3_set(&br, drag.start_size.x, drag.start_size.y, 0.0f);
+	const struct vec3 point = transformed(x, y, &drag.screen_to_item);
+
+	if (drag.handle & CORE_HANDLE_LEFT)
+		tl.x = point.x;
+	else if (drag.handle & CORE_HANDLE_RIGHT)
+		br.x = point.x;
+	if (drag.handle & CORE_HANDLE_TOP)
+		tl.y = point.y;
+	else if (drag.handle & CORE_HANDLE_BOTTOM)
+		br.y = point.y;
+
+	snap_stretch(&tl, &br, snap, feedback);
+
+	obs_source_t *source = obs_sceneitem_get_source(drag.item);
+	const uint32_t source_cx = obs_source_get_width(source);
+	const uint32_t source_cy = obs_source_get_height(source);
+	if (!source_cx || !source_cy)
+		return;
+
+	struct vec2 size = {br.x - tl.x, br.y - tl.y};
+	if (keep_aspect)
+		clamp_aspect(&tl, &br, &size);
+
+	if (obs_sceneitem_get_bounds_type(drag.item) != OBS_BOUNDS_NONE) {
+		if (tl.x > br.x) {
+			const float t = tl.x;
+			tl.x = br.x;
+			br.x = t;
+		}
+		if (tl.y > br.y) {
+			const float t = tl.y;
+			tl.y = br.y;
+			br.y = t;
+		}
+		size.x = fmaxf(fabsf(size.x), 4.0f);
+		size.y = fmaxf(fabsf(size.y), 4.0f);
+		obs_sceneitem_set_bounds(drag.item, &size);
+	} else {
+		struct obs_sceneitem_crop crop;
+		obs_sceneitem_get_crop(drag.item, &crop);
+		struct vec2 base = {(float)source_cx - (float)(crop.left + crop.right),
+				    (float)source_cy - (float)(crop.top + crop.bottom)};
+		if (base.x < 1.0f || base.y < 1.0f)
+			return;
+		struct vec2 scale = {size.x / base.x, size.y / base.y};
+		// 아주 작게 줄이면 다시 잡을 수 없으니 막는다 (뒤집기는 허용)
+		if (fabsf(scale.x) < 0.01f || fabsf(scale.y) < 0.01f)
+			return;
+		obs_sceneitem_set_scale(drag.item, &scale);
+	}
+
+	struct vec3 pos = stretch_pos(&tl, &br);
+	vec3_transform(&pos, &pos, &drag.item_to_screen);
+	struct vec2 new_pos = {roundf(pos.x), roundf(pos.y)};
+	obs_sceneitem_set_pos(drag.item, &new_pos);
+}
+
+static void drag_crop(float x, float y)
+{
+	const bool bounded = obs_sceneitem_get_bounds_type(drag.item) != OBS_BOUNDS_NONE;
+	const uint32_t h = drag.handle;
+	const uint32_t align = obs_sceneitem_get_alignment(drag.item);
+	struct vec3 tl, br;
+	vec3_zero(&tl);
+	vec3_set(&br, drag.start_size.x, drag.start_size.y, 0.0f);
+	struct vec3 point = transformed(x, y, &drag.screen_to_item);
+
+	struct obs_sceneitem_crop crop = drag.start_crop;
+	struct vec2 raw_scale, scale;
+	obs_sceneitem_get_scale(drag.item, &raw_scale);
+	vec2_set(&scale, bounded ? fabsf(raw_scale.x) : raw_scale.x, bounded ? fabsf(raw_scale.y) : raw_scale.y);
+	if (scale.x == 0.0f || scale.y == 0.0f)
+		return;
+
+	const struct vec2 max_tl = {(float)-crop.left * scale.x, (float)-crop.top * scale.y};
+	const struct vec2 max_br = {drag.start_size.x + crop.right * scale.x, drag.start_size.y + crop.bottom * scale.y};
+	const bool flip_x = scale.x < 0.0f && !bounded, flip_y = scale.y < 0.0f && !bounded;
+#define MIN_X(a, b) (flip_x ? fmaxf(a, b) : fminf(a, b))
+#define MAX_X(a, b) (flip_x ? fminf(a, b) : fmaxf(a, b))
+#define MIN_Y(a, b) (flip_y ? fmaxf(a, b) : fminf(a, b))
+#define MAX_Y(a, b) (flip_y ? fminf(a, b) : fmaxf(a, b))
+	point.x = MAX_X(MIN_X(point.x, max_br.x), max_tl.x);
+	point.y = MAX_Y(MIN_Y(point.y, max_br.y), max_tl.y);
+
+	// 남는 크기는 원본 2픽셀 이상
+	if (h & CORE_HANDLE_LEFT)
+		point.x = tl.x = MIN_X(point.x, drag.start_size.x - 2.0f * scale.x);
+	else if (h & CORE_HANDLE_RIGHT)
+		point.x = br.x = MAX_X(point.x, 2.0f * scale.x);
+	if (h & CORE_HANDLE_TOP)
+		point.y = tl.y = MIN_Y(point.y, drag.start_size.y - 2.0f * scale.y);
+	else if (h & CORE_HANDLE_BOTTOM)
+		point.y = br.y = MAX_Y(point.y, 2.0f * scale.y);
+#undef MIN_X
+#undef MAX_X
+#undef MIN_Y
+#undef MAX_Y
+
+	const uint32_t align_x_mask = OBS_ALIGN_LEFT | OBS_ALIGN_RIGHT;
+	const uint32_t align_y_mask = OBS_ALIGN_TOP | OBS_ALIGN_BOTTOM;
+	const uint32_t handle_x = (h & CORE_HANDLE_LEFT ? OBS_ALIGN_LEFT : 0) | (h & CORE_HANDLE_RIGHT ? OBS_ALIGN_RIGHT : 0);
+	const uint32_t handle_y = (h & CORE_HANDLE_TOP ? OBS_ALIGN_TOP : 0) | (h & CORE_HANDLE_BOTTOM ? OBS_ALIGN_BOTTOM : 0);
+	struct vec3 new_pos;
+	vec3_zero(&new_pos);
+	if ((align & align_x_mask) == handle_x && handle_x != 0)
+		new_pos.x = point.x;
+	else if (align & OBS_ALIGN_RIGHT)
+		new_pos.x = drag.start_size.x;
+	else if (!(align & OBS_ALIGN_LEFT))
+		new_pos.x = drag.start_size.x * 0.5f;
+	if ((align & align_y_mask) == handle_y && handle_y != 0)
+		new_pos.y = point.y;
+	else if (align & OBS_ALIGN_BOTTOM)
+		new_pos.y = drag.start_size.y;
+	else if (!(align & OBS_ALIGN_TOP))
+		new_pos.y = drag.start_size.y * 0.5f;
+
+	if (h & CORE_HANDLE_LEFT)
+		crop.left += (int)roundf(tl.x / scale.x);
+	else if (h & CORE_HANDLE_RIGHT)
+		crop.right += (int)roundf((drag.start_size.x - br.x) / scale.x);
+	if (h & CORE_HANDLE_TOP)
+		crop.top += (int)roundf(tl.y / scale.y);
+	else if (h & CORE_HANDLE_BOTTOM)
+		crop.bottom += (int)roundf((drag.start_size.y - br.y) / scale.y);
+	crop.left = crop.left < 0 ? 0 : crop.left;
+	crop.right = crop.right < 0 ? 0 : crop.right;
+	crop.top = crop.top < 0 ? 0 : crop.top;
+	crop.bottom = crop.bottom < 0 ? 0 : crop.bottom;
+
+	vec3_transform(&new_pos, &new_pos, &drag.item_to_screen);
+	struct vec2 pos = {roundf(new_pos.x), roundf(new_pos.y)};
+
+	obs_sceneitem_defer_update_begin(drag.item);
+	obs_sceneitem_set_crop(drag.item, &crop);
+	if (!bounded)
+		obs_sceneitem_set_pos(drag.item, &pos);
+	obs_sceneitem_defer_update_end(drag.item);
+}
+
+// 0·90·180·270°에서 3° 안이면 붙인다
+static float snapped_angle(float degrees)
+{
+	float angle = fmodf(degrees, 360.0f);
+	if (angle < 0.0f)
+		angle += 360.0f;
+	for (int i = 0; i <= 4; i++) {
+		if (fabsf(angle - i * 90.0f) < 3.0f)
+			return fmodf(i * 90.0f, 360.0f);
+	}
+	return angle;
+}
+
+static void drag_rotate(float x, float y)
+{
+	const float degrees = atan2f(y - drag.rotate_center.y, x - drag.rotate_center.x) * 180.0f / (float)M_PI + 90.0f;
+	const float angle = snapped_angle(degrees);
+
+	struct vec2 pos = drag.rotate_offset;
+	rotate_vec2(&pos, rad(angle));
+	pos.x += drag.rotate_center.x;
+	pos.y += drag.rotate_center.y;
+	obs_sceneitem_set_rot(drag.item, angle);
+	obs_sceneitem_set_pos(drag.item, &pos);
+}
+
+void core_scene_item_drag_to(float x, float y, bool keep_aspect, float snap_distance,
+			     struct core_drag_feedback *feedback)
+{
+	struct core_drag_feedback local = {0};
+	if (!feedback)
+		feedback = &local;
+	memset(feedback, 0, sizeof(*feedback));
+	if (!drag.item)
+		return;
+
+	switch (drag.mode) {
+	case CORE_DRAG_STRETCH:
+		drag_stretch(x, y, keep_aspect, snap_distance, feedback);
+		break;
+	case CORE_DRAG_CROP:
+		drag_crop(x, y);
+		break;
+	case CORE_DRAG_ROTATE:
+		drag_rotate(x, y);
+		break;
+	default:
+		drag_move(x, y, snap_distance, feedback);
+		break;
+	}
+	feedback->rotation = obs_sceneitem_get_rot(drag.item);
+}
+
+void core_scene_item_drag_end(void)
+{
+	if (!drag.item)
+		return;
+
+	struct obs_sceneitem_crop crop;
+	struct vec2 pos, scale;
+	obs_sceneitem_get_crop(drag.item, &crop);
+	obs_sceneitem_get_pos(drag.item, &pos);
+	obs_sceneitem_get_scale(drag.item, &scale);
+	static const char *modes[] = {"move", "stretch", "crop", "rotate"};
+	blog(LOG_INFO, "[app] item transform (%s): pos %.0f,%.0f scale %.3f,%.3f rot %.1f crop %d,%d,%d,%d",
+	     modes[drag.mode >= 0 && drag.mode <= 3 ? drag.mode : 0], pos.x, pos.y, scale.x, scale.y,
+	     obs_sceneitem_get_rot(drag.item), crop.left, crop.top, crop.right, crop.bottom);
+	obs_sceneitem_release(drag.item);
+	drag.item = NULL;
+}
+
+bool core_scene_item_get_transform(int64_t id, struct core_item_transform *transform)
+{
+	memset(transform, 0, sizeof(*transform));
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return false;
+
+	struct vec2 pos, scale, bounds;
+	struct obs_sceneitem_crop crop;
+	obs_sceneitem_get_pos(item, &pos);
+	obs_sceneitem_get_scale(item, &scale);
+	obs_sceneitem_get_bounds(item, &bounds);
+	obs_sceneitem_get_crop(item, &crop);
+	obs_source_t *source = obs_sceneitem_get_source(item);
+
+	transform->pos_x = pos.x;
+	transform->pos_y = pos.y;
+	transform->rot = obs_sceneitem_get_rot(item);
+	transform->scale_x = scale.x;
+	transform->scale_y = scale.y;
+	transform->alignment = obs_sceneitem_get_alignment(item);
+	transform->bounds_type = (int)obs_sceneitem_get_bounds_type(item);
+	transform->bounds_x = bounds.x;
+	transform->bounds_y = bounds.y;
+	transform->crop_left = crop.left;
+	transform->crop_top = crop.top;
+	transform->crop_right = crop.right;
+	transform->crop_bottom = crop.bottom;
+	transform->source_width = obs_source_get_width(source);
+	transform->source_height = obs_source_get_height(source);
+	const struct vec2 size = item_size(item);
+	transform->width = size.x;
+	transform->height = size.y;
+	obs_sceneitem_release(item);
+	return true;
+}
+
+void core_scene_item_set_transform(int64_t id, const struct core_item_transform *transform)
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return;
+
+	struct obs_sceneitem_crop crop = {
+		.left = transform->crop_left < 0 ? 0 : transform->crop_left,
+		.top = transform->crop_top < 0 ? 0 : transform->crop_top,
+		.right = transform->crop_right < 0 ? 0 : transform->crop_right,
+		.bottom = transform->crop_bottom < 0 ? 0 : transform->crop_bottom,
+	};
+	struct vec2 pos = {transform->pos_x, transform->pos_y};
+	struct vec2 scale = {transform->scale_x, transform->scale_y};
+	struct vec2 bounds = {fmaxf(transform->bounds_x, 1.0f), fmaxf(transform->bounds_y, 1.0f)};
+
+	obs_sceneitem_defer_update_begin(item);
+	obs_sceneitem_set_crop(item, &crop);
+	obs_sceneitem_set_rot(item, transform->rot);
+	if (obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE)
+		obs_sceneitem_set_bounds(item, &bounds);
+	else if (fabsf(scale.x) >= 0.001f && fabsf(scale.y) >= 0.001f)
+		obs_sceneitem_set_scale(item, &scale);
+	obs_sceneitem_set_pos(item, &pos);
+	obs_sceneitem_defer_update_end(item);
+
+	blog(LOG_INFO, "[app] item transform (edit): pos %.0f,%.0f rot %.1f crop %d,%d,%d,%d", pos.x, pos.y,
+	     transform->rot, crop.left, crop.top, crop.right, crop.bottom);
+	obs_sceneitem_release(item);
+}
+
+// 바꾸기 전과 후의 상자 가운데가 같도록 pos를 옮긴다
+static void keep_center(obs_sceneitem_t *item, struct vec2 before)
+{
+	const struct vec2 after = box_center(item);
+	struct vec2 pos;
+	obs_sceneitem_get_pos(item, &pos);
+	pos.x += before.x - after.x;
+	pos.y += before.y - after.y;
+	obs_sceneitem_set_pos(item, &pos);
+}
+
+void core_scene_item_set_rotation(int64_t id, float degrees)
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return;
+	const struct vec2 center = box_center(item);
+	float angle = fmodf(degrees, 360.0f);
+	if (angle < 0.0f)
+		angle += 360.0f;
+	obs_sceneitem_set_rot(item, angle);
+	keep_center(item, center);
+	obs_sceneitem_release(item);
+}
+
+void core_scene_item_flip(int64_t id, bool horizontal)
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return;
+	const struct vec2 center = box_center(item);
+	struct vec2 scale;
+	obs_sceneitem_get_scale(item, &scale);
+	if (horizontal)
+		scale.x = -scale.x;
+	else
+		scale.y = -scale.y;
+	obs_sceneitem_set_scale(item, &scale);
+	keep_center(item, center);
+	obs_sceneitem_release(item);
+}
+
+// 자르기 전 원본 전체의 네 모서리 (자르기 모드에서 잘린 부분을 점선으로). 바운드 항목이나 자르지 않았으면 false
+bool core_scene_item_uncropped_box(int64_t id, float corners[8])
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return false;
+
+	struct obs_sceneitem_crop crop;
+	obs_sceneitem_get_crop(item, &crop);
+	obs_source_t *source = obs_sceneitem_get_source(item);
+	const float cw = (float)((int)obs_source_get_width(source) - crop.left - crop.right);
+	const float ch = (float)((int)obs_source_get_height(source) - crop.top - crop.bottom);
+	const bool cropped = crop.left || crop.top || crop.right || crop.bottom;
+	if (!cropped || cw <= 0.0f || ch <= 0.0f || obs_sceneitem_get_bounds_type(item) != OBS_BOUNDS_NONE) {
+		obs_sceneitem_release(item);
+		return false;
+	}
+
+	struct matrix4 transform;
+	obs_sceneitem_get_box_transform(item, &transform);
+	const float x0 = -crop.left / cw, y0 = -crop.top / ch, x1 = 1.0f + crop.right / cw, y1 = 1.0f + crop.bottom / ch;
+	const float unit[4][2] = {{x0, y0}, {x1, y0}, {x1, y1}, {x0, y1}};
+	for (int i = 0; i < 4; i++) {
+		struct vec3 corner = transformed(unit[i][0], unit[i][1], &transform);
+		corners[i * 2] = corner.x;
+		corners[i * 2 + 1] = corner.y;
+	}
+	obs_sceneitem_release(item);
+	return true;
 }
 
 void core_scene_item_set_visible(int64_t id, bool visible)

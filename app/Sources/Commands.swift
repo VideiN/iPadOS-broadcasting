@@ -4,7 +4,7 @@ import SwiftUI
 /// 하드웨어 키보드에서 ⌘를 누르고 있으면 단축키 목록으로도 보인다.
 /// 시트를 여는 일은 화면 쪽(StudioSheetsModifier)이 .studioCommand 알림으로 받는다
 enum StudioCommand: String {
-    case settings, addSource, properties, toggleStream
+    case settings, addSource, properties, toggleStream, transform
 }
 
 extension Notification.Name {
@@ -78,6 +78,36 @@ struct StudioCommands: Commands {
                 if let item { model.fit(item) }
             }
             .keyboardShortcut("f", modifiers: .command)
+            .disabled(item == nil)
+            // 미리보기 편집 (P11)
+            Divider()
+            Button("시계 방향으로 90° 돌리기") {
+                if let item { model.rotate(item, by: 90) }
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            .disabled(item == nil)
+            Button("반시계 방향으로 90° 돌리기") {
+                if let item { model.rotate(item, by: -90) }
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            .disabled(item == nil)
+            Button("좌우 뒤집기") {
+                if let item { model.flip(item, horizontal: true) }
+            }
+            .disabled(item == nil)
+            Button("상하 뒤집기") {
+                if let item { model.flip(item, horizontal: false) }
+            }
+            .disabled(item == nil)
+            Toggle("자르기", isOn: Binding(get: { model.cropMode }, set: { model.cropMode = $0 }))
+                .keyboardShortcut("c", modifiers: [.command, .option])
+                .disabled(item == nil)
+            Button("변형 편집…") { post(.transform) }
+                .keyboardShortcut("e", modifiers: [.command, .option])
+                .disabled(item == nil)
+            Button("원래대로 (크기·회전·자르기)") {
+                if let item { model.resetTransform(item) }
+            }
             .disabled(item == nil)
         }
 

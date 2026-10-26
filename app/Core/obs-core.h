@@ -74,7 +74,49 @@ int64_t core_scene_item_at(float x, float y);
 void core_scene_item_translate(int64_t id, float dx, float dy);
 void core_scene_item_scale(int64_t id, float factor, float cx, float cy);
 void core_scene_item_fit(int64_t id);   // 캔버스에 맞추기
-void core_scene_item_reset(int64_t id); // 원래 크기, 왼쪽 위
+void core_scene_item_reset(int64_t id); // 원래 크기, 왼쪽 위, 회전·자르기 없음
+
+// 미리보기 편집 (P11). 핸들은 항목 좌표의 변(왼쪽·오른쪽·위·아래 비트, 모서리는 둘을 함께)
+enum core_item_handle {
+	CORE_HANDLE_LEFT = 1,
+	CORE_HANDLE_RIGHT = 2,
+	CORE_HANDLE_TOP = 4,
+	CORE_HANDLE_BOTTOM = 8,
+};
+enum core_drag_mode { CORE_DRAG_MOVE = 0, CORE_DRAG_STRETCH = 1, CORE_DRAG_CROP = 2, CORE_DRAG_ROTATE = 3 };
+
+struct core_drag_feedback {
+	float rotation; // 지금 회전 (도)
+	bool snap_x;    // 캔버스 세로선(x = guide_x)에 붙었다
+	float guide_x;
+	bool snap_y;    // 캔버스 가로선(y = guide_y)에 붙었다
+	float guide_y;
+};
+
+// 끌기를 시작한다 (x, y: 손가락의 캔버스 좌표). 잠긴 항목이면 false
+bool core_scene_item_drag_begin(int64_t id, int mode, int handle, float x, float y);
+// keep_aspect: 모서리를 끌 때 비율 유지. snap_distance: 캔버스 가장자리·가운데선에 붙는 거리 (0이면 안 붙음)
+void core_scene_item_drag_to(float x, float y, bool keep_aspect, float snap_distance,
+			     struct core_drag_feedback *feedback);
+void core_scene_item_drag_end(void); // 결과를 로그에 남긴다
+
+struct core_item_transform {
+	float pos_x, pos_y;   // 정렬점의 캔버스 좌표
+	float rot;            // 도
+	float scale_x, scale_y; // 음수면 뒤집힘
+	uint32_t alignment;
+	int bounds_type;      // OBS_BOUNDS_NONE(0)이 아니면 크기는 bounds
+	float bounds_x, bounds_y;
+	int crop_left, crop_top, crop_right, crop_bottom;
+	uint32_t source_width, source_height;
+	float width, height;  // 보이는 크기 (읽기 전용)
+};
+bool core_scene_item_get_transform(int64_t id, struct core_item_transform *transform);
+void core_scene_item_set_transform(int64_t id, const struct core_item_transform *transform);
+void core_scene_item_set_rotation(int64_t id, float degrees); // 상자 가운데를 기준으로
+void core_scene_item_flip(int64_t id, bool horizontal);       // 상자 가운데를 기준으로
+// 자르기 전 원본 전체의 네 모서리 (core_scene_item_box와 같은 순서). 자르지 않았거나 바운드 항목이면 false
+bool core_scene_item_uncropped_box(int64_t id, float corners[8]);
 void core_scene_item_set_visible(int64_t id, bool visible);
 void core_scene_item_set_locked(int64_t id, bool locked);
 void core_scene_item_order(int64_t id, int movement); // 0 위로, 1 아래로, 2 맨 위, 3 맨 아래 (enum obs_order_movement)

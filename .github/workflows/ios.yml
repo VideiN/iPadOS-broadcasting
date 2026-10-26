@@ -272,7 +272,7 @@ jobs:
           # 앱이 "ui autotest: shot <이름>"을 남기면 찍고 tmp/autotest-shot을 만든다(앱은 그때까지 기다린다).
           # "ui autotest: rotate …"면 기기를 돌린다
           for event in 'shot 1-portrait' 'shot 2-settings' 'rotate landscape' 'shot 3-settings-landscape' 'shot 4-landscape' \
-            'shot 5-add-source' 'shot 6-properties' 'shot 7-no-chat' 'rotate portrait' 'shot 8-portrait' \
+            'shot 5-add-source' 'shot 6-properties' 'shot 7-no-chat' 'shot 7b-transform' 'shot 7c-crop' 'rotate portrait' 'shot 8-portrait' \
             'shot 9-glass-portrait' 'rotate landscape' 'shot 10-glass-landscape'; do
             for _ in $(seq 1 60); do
               grep -q "ui autotest: $event" app-run/app-relaunch.log && break
@@ -313,6 +313,10 @@ jobs:
           # 씬·소스 (P4)
           grep -q 'created the default scene' app-run/app.log
           grep -q 'scenes autotest: ok' app-run/app.log
+          # 미리보기 편집 (P11): 핸들로 자르기·늘리기, 가운데 기준 회전·뒤집기
+          grep 'transform autotest: ' app-run/app.log
+          grep -q 'transform autotest: ok' app-run/app.log
+          grep -q 'ui autotest: transform shots of ' app-run/app-relaunch.log
           # 캔버스 fps는 분수로 (29.97 = 30000/1001, libobs도 그 분수로)
           grep -q 'canvas set to 1280x720 @ 29.97 (30000/1001)' app-run/app.log
           grep -q 'canvas changed to 1280x720 @ 29.970 fps (30000/1001)' app-run/app.log
