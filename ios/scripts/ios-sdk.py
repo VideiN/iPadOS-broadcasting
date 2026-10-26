@@ -199,8 +199,20 @@ def link_flags(packer):
             index += 2
             continue
         library = None
+        name = os.path.basename(argument.rstrip("/"))
         if argument.endswith(".a"):
             library = argument
+        elif argument.endswith((".tbd", ".dylib")) and name.startswith("lib"):
+            # 시스템 SDK의 라이브러리를 경로로 준 것 (find_package(ZLIB)의 …/usr/lib/libz.tbd 등) → -lz
+            system = "-l" + re.sub(r"\.(tbd|dylib)$", "", name[3:])
+            if system not in flags:
+                flags.append(system)
+        elif argument.endswith(".framework"):
+            pair = ["-framework", name[: -len(".framework")]]
+            if not any(flags[i:i + 2] == pair for i in range(len(flags))):
+                flags.extend(pair)
+        elif not argument.startswith("-") and not argument.endswith((".o", ".swiftmodule")) and index > 0:
+            ignored.append(name)
         elif re.fullmatch(r"-l[\w+.-]+", argument):
             # -L의 폴더(빌드·의존성)에 있는 정적 라이브러리면 그 파일로, 아니면 시스템 라이브러리 (-lc++, -lz …)
             found = [os.path.join(d, f"lib{argument[2:]}.a") for d in search_dirs
