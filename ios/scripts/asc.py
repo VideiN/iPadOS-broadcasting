@@ -5,6 +5,9 @@
   있어(Xcode 26) --apple-id로 넘긴다
 - wait-build <번들 ID> <빌드 번호(CFBundleVersion)> <분>: 올린 빌드가 App Store Connect에서 처리되어 VALID가
   될 때까지 기다린다. FAILED·INVALID면 실패, 시간 안에 안 끝나면 경고만 남긴다 (처리가 늦을 때가 있다)
+- xcode-cloud-workflows: Xcode Cloud 제품과 워크플로 ID를 찍는다 (처음 워크플로를 만든 뒤 ID를 찾을 때, P12)
+- xcode-cloud-start <워크플로 ID> <브랜치>: 그 워크플로를 그 브랜치의 지금 커밋으로 시작한다 (main CI가 통과하면, P12).
+  워크플로의 시작 조건은 "수동 시작"이어야 한다 (API로 시작한 빌드는 수동 빌드다)
 
 환경 변수 ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_P8(키 파일 내용)로 인증한다. 토큰은 ES256 JWT를 openssl로 서명해
 만든다 (러너에 따로 설치할 것이 없게). 키와 토큰은 찍지 않는다.
@@ -65,8 +68,18 @@ def token():
 
 
 def get(path, params):
-    url = f"{API}/{path}?{urllib.parse.urlencode(params)}"
-    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token()}"})
+    return request(f"{API}/{path}?{urllib.parse.urlencode(params)}", path)
+
+
+def post(path, body):
+    return request(f"{API}/{path}", path, json.dumps(body).encode())
+
+
+def request(url, path, data=None):
+    headers = {"Authorization": f"Bearer {token()}"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(url, data=data, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.load(response)
@@ -129,11 +142,56 @@ def wait_build(bundle_id, version, minutes):
         time.sleep(30)
 
 
+def xcode_cloud_workflows():
+    products = get("ciProducts", {"include": "app", "fields[ciProducts]": "name,productType,app", "limit": 200})
+    if not products.get("data"):
+        print("no Xcode Cloud products yet (create the first workflow in Xcode, see docs/xcode-cloud.md)")
+        return
+    for product in products["data"]:
+        print(f"product {product['id']}: {product['attributes'].get('name')} ({product['attributes'].get('productType')})")
+        workflows = get(f"ciProducts/{product['id']}/workflows",
+                        {"fields[ciWorkflows]": "name,isEnabled,isLockedForEditing", "limit": 200})
+        for workflow in workflows.get("data", []):
+            attributes = workflow["attributes"]
+            state = "enabled" if attributes.get("isEnabled") else "disabled"
+            print(f"  workflow {workflow['id']}: {attributes.get('name')} ({state})")
+
+
+def xcode_cloud_start(workflow_id, branch):
+    workflow = get(f"ciWorkflows/{workflow_id}", {"fields[ciWorkflows]": "name,isEnabled"})["data"]
+    if not workflow["attributes"].get("isEnabled"):
+        fail(f"Xcode Cloud workflow {workflow_id} is disabled")
+    repository = get(f"ciWorkflows/{workflow_id}/repository", {"fields[scmRepositories]": "ownerName,repositoryName"})
+    repository_id = repository["data"]["id"]
+    reference = f"refs/heads/{branch}"
+    references = get(f"scmRepositories/{repository_id}/gitReferences",
+                     {"fields[scmGitReferences]": "name,canonicalName,isDeleted,kind", "limit": 200})
+    matches = [item for item in references.get("data", [])
+               if item["attributes"].get("canonicalName") == reference and not item["attributes"].get("isDeleted")]
+    if not matches:
+        fail(f"Xcode Cloud does not see {reference} in the connected repository yet")
+    run = post("ciBuildRuns", {"data": {"type": "ciBuildRuns", "attributes": {}, "relationships": {
+        "workflow": {"data": {"type": "ciWorkflows", "id": workflow_id}},
+        "sourceBranchOrTag": {"data": {"type": "scmGitReferences", "id": matches[0]["id"]}},
+    }}})["data"]
+    attributes = run["attributes"]
+    print(f"Xcode Cloud build {attributes.get('number')} started ({workflow['attributes'].get('name')}, {branch}, "
+          f"{attributes.get('executionProgress')}): run {run['id']}", flush=True)
+    output = os.environ.get("GITHUB_OUTPUT")
+    if output:
+        with open(output, "a") as file:
+            file.write(f"build={attributes.get('number')}\nrun={run['id']}\n")
+
+
 def main():
     if len(sys.argv) == 3 and sys.argv[1] == "app-id":
         print(app_id(sys.argv[2]))
     elif len(sys.argv) == 5 and sys.argv[1] == "wait-build":
         wait_build(sys.argv[2], sys.argv[3], int(sys.argv[4]))
+    elif len(sys.argv) == 2 and sys.argv[1] == "xcode-cloud-workflows":
+        xcode_cloud_workflows()
+    elif len(sys.argv) == 4 and sys.argv[1] == "xcode-cloud-start":
+        xcode_cloud_start(sys.argv[2], sys.argv[3])
     else:
         print(__doc__)
         sys.exit(2)

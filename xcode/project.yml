@@ -1,0 +1,127 @@
+# Xcode 프로젝트 (P12, XcodeGen). Xcode Cloud가 main을 이 프로젝트로 빌드·보관(Archive)해 TestFlight에 올린다.
+# 프로젝트 파일은 저장소에 두지 않고 ios/xcode/bootstrap.sh가 만든다 (Xcode Cloud에서는 ci_scripts/ci_post_clone.sh).
+# libobs·플러그인·의존성은 GitHub이 빌드한 iOS SDK 묶음(.sdk/ios-sdk, Generated/SDK.xcconfig의 SDK_CFLAGS·SDK_LDFLAGS)을
+# 링크하고, 앱 코드(Swift, C 브리지 app/Core, VRMKit)는 여기서 컴파일한다. GitHub CI와 시뮬레이터 시험은 CMake 빌드 그대로다.
+name: Broadcast
+options:
+  createIntermediateGroups: true
+  developmentLanguage: ko
+configFiles:
+  Debug: Generated/SDK.xcconfig
+  Release: Generated/SDK.xcconfig
+settings:
+  base:
+    SDKROOT: iphoneos
+    SUPPORTED_PLATFORMS: iphoneos
+    SUPPORTS_MACCATALYST: NO
+    SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD: NO
+    SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD: NO
+    TARGETED_DEVICE_FAMILY: "2"
+    ARCHS: arm64
+    CLANG_ENABLE_MODULES: YES
+    DEAD_CODE_STRIPPING: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    DEBUG_INFORMATION_FORMAT: dwarf-with-dsym
+
+targets:
+  # VRMKit (github.com/tattn/VRMKit, MIT): app/CMakeLists.txt와 같은 커밋·패치 (ios-sdk.py vrmkit이 .vrmkit/src에 받는다)
+  SIMDCompat:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: ../app/Vendor/SIMDCompat.swift
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+  VRMKit:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: ../.vrmkit/src/Sources/VRMKit
+        includes: ["**/*.swift"]
+    dependencies:
+      - target: SIMDCompat
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        OTHER_SWIFT_FLAGS: "$(inherited) -package-name VRMKit"
+  VRMKitRuntime:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: ../.vrmkit/src/Sources/VRMKitRuntime
+        includes: ["**/*.swift"]
+    dependencies:
+      - target: VRMKit
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        OTHER_SWIFT_FLAGS: "$(inherited) -package-name VRMKit"
+  VRMRealityKit:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: ../.vrmkit/src/Sources/VRMRealityKit
+        includes: ["**/*.swift"]
+      - path: ../app/Vendor/VRMRealityKit+Bundle.swift
+    dependencies:
+      - target: VRMKitRuntime
+    settings:
+      base:
+        SWIFT_VERSION: "6.0"
+        OTHER_SWIFT_FLAGS: "$(inherited) -package-name VRMKit"
+
+  # libobs 호출을 모은 C 브리지 (CMake의 app-core)
+  AppCore:
+    type: library.static
+    platform: iOS
+    sources:
+      - path: ../app/Core
+    settings:
+      base:
+        CLANG_ENABLE_OBJC_ARC: YES
+        OTHER_CFLAGS: "$(inherited) $(SDK_CFLAGS)"
+        HEADER_SEARCH_PATHS: ["$(inherited)", "$(REPO_ROOT)/app/Core"]
+
+  Broadcast:
+    type: application
+    platform: iOS
+    sources:
+      - path: ../app/Sources
+        includes: ["*.swift"]
+      - path: ../app/Resources/Assets.xcassets
+    dependencies:
+      - target: AppCore
+      - target: SIMDCompat
+      - target: VRMKit
+      - target: VRMKitRuntime
+      - target: VRMRealityKit
+    postBuildScripts:
+      - name: Copy OBS data, plugin data and licenses
+        script: bash "$REPO_ROOT/ios/xcode/copy-resources.sh"
+        basedOnDependencyAnalysis: false
+    settings:
+      base:
+        PRODUCT_NAME: Broadcast
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.videin.broadcast
+        INFOPLIST_FILE: Generated/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        CURRENT_PROJECT_VERSION: $(APP_BUILD_NUMBER)
+        SWIFT_VERSION: "5.0"
+        SWIFT_OBJC_BRIDGING_HEADER: ../app/Sources/Bridging-Header.h
+        HEADER_SEARCH_PATHS: ["$(inherited)", "$(REPO_ROOT)/app/Core"]
+        # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture)를 링커가 빼지 않게 (app/CMakeLists.txt와 같다)
+        OTHER_LDFLAGS: "$(inherited) -ObjC $(SDK_LDFLAGS)"
+        CODE_SIGN_ENTITLEMENTS: ../app/app.entitlements
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+
+schemes:
+  Broadcast:
+    build:
+      targets:
+        Broadcast: all
+    run:
+      config: Debug
+    archive:
+      config: Release

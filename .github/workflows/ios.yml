@@ -94,6 +94,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_INSTALL_PREFIX="$DIST_DIR" \
             -DOBS_VERSION_OVERRIDE="$OBS_VERSION" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             "${extra_args[@]}"
 
       - name: Build
@@ -536,6 +537,19 @@ jobs:
           name: libobs-ios-${{ matrix.platform }}
           path: dist/libobs-ios-${{ matrix.platform }}
 
+      # Xcode Cloud용 iOS SDK 묶음 (P12): libobs·플러그인·의존성 정적 라이브러리와 app-core의 컴파일·링크 옵션.
+      # 앱 코드는 넣지 않는다 (Xcode가 컴파일한다). 아래 "iOS SDK release"가 Release에, "Xcode project"가 확인에 쓴다
+      - name: Package iOS SDK
+        if: matrix.platform == 'iphoneos'
+        run: python3 ios/scripts/ios-sdk.py package "$BUILD_DIR" "$DEPS_DIR" dist/ios-sdk.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        if: matrix.platform == 'iphoneos'
+        with:
+          name: ios-sdk-iphoneos
+          path: dist/ios-sdk.tar.gz
+          compression-level: 0
+
   libobs-simulator:
     name: libobs (${{ matrix.platform }})
     needs: deps
@@ -546,7 +560,143 @@ jobs:
     env: *libobs-env
     steps: *libobs-steps
 
-  # TestFlight (2026-10-24): main·testflight 브랜치에 푸시할 때(PR 머지 포함)와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
+  # iOS SDK 묶음을 Release "ios-sdk-<소스 열쇠>"에 올린다 (P12). 열쇠는 obs-studio·ios/deps 등의 git 트리 해시라
+  # 같은 소스면 한 번만 올리고, Xcode Cloud와 처음 워크플로를 만드는 Mac이 커밋에서 같은 열쇠를 계산해 받는다.
+  # 이 저장소의 push에서만 (PR·포크는 올리지 않는다). 서명된 파일은 없다. 최근 10개만 남긴다
+  ios-sdk-release:
+    name: iOS SDK release
+    needs: libobs-device
+    if: github.event_name == 'push' && github.repository == 'VideiN/iPadOS-broadcasting'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ios-sdk-iphoneos
+          path: sdk
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # sparse checkout이어도 HEAD의 트리 해시는 있다
+          key=$(python3 ios/scripts/ios-sdk.py key)
+          sdk_key=$(tar -xzOf sdk/ios-sdk.tar.gz ios-sdk/sdk.json | python3 -c 'import json, sys; print(json.load(sys.stdin)["key"])')
+          test "$key" = "$sdk_key"
+          tag="ios-sdk-$key"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            echo "$tag is already published"
+          else
+            gh release create "$tag" sdk/ios-sdk.tar.gz --prerelease --target "$GITHUB_SHA" \
+              --title "iOS SDK $key" \
+              --notes "Xcode Cloud 빌드용 libobs·플러그인·의존성 정적 라이브러리 (커밋 ${GITHUB_SHA::7}, 실행 #$GITHUB_RUN_NUMBER). 앱 코드는 들어 있지 않다."
+            echo "published $tag"
+          fi
+          echo "### iOS SDK: \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
+          gh release list --limit 200 --json tagName,createdAt \
+            --jq '[.[] | select(.tagName | startswith("ios-sdk-"))] | sort_by(.createdAt) | reverse | .[10:] | .[].tagName' |
+            while read -r old; do
+              if [ "$old" != "$tag" ]; then
+                echo "deleting old $old"
+                gh release delete "$old" --cleanup-tag --yes
+              fi
+            done
+
+  # Xcode 프로젝트 확인 (P12): Xcode Cloud가 쓰는 XcodeGen 프로젝트를 이 SDK 묶음으로 서명 없이 빌드해 본다.
+  # 링크 옵션·리소스·Swift 파일이 빠진 것을 Xcode Cloud에 가기 전에 여기서 찾는다
+  xcode-project:
+    name: Xcode project
+    needs: libobs-device
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v7
+        with:
+          name: ios-sdk-iphoneos
+          path: sdk
+
+      - name: Generate
+        run: bash ios/xcode/bootstrap.sh --sdk-file sdk/ios-sdk.tar.gz
+
+      - name: Build
+        run: |
+          status=0
+          xcodebuild -project xcode/Broadcast.xcodeproj -scheme Broadcast -configuration Release \
+            -destination generic/platform=iOS -derivedDataPath build_xcode CODE_SIGNING_ALLOWED=NO build \
+            > build_xcode.log 2>&1 || status=$?
+          grep -E '^\*\*|error:|^ld: ' build_xcode.log | head -100 || true
+          if [ "$status" != 0 ]; then tail -80 build_xcode.log; exit 1; fi
+
+      - name: Check the bundle
+        run: |
+          app=build_xcode/Build/Products/Release-iphoneos/Broadcast.app
+          test -x "$app/Broadcast"
+          test -s "$app/Assets.car"
+          test -s "$app/MToon-ios.metallib"
+          test -d "$app/libobs" && test -d "$app/obs-plugins/obs-outputs"
+          for license in app obs-studio ffmpeg librtmp rnnoise srt mbedtls jansson libcaption simde uthash vrmkit; do
+            test -s "$app/licenses/$license.txt" || { echo "missing license: $license"; exit 1; }
+          done
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' -c 'Print :CFBundleVersion' \
+            -c 'Print :CFBundleIdentifier' -c 'Print :DTSDKName' "$app/Info.plist"
+          du -sh "$app"
+
+  # main의 CD (P12): GitHub CI가 통과하면 Xcode Cloud 워크플로를 App Store Connect API로 시작한다.
+  # Xcode Cloud는 같은 커밋을 받아 SDK 묶음으로 앱을 빌드·보관하고 TestFlight에 올린다 (docs/xcode-cloud.md).
+  # 버전(0.1.<실행 번호>)과 빌드 정보는 Release "xcode-cloud-main"의 main-build.json으로 넘긴다.
+  # 워크플로 ID는 testflight 환경의 변수 XCODE_CLOUD_WORKFLOW_ID (없으면 알림만)
+  xcode-cloud:
+    name: Xcode Cloud (main)
+    needs: [ios-sdk-release, xcode-project]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: testflight
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - name: Publish main-build.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - > main-build.json << 'EOF'
+          import json, os, subprocess
+          key = subprocess.run(["python3", "ios/scripts/ios-sdk.py", "key"], capture_output=True, text=True, check=True).stdout.strip()
+          print(json.dumps({"commit": os.environ["GITHUB_SHA"], "run": os.environ["GITHUB_RUN_NUMBER"],
+                            "run_id": os.environ["GITHUB_RUN_ID"], "repository": os.environ["GITHUB_REPOSITORY"],
+                            "branch": os.environ["GITHUB_REF_NAME"], "sdk_key": key}, indent=1))
+          EOF
+          cat main-build.json
+          if ! gh release view xcode-cloud-main > /dev/null 2>&1; then
+            gh release create xcode-cloud-main --prerelease --target "$GITHUB_SHA" --title "Xcode Cloud: main build info" \
+              --notes "Xcode Cloud의 ci_post_clone.sh가 이 커밋의 GitHub 실행 번호를 읽는다 (main-build.json)."
+          fi
+          gh release upload xcode-cloud-main main-build.json --clobber
+
+      - name: Start the Xcode Cloud workflow
+        env:
+          XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ -z "$XCODE_CLOUD_WORKFLOW_ID" ]; then
+            echo "::notice::XCODE_CLOUD_WORKFLOW_ID is not set in the testflight environment; not starting Xcode Cloud (docs/xcode-cloud.md)"
+            exit 0
+          fi
+          python3 ios/scripts/asc.py xcode-cloud-start "$XCODE_CLOUD_WORKFLOW_ID" main
+
+  # TestFlight (2026-10-24): testflight 브랜치에 푸시할 때와, 수동 실행에서 "TestFlight에 올리기"를 고를 때만.
+  # main은 Xcode Cloud가 올린다 (P12, 위의 xcode-cloud 작업). 두 번 올라가지 않게 여기서는 뺐다.
   # 기기용 빌드가 만든 가짜 서명 IPA를 배포 인증서로 다시 서명해 App Store Connect에 올린다 (ios/scripts/testflight.sh).
   # 서명 비밀값은 testflight 환경에만 있고, 그 환경은 허락한 브랜치에서만 열린다. PR에서는 돌지 않는다.
   # 서명된 IPA는 아티팩트로 남기지 않는다 (공개 저장소). 기기용 빌드가 끝나면 바로 올린다 (시뮬레이터 시험은 기다리지 않는다)
@@ -554,7 +704,7 @@ jobs:
     name: TestFlight upload
     needs: libobs-device
     if: >-
-      (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testflight')) ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/testflight') ||
       (github.event_name == 'workflow_dispatch' && inputs.testflight)
     runs-on: macos-26
     environment: testflight

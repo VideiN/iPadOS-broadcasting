@@ -8,6 +8,13 @@ CMakeCache.txt
 CMakeFiles/
 
 # --- Xcode / Swift ---
+# Xcode Cloud용 프로젝트는 ios/xcode/bootstrap.sh가 만든다 (P12)
+/xcode/*.xcodeproj/
+/xcode/Generated/
+/.sdk/
+/.vrmkit/
+/.tools/
+/build_xcode/
 DerivedData/
 xcuserdata/
 *.xcuserstate
