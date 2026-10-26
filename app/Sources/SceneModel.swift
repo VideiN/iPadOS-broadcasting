@@ -397,6 +397,64 @@ final class SceneModel: ObservableObject {
 
     // MARK: CI 시험
 
+    /// CI: 미리보기 편집 (P11). 잠깐 넣은 200x100 색 소스를 핸들로 자르고(오른쪽 100) 모서리로 늘리고(비율 유지 150x150),
+    /// 가운데를 기준으로 돌리고 뒤집은 뒤 지운다
+    @MainActor
+    private func runTransformAutotest(color: SourceType) async {
+        guard let transformName = addSource(type: color), let testItem = selectedItem else {
+            appLog("transform autotest: no test item")
+            return
+        }
+        core_source_update(
+            transformName, encodeJSON(["color": .number(Double(0xFF80_FF00)), "width": .number(200), "height": .number(100)]))
+        var sized = false
+        for _ in 0..<40 {
+            if let t = transform(of: testItem), t.sourceWidth == 200, t.sourceHeight == 100 {
+                sized = true
+                break
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        select(testItem.id)
+        do {
+            resetTransform(testItem)
+            translateSelection(by: CGSize(width: 40, height: 40))
+            let right = Int32(CORE_HANDLE_RIGHT.rawValue), bottom = Int32(CORE_HANDLE_BOTTOM.rawValue)
+            cropMode = true
+            beginDrag(.handle(right), at: CGPoint(x: 240, y: 90))
+            drag(to: CGPoint(x: 140, y: 90), snap: 0)
+            endDrag()
+            cropMode = false
+            let cropped = transform(of: testItem)
+            beginDrag(.handle(right | bottom), at: CGPoint(x: 140, y: 140))
+            drag(to: CGPoint(x: 190, y: 190), snap: 0)
+            endDrag()
+            let stretched = transform(of: testItem)
+            func center() -> CGPoint {
+                let box = selectionBox
+                return box.count == 4 ? CGPoint(x: (box[0].x + box[2].x) / 2, y: (box[0].y + box[2].y) / 2) : .zero
+            }
+            func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 1.5 && abs(a.y - b.y) < 1.5 }
+            let start = center()
+            rotate(testItem, by: 90)
+            let rotated = transform(of: testItem)
+            let afterRotate = center()
+            flip(testItem, horizontal: true)
+            let afterFlip = center()
+            let flipped = transform(of: testItem)
+
+            let crop = cropped.map { "\($0.cropLeft),\($0.cropTop),\($0.cropRight),\($0.cropBottom)" } ?? "?"
+            let size = stretched.map { "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))" } ?? "?"
+            let ok =
+                crop == "0,0,100,0" && size == "150x150" && Int(rotated?.rotation.rounded() ?? -1) == 90
+                && near(start, afterRotate) && near(start, afterFlip) && flipped?.flippedX == true
+            let transformResult =
+                "\(ok ? "ok" : "failed") (crop \(crop), size \(size), rot \(Int(rotated?.rotation.rounded() ?? -1)), center \(Int(start.x)),\(Int(start.y)) -> \(Int(afterRotate.x)),\(Int(afterRotate.y)) -> \(Int(afterFlip.x)),\(Int(afterFlip.y)))"
+            appLog("transform autotest: \(sized ? "" : "(source size not applied) ")\(transformResult)")
+            remove(testItem)
+        }
+    }
+
     /// CI용: `-autotest-scenes`로 띄우면 씬·소스 조작을 한 바퀴 돌리고 결과를 로그에 남긴다.
     /// 마지막에 "시험 장면"을 남겨 저장하므로, 다음 실행에서 씬 2개를 불러오는지 볼 수 있다.
     func runAutotestIfRequested() {
@@ -510,48 +568,9 @@ final class SceneModel: ObservableObject {
             }
         }
 
-        // 미리보기 편집 (P11): 잠깐 넣은 200x100 색 소스를 핸들로 자르고(오른쪽 100) 모서리로 늘리고(비율 유지 150x150),
-        // 가운데를 기준으로 돌리고 뒤집은 뒤 지운다
-        var transformResult = "no test item"
-        if let transformName = addSource(type: color), let testItem = selectedItem {
-            core_source_update(
-                transformName, encodeJSON(["color": .number(Double(0xFF80_FF00)), "width": .number(200), "height": .number(100)]))
-            resetTransform(testItem)
-            translateSelection(by: CGSize(width: 40, height: 40))
-            let right = Int32(CORE_HANDLE_RIGHT.rawValue), bottom = Int32(CORE_HANDLE_BOTTOM.rawValue)
-            cropMode = true
-            beginDrag(.handle(right), at: CGPoint(x: 240, y: 90))
-            drag(to: CGPoint(x: 140, y: 90), snap: 0)
-            endDrag()
-            cropMode = false
-            let cropped = transform(of: testItem)
-            beginDrag(.handle(right | bottom), at: CGPoint(x: 140, y: 140))
-            drag(to: CGPoint(x: 190, y: 190), snap: 0)
-            endDrag()
-            let stretched = transform(of: testItem)
-            func center() -> CGPoint {
-                let box = selectionBox
-                return box.count == 4 ? CGPoint(x: (box[0].x + box[2].x) / 2, y: (box[0].y + box[2].y) / 2) : .zero
-            }
-            func near(_ a: CGPoint, _ b: CGPoint) -> Bool { abs(a.x - b.x) < 1.5 && abs(a.y - b.y) < 1.5 }
-            let start = center()
-            rotate(testItem, by: 90)
-            let rotated = transform(of: testItem)
-            let afterRotate = center()
-            flip(testItem, horizontal: true)
-            let afterFlip = center()
-            let flipped = transform(of: testItem)
-
-            let crop = cropped.map { "\($0.cropLeft),\($0.cropTop),\($0.cropRight),\($0.cropBottom)" } ?? "?"
-            let size = stretched.map { "\(Int($0.width.rounded()))x\(Int($0.height.rounded()))" } ?? "?"
-            let ok =
-                crop == "0,0,100,0" && size == "150x150" && Int(rotated?.rotation.rounded() ?? -1) == 90
-                && near(start, afterRotate) && near(start, afterFlip) && flipped?.flippedX == true
-            transformResult =
-                "\(ok ? "ok" : "failed") (crop \(crop), size \(size), rot \(Int(rotated?.rotation.rounded() ?? -1)), center \(Int(start.x)),\(Int(start.y)) -> \(Int(afterRotate.x)),\(Int(afterRotate.y)) -> \(Int(afterFlip.x)),\(Int(afterFlip.y)))"
-            remove(testItem)
-        }
-        appLog("transform autotest: \(transformResult)")
+        // 미리보기 편집 (P11): 색 소스의 크기는 다음 비디오 틱에 바뀌므로(obs_source_update는 영상 소스면 미뤄 둔다)
+        // 이 시험이 끝난 뒤 따로 기다렸다가 한다
+        Task { @MainActor in await self.runTransformAutotest(color: color) }
 
         // 형식의 fps 범위 → 고를 수 있는 값
         let sampleChoices = FrameRateChoice.choices(
