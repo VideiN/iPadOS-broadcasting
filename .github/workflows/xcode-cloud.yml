@@ -1,0 +1,43 @@
+name: Xcode Cloud
+
+# 손으로 돌리는 Xcode Cloud 도구 (P12, docs/xcode-cloud.md). ASC 키는 testflight 환경에만 있어서 여기서 쓴다.
+# - workflows: 제품과 워크플로 ID를 찍는다 (처음 워크플로를 만든 뒤 XCODE_CLOUD_WORKFLOW_ID를 찾을 때)
+# - start: testflight 환경 변수 XCODE_CLOUD_WORKFLOW_ID의 워크플로를 main으로 시작한다 (main CI를 기다리지 않고 다시 올릴 때)
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 할 일
+        type: choice
+        options: [workflows, start]
+        default: workflows
+
+permissions:
+  contents: read
+
+jobs:
+  xcode-cloud:
+    name: Xcode Cloud ${{ inputs.action }}
+    runs-on: ubuntu-latest
+    environment: testflight
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - name: Run
+        env:
+          ACTION: ${{ inputs.action }}
+          XCODE_CLOUD_WORKFLOW_ID: ${{ vars.XCODE_CLOUD_WORKFLOW_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          if [ "$ACTION" = workflows ]; then
+            python3 ios/scripts/asc.py xcode-cloud-workflows | tee -a "$GITHUB_STEP_SUMMARY"
+          elif [ -z "$XCODE_CLOUD_WORKFLOW_ID" ]; then
+            echo "::error::XCODE_CLOUD_WORKFLOW_ID is not set in the testflight environment"
+            exit 1
+          else
+            python3 ios/scripts/asc.py xcode-cloud-start "$XCODE_CLOUD_WORKFLOW_ID" main
+          fi

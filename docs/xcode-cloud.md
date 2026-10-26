@@ -23,6 +23,9 @@ Xcode Cloud의 첫 워크플로는 Xcode에서만 만들 수 있다. 그다음�
 - Xcode가 있는 Mac
 - Apple Developer 계정 (App Store Connect의 앱 `io.github.videin.broadcast`가 있는 팀)
 - 이 저장소에 권한이 있는 GitHub 계정
+- **main에 이 설정(`xcode/`, `ios/xcode/`)이 들어가 있을 것**
+  - Xcode Cloud는 main을 빌드하므로, 먼저 main에 병합해 GitHub 실행이 통과하게 한다.
+  - 워크플로 ID가 아직 없으면 `Xcode Cloud (main)` 작업은 알림만 남기고 넘어간다.
 
 1. 프로젝트를 만든다.
    - 받으려는 커밋의 GitHub Actions 실행이 `iOS SDK release`까지 통과해 있어야 한다. 그 실행이 SDK 묶음을 올린다.
@@ -52,11 +55,11 @@ Xcode Cloud의 첫 워크플로는 Xcode에서만 만들 수 있다. 그다음�
    - Post-Actions: TestFlight Internal Testing, 내부 테스트 그룹을 고른다.
 4. Start Build로 `main`을 한 번 빌드한다.
    - 로그 `ci_post_clone.sh`에 `ios sdk key: …`와 `ready: …/Broadcast.xcodeproj`가 보이고, Archive와 TestFlight가 끝나는지 본다.
-5. 워크플로 ID를 GitHub에 넣는다. 어느 컴퓨터에서나 된다. ASC 키 환경 변수는 testflight 환경 비밀값과 같다.
-   ```sh
-   python3 ios/scripts/asc.py xcode-cloud-workflows
-   ```
+5. 워크플로 ID를 GitHub에 넣는다.
+   - GitHub › Actions › **Xcode Cloud** 워크플로를 `workflows`로 실행하면 요약에 제품과 워크플로 ID가 찍힌다. ASC 키는 testflight 환경 비밀값을 쓴다.
+   - 키가 있는 컴퓨터라면 `python3 ios/scripts/asc.py xcode-cloud-workflows`로도 된다.
    - 찍힌 `workflow <ID>: Main TestFlight`의 ID를 넣는다: GitHub › Settings › Environments › testflight › Variables › `XCODE_CLOUD_WORKFLOW_ID`
+   - 같은 워크플로를 `start`로 실행하면 main을 바로 Xcode Cloud로 빌드한다 (CI를 기다리지 않고 다시 올릴 때).
 
 그다음부터는 main에 푸시하고 CI가 통과하면 Xcode Cloud가 자동으로 TestFlight까지 간다.
 
