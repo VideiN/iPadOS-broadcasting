@@ -139,8 +139,12 @@ struct SourcePropertiesView: View {
             }
         }
         .onAppear {
+            appLog("properties: shown for '\(sourceName)'")
             reload()
             reloadFilterCount()
+        }
+        .onChange(of: showingImporter) { _, shown in
+            appLog("file picker: \(shown ? "presented" : "closed")")
         }
         .fileImporter(
             isPresented: $showingImporter,
@@ -214,6 +218,10 @@ struct SourcePropertiesView: View {
                 }
                 Spacer()
                 Button("파일 선택…") {
+                    // 창이 안 뜨거나 고른 뒤 아무 일도 없을 때 어디서 멈췄는지 보이게 (P13 실기기 문의)
+                    appLog(
+                        "file picker: opening for '\(property.name)' of '\(sourceName)' "
+                            + "(types \(allowedTypes(property).map(\.identifier).joined(separator: ",")))")
                     pickingPathFor = property
                     showingImporter = true
                 }
