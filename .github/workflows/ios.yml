@@ -619,8 +619,8 @@ jobs:
     name: libobs (${{ matrix.platform }})
     needs: deps
     if: >-
-      !(github.event_name == 'push' && contains(github.event.head_commit.message, '[skip tests]')) &&
-      !(github.event_name == 'workflow_dispatch' && inputs.skip_tests)
+      ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, '[skip tests]')) &&
+      !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
     runs-on: macos-26
     strategy:
       matrix:
@@ -674,12 +674,13 @@ jobs:
   promote:
     name: Promote to testflight
     needs: [libobs-device, libobs-simulator]
+    # 시험이 건너뛰어진(skipped) 작업에 걸려 있으면 기본으로는 같이 건너뛰므로 always()로 열고 결과를 직접 본다
     if: >-
-      !cancelled() && github.event_name == 'push' && github.repository == 'VideiN/iPadOS-broadcasting' &&
+      ${{ always() && github.event_name == 'push' && github.repository == 'VideiN/iPadOS-broadcasting' &&
       github.ref != 'refs/heads/main' && github.ref != 'refs/heads/testflight' &&
       !contains(github.event.head_commit.message, '[no testflight]') &&
       needs.libobs-device.result == 'success' &&
-      (needs.libobs-simulator.result == 'success' || needs.libobs-simulator.result == 'skipped')
+      (needs.libobs-simulator.result == 'success' || needs.libobs-simulator.result == 'skipped') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
