@@ -282,7 +282,9 @@ static void master_audio(void *param, size_t mix_idx, struct audio_data *data)
 void core_set_master_volume(float multiplier)
 {
 	core.master_volume = multiplier < 0.0f ? 0.0f : multiplier;
-	audio_output_set_master_volume(obs_get_audio(), core.master_volume);
+	// 시작 전(obs가 아직 없음)에는 값만 두고 core_startup이 건다 (obs_get_audio는 obs가 NULL이면 죽는다)
+	if (obs_initialized())
+		audio_output_set_master_volume(obs_get_audio(), core.master_volume);
 }
 
 float core_master_volume(void)
