@@ -297,6 +297,8 @@ struct FaceLinkStatus: Equatable {
     var senderName: String?
     var senderAddress: String?
     var senderApp: String?
+    /// Hello 여섯째 인자 (v1.1, "face,body,hands,audio"). nil이면 v1 송신기(기능을 알리지 않음)
+    var senderFeatures: [String]?
     /// FaceLink Hello 없이 VMC만 보내는 앱
     var senderIsVMC = false
     var fps = 0.0
@@ -319,6 +321,21 @@ struct FaceLinkStatus: Equatable {
     /// 아이폰 마이크 (P13, 3.8 소리 패킷): 받는 중이면 표본률
     var audioRate = 0
     var audioChannels = 0
+
+    /// 아이폰 마이크 소리가 안 올 때 그 까닭 (오디오 독·소스 속성·설정, 실기기 #137 "소리가 오는지 모르겠다")
+    var audioHint: String {
+        if audioRate > 0 { return "받는 중" }
+        if !listening { return "설정 › 얼굴 추적에서 '아이폰에서 받기'를 켜세요" }
+        guard let name = senderName else { return "아이폰 FaceLink 앱이 연결되지 않았습니다" }
+        if senderIsVMC { return "VMC 앱은 소리를 보내지 않습니다 (FaceLink 앱만)" }
+        guard let features = senderFeatures else {
+            return "'\(name)'의 FaceLink 앱이 소리를 지원하지 않는 버전입니다 (업데이트하세요)"
+        }
+        if !features.contains("audio") {
+            return "'\(name)'이 소리를 보내지 않습니다: FaceLink 앱에서 '소리 보내기'를 켜세요 (보내는 것: \(features.joined(separator: ",")))"
+        }
+        return "'\(name)'이 소리를 보낸다고 했지만 소리 패킷이 오지 않습니다"
+    }
 }
 
 /// 페어링 코드 없이 Hello를 보낸 쪽(아이폰 앱에서 Bonjour 목록·주소로 고른 경우: 이 iPad에서 허락하면 받는다),
@@ -349,6 +366,7 @@ final class FaceLinkEngine: @unchecked Sendable {
         var lastPacket: TimeInterval = 0
         var helloName: String?
         var helloApp: String?
+        var helloFeatures: [String]?
         /// 코드 없이 허락으로 받는 중이면 그 키
         var allowedKey: String?
         var session: String?
@@ -787,6 +805,11 @@ final class FaceLinkEngine: @unchecked Sendable {
         // v1.1: 여섯째 인자 = 보내는 것 (face,body,hands,audio). 화면에 앱 버전과 같이 보인다
         if let features = message.string(5), !features.isEmpty {
             peer.helloApp = (peer.helloApp ?? "?") + " · " + String(features.prefix(40))
+            peer.helloFeatures = features.prefix(40).split(separator: ",").map {
+                $0.trimmingCharacters(in: .whitespaces).lowercased()
+            }
+        } else {
+            peer.helloFeatures = nil
         }
         if peer !== active && activeIsIdle(now) {
             appLog(
@@ -797,6 +820,7 @@ final class FaceLinkEngine: @unchecked Sendable {
             updateStatus {
                 $0.senderName = peer.helloName
                 $0.senderApp = peer.helloApp
+                $0.senderFeatures = peer.helloFeatures
                 $0.senderIsVMC = false
             }
         }
@@ -811,6 +835,7 @@ final class FaceLinkEngine: @unchecked Sendable {
             $0.senderName = vmc ? "VMC 앱" : peer.helloName
             $0.senderAddress = peer.address
             $0.senderApp = peer.helloApp
+            $0.senderFeatures = vmc ? nil : peer.helloFeatures
             $0.senderIsVMC = vmc
             $0.state = .waiting
             $0.request = nil
@@ -823,6 +848,7 @@ final class FaceLinkEngine: @unchecked Sendable {
             $0.senderName = nil
             $0.senderAddress = nil
             $0.senderApp = nil
+            $0.senderFeatures = nil
             if $0.listening { $0.state = .waiting }
         }
     }
@@ -1041,6 +1067,7 @@ final class FaceLinkReceiver: ObservableObject {
             timer?.invalidate()
             timer = nil
             status = FaceLinkStatus()
+            core_facelink_audio_set_hint(status.audioHint)
             preview = nil
             return
         }
@@ -1092,6 +1119,7 @@ final class FaceLinkReceiver: ObservableObject {
     private func refresh() {
         let latest = engine.status()
         if latest != status {
+            if latest.audioHint != status.audioHint { core_facelink_audio_set_hint(latest.audioHint) }
             status = latest
             updatePrompt()
         }
@@ -1405,6 +1433,8 @@ struct FaceLinkSettingsView: View {
             if status.audioRate > 0 {
                 LabeledContent(
                     "소리", value: "\(status.audioRate) Hz \(status.audioChannels == 2 ? "스테레오" : "모노") · 아이폰 마이크 소스로 섞기")
+            } else if status.senderName != nil {
+                LabeledContent("소리", value: status.audioHint)
             }
             if let body = status.bodySender {
                 LabeledContent("몸", value: "\(body) · 뼈 \(status.bodyBones)개 · \(Int(status.bodyFPS)) fps")

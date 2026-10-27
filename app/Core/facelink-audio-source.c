@@ -54,6 +54,14 @@ static struct facelink_audio *sources;
 // 화면에 보일 받기 상태 (전체)
 static pthread_mutex_t stats_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct core_facelink_audio_stats stats;
+static char hint[512] = "설정 › 얼굴 추적에서 '아이폰에서 받기'를 켜세요";
+
+void core_facelink_audio_set_hint(const char *text)
+{
+	pthread_mutex_lock(&stats_mutex);
+	snprintf(hint, sizeof(hint), "%s", text ? text : "");
+	pthread_mutex_unlock(&stats_mutex);
+}
 
 static size_t frames_for_ms(uint32_t rate, int ms)
 {
@@ -330,14 +338,15 @@ static obs_properties_t *facelink_audio_properties(void *data)
 
 	struct core_facelink_audio_stats current;
 	core_facelink_audio_get_stats(&current);
-	char status[256];
-	if (current.receiving)
+	char status[640];
+	if (current.receiving) {
 		snprintf(status, sizeof(status), "받는 중: %u Hz %s, 버퍼 %d ms, 잃은 패킷 %d", current.sample_rate,
 			 current.channels == 2 ? "스테레오" : "모노", current.buffer_ms, current.lost);
-	else
-		snprintf(status, sizeof(status),
-			 "받지 않는 중: 아이폰 FaceLink 앱에서 소리 보내기를 켜세요 (설정 › 얼굴 추적 › 아이폰에서 받기도 켜져 "
-			 "있어야 합니다).");
+	} else {
+		pthread_mutex_lock(&stats_mutex);
+		snprintf(status, sizeof(status), "받지 않는 중: %s", hint);
+		pthread_mutex_unlock(&stats_mutex);
+	}
 	obs_properties_add_text(props, "status", status, OBS_TEXT_INFO);
 	obs_properties_add_int_slider(props, "sync_offset_ms", "싱크 지연 (ms, 아바타 입 모양과 맞추기)", 0, 500, 10);
 	return props;

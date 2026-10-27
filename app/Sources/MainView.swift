@@ -1041,6 +1041,9 @@ struct AudioDock: View {
                 ForEach(model.items.filter { $0.type == "ios_facelink_audio" }) { item in
                     RemoteAudioRow(name: item.name)
                 }
+                if !model.items.contains(where: { $0.type == "ios_facelink_audio" }) {
+                    RemoteAudioMissing()
+                }
                 Spacer(minLength: 0)
             }
             .padding(12)
@@ -1102,12 +1105,15 @@ struct RemoteAudioRow: View {
     @State private var muted = false
     @State private var editing = false
     @State private var state = ""
+    @State private var peak: Float = -.infinity
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(name, systemImage: "iphone.radiowaves.left.and.right")
                 .font(.subheadline)
                 .lineLimit(1)
+            MeterBar(label: "M", db: peak)
+                .opacity(muted ? 0.4 : 1)
             HStack(spacing: 8) {
                 Button {
                     muted.toggle()
@@ -1137,15 +1143,35 @@ struct RemoteAudioRow: View {
             muted = core_source_muted(name)
         }
         .task {
+            // 미터는 초당 10번, 글은 1초마다
+            var tick = 0
             while !Task.isCancelled {
                 var stats = core_facelink_audio_stats()
                 core_facelink_audio_get_stats(&stats)
-                state =
-                    stats.receiving
-                    ? "받는 중 · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
-                    : "받지 않는 중 (아이폰 FaceLink 앱에서 소리 보내기)"
-                try? await Task.sleep(for: .seconds(1))
+                let db: Float = stats.receiving && stats.output_peak > 0 ? 20 * log10(stats.output_peak) : -.infinity
+                if db != peak { peak = db }
+                if tick % 10 == 0 {
+                    state =
+                        stats.receiving
+                        ? "받는 중 \(stats.sample_rate / 1000) kHz · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
+                        : "받지 않는 중: " + FaceLinkReceiver.shared.status.audioHint
+                }
+                tick += 1
+                try? await Task.sleep(for: .milliseconds(100))
             }
+        }
+    }
+}
+
+/// 아이폰에서 소리가 오는데 지금 장면에 아이폰 마이크 소스가 없을 때 (받기 상태만 따로 관찰)
+struct RemoteAudioMissing: View {
+    @ObservedObject private var receiver = FaceLinkReceiver.shared
+
+    var body: some View {
+        if receiver.status.audioRate > 0 {
+            Label("아이폰에서 소리가 오고 있습니다. 소스 추가 › 아이폰 마이크 (FaceLink)로 섞으세요", systemImage: "iphone.radiowaves.left.and.right")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 }
@@ -1182,15 +1208,21 @@ struct InputMeter: View {
 
     var body: some View {
         VStack(spacing: 3) {
-            bar("L", level.left)
-            bar("R", level.right)
+            MeterBar(label: "L", db: level.left)
+            MeterBar(label: "R", db: level.right)
         }
         .opacity(muted ? 0.4 : 1)
     }
+}
 
-    private func bar(_ channel: String, _ db: Float) -> some View {
+/// 미터 막대 하나 (dB, -60~0)
+struct MeterBar: View {
+    let label: String
+    let db: Float
+
+    var body: some View {
         HStack(spacing: 6) {
-            Text(channel)
+            Text(label)
                 .font(.caption2.monospaced())
                 .foregroundStyle(.secondary)
             GeometryReader { geometry in

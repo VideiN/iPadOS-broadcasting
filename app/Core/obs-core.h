@@ -301,6 +301,8 @@ struct core_facelink_audio_stats {
 	float output_peak; // 최근에 낸 소리의 피크 (0~1)
 };
 void core_facelink_audio_get_stats(struct core_facelink_audio_stats *stats);
+// 소리가 안 올 때 소스 속성에 보일 까닭 (FaceLink.swift가 받기 상태로 정한다)
+void core_facelink_audio_set_hint(const char *hint);
 // CI: 장면에 넣지 않은 아이폰 마이크 소스를 만들고 놓는다
 void *core_facelink_audio_test_begin(void);
 void core_facelink_audio_test_end(void *source);
