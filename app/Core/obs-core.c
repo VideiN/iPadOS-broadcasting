@@ -33,6 +33,7 @@ extern const struct obs_static_module obs_static_module_obs_ffmpeg;
 extern void core_outputs_register(void);
 // avatar-source.c
 extern void core_avatar_register(void);
+extern void core_facelink_audio_register(void);
 extern void *libobs_metal_get_export(const char *symbol);
 extern double libobs_metal_gpu_busy_ms_per_second(void);
 
@@ -175,6 +176,7 @@ static bool load_modules(const char *resource_path)
 	obs_post_load_modules();
 	core_outputs_register();
 	core_avatar_register();
+	core_facelink_audio_register();
 
 	const char *id;
 	for (size_t i = 0; obs_enum_encoder_types(i, &id); i++)

@@ -27,6 +27,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "ios_media_source": "미디어 (동영상·음악 파일)"
         case "ios_chat_source": "채팅"
         case "ios_avatar_source": "아바타 (VRM 3D 모델)"
+        case "ios_facelink_audio": "아이폰 마이크 (FaceLink)"
         default: name
         }
     }
@@ -41,6 +42,7 @@ struct SourceType: Identifiable, Decodable, Hashable {
         case "ios_media_source": "film"
         case "ios_chat_source": "bubble.left.and.text.bubble.right"
         case "ios_avatar_source": "person.crop.square"
+        case "ios_facelink_audio": "iphone.radiowaves.left.and.right"
         default: "square.on.square"
         }
     }

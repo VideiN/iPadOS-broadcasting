@@ -369,6 +369,11 @@ jobs:
           cat app-run/facelink-sender.log
           grep -E 'facelink( autotest)?: ' app-run/app.log | sed -n '1,40p'
           grep -q 'facelink autotest: ok' app-run/app.log
+          # 몸 (P13): 얼굴 송신기가 함께 보낸 팔·손가락 뼈, "다른 VMC 앱 받기"를 켜면 몸만 보내는 VMC 앱(mocopi 같은 것)
+          grep -q 'facelink autotest: body ok' app-run/app.log
+          grep -q 'facelink autotest: body-only sender ok' app-run/app.log
+          # 아이폰 마이크 (P13): 허락 송신기의 1 kHz 소리 패킷이 지터 버퍼를 지나 소스에서 나온다 (빠진 것·순서 바뀐 것 포함)
+          grep -q 'facelink audio: ok' app-run/app.log
           grep -q 'facelink sender: calibrate received' app-run/facelink-sender.log
           if grep -q '^FAIL' app-run/facelink-sender.log; then exit 1; fi
           # 아바타 소스 (P9): VRM 1.0과 0.x를 불러와 투명한 바탕에 그리고, 얼굴 값(없으면 시험용 얼굴)으로 움직인다
@@ -376,6 +381,9 @@ jobs:
           grep -q "avatar: loaded 'test-avatar.vrm' (VRM 1.0)" app-run/app.log
           grep -q "avatar: loaded 'test-avatar0.vrm' (VRM 0.x)" app-run/app.log
           grep -q 'avatar autotest: ok' app-run/app.log
+          # 몸 (P13): 시험용 몸(왼팔 들기)으로 왼손이 대기 자세(팔 내림)보다 움직인다. 그림 avatar-<n>-body.png
+          grep -q 'avatar body: ok (model 1' app-run/app.log
+          grep -q 'avatar body: ok (model 2' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
@@ -456,7 +464,7 @@ jobs:
           grep -q 'audio .* buffering fixed' app-run/app.log
           grep -q 'buffering type:  fixed' app-run/app.log
           grep -q 'autotest: started (recording true, streaming true, replay true)' app-run/app.log
-          awk '/autotest: done/ { exit } /Record Video: / { n++ } END { print "record encoders created during the output test: " n; exit n == 1 ? 0 : 1 }' \
+          awk '/autotest: done/ { exit } /\[app\] Record Video: / { n++ } END { print "record encoders created during the output test: " n; exit n == 1 ? 0 : 1 }' \
             app-run/app.log
           grep -E 'p13 autotest|already starting|output alert' app-run/app.log
           grep -q 'replay buffer: already starting, ignored' app-run/app.log

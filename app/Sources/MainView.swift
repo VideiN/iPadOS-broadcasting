@@ -996,6 +996,7 @@ struct SourcesDock: View {
 /// 전역 오디오 입력: 장치, 미터, 볼륨, 음소거, 필터. iPadOS는 오디오 입력 경로를 하나만 쓰므로 믹서가 아니라 입력 하나다
 struct AudioDock: View {
     @ObservedObject var core: Core
+    @ObservedObject private var model = SceneModel.shared
     let sheets: StudioSheets
     /// 미터는 따로 관찰한다 (초당 10번 바뀌는 값에 독 전체를 다시 그리지 않게)
     @State private var level = InputLevel()
@@ -1035,6 +1036,10 @@ struct AudioDock: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .frame(width: 56, alignment: .trailing)
+                }
+                // 아이폰 마이크 소스 (P13): 지금 장면에 있으면 줄마다 음소거·볼륨
+                ForEach(model.items.filter { $0.type == "ios_facelink_audio" }) { item in
+                    RemoteAudioRow(name: item.name)
                 }
                 Spacer(minLength: 0)
             }
@@ -1087,6 +1092,61 @@ struct AudioDock: View {
         let multiplier = core_source_volume(name)
         volumeDB = multiplier > 0 ? max(-60, 20 * log10(Double(multiplier))) : -60
         muted = core_source_muted(name)
+    }
+}
+
+/// 오디오 독의 아이폰 마이크 줄 (P13): 음소거·볼륨과 받기 상태. 아이패드 마이크와 둘 다 켜면 같은 목소리가 두 번 들어간다
+struct RemoteAudioRow: View {
+    let name: String
+    @State private var volumeDB: Double = 0
+    @State private var muted = false
+    @State private var editing = false
+    @State private var state = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(name, systemImage: "iphone.radiowaves.left.and.right")
+                .font(.subheadline)
+                .lineLimit(1)
+            HStack(spacing: 8) {
+                Button {
+                    muted.toggle()
+                    core_source_set_muted(name, muted)
+                    SceneModel.shared.setNeedsSave()
+                } label: {
+                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(muted ? Color.red : Color.accentColor)
+                        .frame(width: 30, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(muted ? "음소거 해제" : "음소거")
+                Slider(value: $volumeDB, in: -60...0) { editing in
+                    self.editing = editing
+                    if !editing { SceneModel.shared.setNeedsSave() }
+                }
+                .onChange(of: volumeDB) { _, db in
+                    guard editing else { return }
+                    core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
+                }
+            }
+            Text(state).font(.caption2).foregroundStyle(.secondary)
+        }
+        .onAppear {
+            let multiplier = core_source_volume(name)
+            volumeDB = multiplier > 0 ? max(-60, 20 * log10(Double(multiplier))) : -60
+            muted = core_source_muted(name)
+        }
+        .task {
+            while !Task.isCancelled {
+                var stats = core_facelink_audio_stats()
+                core_facelink_audio_get_stats(&stats)
+                state =
+                    stats.receiving
+                    ? "받는 중 · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
+                    : "받지 않는 중 (아이폰 FaceLink 앱에서 소리 보내기)"
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 }
 

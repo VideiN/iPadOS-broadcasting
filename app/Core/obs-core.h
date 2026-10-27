@@ -283,6 +283,28 @@ void core_chat_set_status(const char *text);
 // YouTube 채팅을 보여 주는 채팅 소스 수
 int core_chat_listeners(void);
 
+// --- 아이폰 마이크 (P13, facelink-audio-source.c ↔ FaceLink.swift) ---
+// FaceLink 소리 패킷(PCM s16, 섞인 채널)을 "아이폰 마이크" 소스들에 넘긴다. 어느 스레드에서나
+void core_facelink_audio_push(uint32_t sequence, uint32_t rate, int channels, const int16_t *pcm, int frames);
+// 보내는 쪽이 멈췄을 때 (로그)
+void core_facelink_audio_stopped(void);
+struct core_facelink_audio_stats {
+	bool receiving;
+	uint32_t sample_rate;
+	int channels;
+	int packets;
+	int lost;      // 빠진 순번 (무음으로 채움)
+	int late;      // 늦게·두 번 와서 버림
+	int underruns; // 버퍼가 비어 다시 채움
+	int buffer_ms; // 첫 소스의 지금 버퍼
+	int sources;   // 아이폰 마이크 소스 수
+	float output_peak; // 최근에 낸 소리의 피크 (0~1)
+};
+void core_facelink_audio_get_stats(struct core_facelink_audio_stats *stats);
+// CI: 장면에 넣지 않은 아이폰 마이크 소스를 만들고 놓는다
+void *core_facelink_audio_test_begin(void);
+void core_facelink_audio_test_end(void *source);
+
 // --- 아바타 소스 (P9, avatar-source.c ↔ Avatar.swift) ---
 // VRM 모델은 앱이 IOSurface(BGRA, 미리 곱한 알파)에 그리고, 소스는 그것을 보인다. 설정은 obs_data의 JSON.
 struct core_avatar_callbacks {

@@ -10,6 +10,11 @@
 - t0+2초부터 또 다른 주소에서 코드 없는 Hello와 프레임("CI 허락 송신기", 아이폰 앱에서 Bonjour 목록으로 고른 경우):
   앱은 연결 요청으로 보이고, 시험이 허락하면 첫 송신기가 멈춘 뒤 이것을 받아 Ack를 보내야 함
 - 앱이 보내는 /FaceLink/Calibrate(정면 맞추기)를 받으면 남긴다
+- 몸 (P13): 프레임마다 왼팔(위팔·아래팔)을 흔들고 손가락을 굽히는 뼈도 보낸다. 허락 송신기가 Ack를 받은 1초 뒤부터
+  8초 동안은 또 다른 주소에서 Hello 없이 몸 뼈만 보내는 VMC 앱(mocopi 같은 것, /VMC/Ext/Root/Pos + Bone/Pos,
+  /VMC/Ext/OK로 끝, Blend/Apply 없음)이 된다. 앱 시험은 그때 "다른 VMC 앱 받기"를 켜고 몸을 이쪽에서 받아야 한다
+- 소리 (P13, 3.8): 허락 송신기가 Ack를 받은 뒤 1 kHz 사인파를 FLAU 패킷(48 kHz 모노 PCM, 10ms)으로 보낸다.
+  50번째마다 하나를 빼고, 한 번은 두 패킷의 순서를 바꾼다
 
 사용법: facelink-sender.py <주소> <포트> <페어링 코드>
 """
@@ -110,6 +115,47 @@ def yaw_quaternion(yaw):
     return (0.0, math.sin(yaw / 2), 0.0, math.cos(yaw / 2))
 
 
+def axis_quaternion(axis, angle):
+    s = math.sin(angle / 2)
+    return (axis[0] * s, axis[1] * s, axis[2] * s, math.cos(angle / 2))
+
+
+def body_messages(t, full=False):
+    """VMC 몸 뼈 (Unity 좌표, 부모 기준 로컬 회전). 왼팔은 앞으로 들었다 내리고, 손가락은 굽혔다 편다"""
+    raise_arm = axis_quaternion((0.0, 0.0, 1.0), -1.1 + 0.4 * math.sin(t * 2))
+    elbow = axis_quaternion((0.0, 1.0, 0.0), 0.6 + 0.3 * math.sin(t * 3))
+    curl = axis_quaternion((0.0, 0.0, 1.0), 0.5 + 0.4 * math.sin(t * 4))
+    messages = [
+        osc_message("/VMC/Ext/Bone/Pos", "LeftUpperArm", 0.0, 0.0, 0.0, *raise_arm),
+        osc_message("/VMC/Ext/Bone/Pos", "LeftLowerArm", 0.0, 0.0, 0.0, *elbow),
+    ]
+    for finger in ("Index", "Middle", "Ring"):
+        messages.append(osc_message("/VMC/Ext/Bone/Pos", f"Left{finger}Proximal", 0.0, 0.0, 0.0, *curl))
+    if full:
+        lean = axis_quaternion((1.0, 0.0, 0.0), 0.1 * math.sin(t))
+        messages.insert(0, osc_message("/VMC/Ext/Root/Pos", "root", 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+        for name in ("Hips", "Spine", "Chest", "Neck", "Head", "RightUpperArm", "RightLowerArm", "LeftUpperLeg",
+                     "RightUpperLeg"):
+            messages.append(osc_message("/VMC/Ext/Bone/Pos", name, 0.0, 0.0, 0.0, *lean))
+    return messages
+
+
+AUDIO_CACHE = {}
+
+
+def audio_packet(sequence, sample_time, frames=480, rate=48000):
+    """3.8 소리 패킷: 정수는 빅 엔디언, 표본은 s16 리틀 엔디언"""
+    # 480표본 = 1 kHz 10주기라 매 패킷이 같다
+    key = (sample_time % rate, frames, rate)
+    if key not in AUDIO_CACHE:
+        AUDIO_CACHE[key] = b"".join(
+            struct.pack("<h", int(16000 * math.sin(2 * math.pi * 1000 * (sample_time + i) / rate)))
+            for i in range(frames))
+    samples = AUDIO_CACHE[key]
+    header = b"FLAU" + bytes([1, 1, 1, 0]) + struct.pack(">IQIHH", sequence, sample_time, rate, frames, 0)
+    return header + samples
+
+
 def frame_messages(sequence, sent, tracking, t):
     head = yaw_quaternion(0.25 + 0.15 * math.sin(t))
     eye = yaw_quaternion(0.1 * math.sin(t * 2))
@@ -118,7 +164,7 @@ def frame_messages(sequence, sent, tracking, t):
         osc_message("/VMC/Ext/Bone/Pos", "Head", 0.01, 0.0, 0.0, *head),
         osc_message("/VMC/Ext/Bone/Pos", "LeftEye", 0.0, 0.0, 0.0, *eye),
         osc_message("/VMC/Ext/Bone/Pos", "RightEye", 0.0, 0.0, 0.0, *eye),
-    ]
+    ] + body_messages(t)
     for index, name in enumerate(NAMES):
         value = 0.5 + 0.5 * math.sin(t * (1 + index * 0.05) + index)
         messages.append(osc_message("/VMC/Ext/Blend/Val", name, value))
@@ -139,6 +185,14 @@ def main():
     rogue.bind(("127.0.0.1", 0))
     asker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     asker.bind(("127.0.0.1", 0))
+    body_only = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    body_only.bind(("127.0.0.1", 0))
+    body_frames = 0
+    next_body_frame = None
+    audio_sequence = 0
+    audio_packets = 0
+    next_audio = None
+    held_audio = None
     asker_session = str(uuid.uuid4())
     session = str(uuid.uuid4())
     log(f"facelink sender: to {host}:{port} from port {sock.getsockname()[1]} (session {session[:8]})")
@@ -177,9 +231,38 @@ def main():
         if stopped_at is None and since_ack is not None and since_ack >= 10:
             stopped_at = now
             log(f"facelink sender: stopped sending after {frames} frames (t0+10 s)")
-        # 허락 송신기가 Ack를 받을 때까지 (허락은 첫 송신기가 끊긴 뒤라 늦어도 25초)
-        if stopped_at is not None and now - stopped_at >= 5 and (asker_ack is not None or now - stopped_at >= 25):
+        # 허락 송신기가 Ack를 받고 몸만 보내는 단계가 끝날 때까지 (허락은 첫 송신기가 끊긴 뒤라 늦어도 25초)
+        if stopped_at is not None and now - stopped_at >= 5 and (
+                (asker_ack is not None and now - asker_ack >= 10) or now - stopped_at >= 35):
             break
+
+        # 소리 (P13): 허락 송신기가 받아들여진 뒤 끝날 때까지 10ms마다
+        if asker_ack is not None and next_audio is None:
+            next_audio = asker_ack
+        while next_audio is not None and now >= next_audio:
+            next_audio += 0.01
+            audio_sequence += 1
+            packet = audio_packet(audio_sequence, audio_sequence * 480)
+            if audio_sequence % 50 == 0:
+                continue  # 잃은 패킷
+            if audio_sequence == 120:
+                held_audio = packet  # 다음 것 뒤에 보낸다 (순서 바뀜)
+                continue
+            send(packet, asker)
+            audio_packets += 1
+            if held_audio is not None:
+                send(held_audio, asker)
+                held_audio = None
+                audio_packets += 1
+
+        # 몸만 보내는 VMC 앱 (P13): 허락 송신기가 Ack를 받은 1~9초, 30Hz
+        if asker_ack is not None and next_body_frame is None:
+            next_body_frame = asker_ack + 1
+        if next_body_frame is not None and now >= next_body_frame and now - asker_ack < 9:
+            next_body_frame += 1 / 30
+            body_frames += 1
+            for bundle in osc_bundles(body_messages(elapsed, full=True) + [osc_message("/VMC/Ext/OK", 1)]):
+                send(bundle, body_only)
 
         sending = stopped_at is None
         if sending and now >= next_hello:
@@ -262,7 +345,9 @@ def main():
     if asker_ack is not None and (stopped_at is None or asker_ack < stopped_at):
         failures.append("the sender without a pairing code got an ack while the paired sender was active")
     log(f"facelink sender: sent {frames} frames (max datagram {max_datagram} bytes), acks {acks}, "
-        f"calibrate {'yes' if calibrated else 'no'}")
+        f"calibrate {'yes' if calibrated else 'no'}, body-only frames {body_frames}, audio packets {audio_packets}")
+    if first_ack is not None and asker_ack is not None and body_frames == 0:
+        failures.append("the body-only sender did not send")
     for failure in failures:
         log(f"FAIL {failure}")
     sys.exit(1 if failures else 0)
