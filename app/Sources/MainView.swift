@@ -1105,15 +1105,13 @@ struct RemoteAudioRow: View {
     @State private var muted = false
     @State private var editing = false
     @State private var state = ""
-    @State private var peak: Float = -.infinity
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Label(name, systemImage: "iphone.radiowaves.left.and.right")
                 .font(.subheadline)
                 .lineLimit(1)
-            MeterBar(label: "M", db: peak)
-                .opacity(muted ? 0.4 : 1)
+            RemoteAudioMeter(gainDB: volumeDB, muted: muted)
             HStack(spacing: 8) {
                 Button {
                     muted.toggle()
@@ -1134,6 +1132,10 @@ struct RemoteAudioRow: View {
                     guard editing else { return }
                     core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
                 }
+                Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56, alignment: .trailing)
             }
             Text(state).font(.caption2).foregroundStyle(.secondary)
         }
@@ -1143,23 +1145,40 @@ struct RemoteAudioRow: View {
             muted = core_source_muted(name)
         }
         .task {
-            // 미터는 초당 10번, 글은 1초마다
-            var tick = 0
             while !Task.isCancelled {
                 var stats = core_facelink_audio_stats()
                 core_facelink_audio_get_stats(&stats)
-                let db: Float = stats.receiving && stats.output_peak > 0 ? 20 * log10(stats.output_peak) : -.infinity
-                if db != peak { peak = db }
-                if tick % 10 == 0 {
-                    state =
-                        stats.receiving
-                        ? "받는 중 \(stats.sample_rate / 1000) kHz · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
-                        : "받지 않는 중: " + FaceLinkReceiver.shared.status.audioHint
-                }
-                tick += 1
-                try? await Task.sleep(for: .milliseconds(100))
+                let text =
+                    stats.receiving
+                    ? "받는 중 \(stats.sample_rate / 1000) kHz · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
+                    : "받지 않는 중: " + FaceLinkReceiver.shared.status.audioHint
+                if text != state { state = text }
+                try? await Task.sleep(for: .seconds(1))
             }
         }
+    }
+}
+
+/// 아이폰 마이크 미터: 받은 소리의 피크에 볼륨을 곱해(음소거면 0) 입력 미터(obs_volmeter)처럼 페이더 뒤 값으로 보인다.
+/// 초당 10번 바뀌므로 줄과 따로 다시 그린다 (끄는 중인 슬라이더까지 다시 그리지 않게)
+struct RemoteAudioMeter: View {
+    let gainDB: Double
+    let muted: Bool
+    @State private var peak: Float = -.infinity
+
+    var body: some View {
+        let db: Float = muted || gainDB <= -60 ? -.infinity : peak + Float(gainDB)
+        MeterBar(label: "M", db: db)
+            .opacity(muted ? 0.4 : 1)
+            .task {
+                while !Task.isCancelled {
+                    var stats = core_facelink_audio_stats()
+                    core_facelink_audio_get_stats(&stats)
+                    let raw: Float = stats.receiving && stats.output_peak > 0 ? 20 * log10(stats.output_peak) : -.infinity
+                    if raw != peak { peak = raw }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
     }
 }
 
