@@ -19,11 +19,12 @@ struct DiagnosticsOverlay: View {
             Text("메모리 \(megabytes(stats.memory_footprint)) MB (여유 \(megabytes(stats.memory_available)) MB)")
             Text("발열  \(diagnostics.thermalState)")
             Text("카메라 \(cameraSize(stats))")
+            // 섞은 소리(송출·녹화로 나가는 것, 마스터 볼륨 뒤). 마이크 입력만이 아니다 (P13)
             HStack(alignment: .top, spacing: 6) {
-                Text("오디오")
+                Text("출력")
                 VStack(alignment: .leading, spacing: 2) {
-                    channelMeter("L", stats.audio_peak_left_db)
-                    channelMeter("R", stats.audio_peak_right_db)
+                    channelMeter("L", stats.master_peak_left_db)
+                    channelMeter("R", stats.master_peak_right_db)
                 }
             }
             OutputStatusLines(outputs: outputs)
@@ -104,11 +105,11 @@ final class Diagnostics: ObservableObject {
             appLog(
                 String(
                     format:
-                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u camera_fps=%.1f audio_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
+                        "[stats] fps=%.1f frame_ms=%.2f gpu_ms=%.2f lagged=%u/%u mem=%lluMB avail=%lluMB thermal=%@ camera=%ux%u camera_fps=%.1f audio_peak=%.1f/%.1fdB master_peak=%.1f/%.1fdB rec=%d rec_fps=%.1f stream=%d stream_kbps=%.0f stream_fps=%.1f dropped=%d/%d enc_skipped=%u/%u",
                     stats.active_fps, stats.frame_time_ms, gpuMillisecondsPerFrame, stats.lagged_frames,
                     stats.total_frames, stats.memory_footprint / 1024 / 1024, stats.memory_available / 1024 / 1024,
                     thermalState, stats.camera_width, stats.camera_height, stats.camera_fps, stats.audio_peak_left_db,
-                    stats.audio_peak_right_db,
+                    stats.audio_peak_right_db, stats.master_peak_left_db, stats.master_peak_right_db,
                     output.recording ? 1 : 0, Outputs.shared.recordFPS, output.streaming ? 1 : 0, Outputs.shared.streamKbps,
                     Outputs.shared.streamFPS,
                     output.stream_dropped_frames, output.stream_total_frames, output.encoder_skipped_frames,

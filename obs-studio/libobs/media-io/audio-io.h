@@ -223,6 +223,10 @@ EXPORT size_t audio_output_get_channels(const audio_t *audio);
 EXPORT uint32_t audio_output_get_sample_rate(const audio_t *audio);
 EXPORT const struct audio_output_info *audio_output_get_info(const audio_t *audio);
 
+/* iOS port: master volume, multiplied into every mix before clamping (1.0 = unchanged) */
+EXPORT void audio_output_set_master_volume(audio_t *audio, float volume);
+EXPORT float audio_output_get_master_volume(const audio_t *audio);
+
 #ifdef __cplusplus
 }
 #endif

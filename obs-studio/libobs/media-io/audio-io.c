@@ -77,6 +77,9 @@ struct audio_output {
 	void *input_param;
 	pthread_mutex_t input_mutex;
 	struct audio_mix mixes[MAX_AUDIO_MIXES];
+
+	/* iOS port: master volume (audio_output_set_master_volume) */
+	volatile float master_volume;
 };
 
 /* ------------------------------------------------------------------------- */
@@ -132,6 +135,7 @@ static inline void do_audio_output(struct audio_output *audio, size_t mix_idx, u
 static inline void clamp_audio_output(struct audio_output *audio, size_t bytes)
 {
 	size_t float_size = bytes / sizeof(float);
+	const float gain = audio->master_volume;
 
 	for (size_t mix_idx = 0; mix_idx < MAX_AUDIO_MIXES; mix_idx++) {
 		struct audio_mix *mix = &audio->mixes[mix_idx];
@@ -143,6 +147,11 @@ static inline void clamp_audio_output(struct audio_output *audio, size_t bytes)
 		for (size_t plane = 0; plane < audio->planes; plane++) {
 			float *mix_data = mix->buffer[plane];
 			float *mix_end = &mix_data[float_size];
+			/* iOS port: master volume before both copies */
+			if (gain != 1.0f) {
+				for (float *p = mix_data; p < mix_end; p++)
+					*p *= gain;
+			}
 			/* Unclamped mix is copied directly. */
 			memcpy(mix->buffer_unclamped[plane], mix_data, bytes);
 
@@ -368,6 +377,7 @@ int audio_output_open(audio_t **audio, struct audio_output_info *info)
 	out->input_cb = info->input_callback;
 	out->input_param = info->input_param;
 	out->block_size = (planar ? 1 : out->channels) * get_audio_bytes_per_channel(info->format);
+	out->master_volume = 1.0f;
 
 	if (pthread_mutex_init_recursive(&out->input_mutex) != 0)
 		goto fail0;
@@ -419,6 +429,17 @@ void audio_output_close(audio_t *audio)
 		da_free(mix->inputs);
 	}
 	bfree(audio);
+}
+
+void audio_output_set_master_volume(audio_t *audio, float volume)
+{
+	if (audio)
+		audio->master_volume = volume < 0.0f ? 0.0f : volume;
+}
+
+float audio_output_get_master_volume(const audio_t *audio)
+{
+	return audio ? audio->master_volume : 1.0f;
 }
 
 const struct audio_output_info *audio_output_get_info(const audio_t *audio)

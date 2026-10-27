@@ -466,6 +466,9 @@ jobs:
           # P13 안정성: 오디오 버퍼링 고정(지연이 굳지 않게), 녹화·리플레이를 같은 순간 시작해도 녹화 인코더는 하나,
           # 시작 중 두 번째 누르기는 무시, 연결이 안 되는 서버로 송출하면 오류 알림
           grep -q 'audio .* buffering fixed' app-run/app.log
+          # 마스터: 볼륨 1로 시작, 섞은 소리(트랙 1) 미터가 소리를 봄
+          grep -q 'master audio: volume 1.00, meter on track 1' app-run/app.log
+          grep -E 'master audio: first signal' app-run/app.log
           grep -q 'buffering type:  fixed' app-run/app.log
           grep -q 'autotest: started (recording true, streaming true, replay true)' app-run/app.log
           awk '/autotest: done/ { exit } /\[app\] Record Video: / { n++ } END { print "record encoders created during the output test: " n; exit n == 1 ? 0 : 1 }' \

@@ -56,6 +56,11 @@ static struct {
 	_Atomic float audio_peak_left_db;
 	_Atomic float audio_peak_right_db;
 	_Atomic uint64_t audio_peak_time; // os_gettime_ns
+	float master_volume;              // P13
+	_Atomic float master_peak_left;   // 섞은 소리의 피크 (선형, 블록마다 조금씩 줄임)
+	_Atomic float master_peak_right;
+	_Atomic uint64_t master_peak_time;
+	bool master_signal_logged;
 } core = {
 	.colorspace = VIDEO_CS_709,
 	.range = VIDEO_RANGE_PARTIAL,
@@ -65,6 +70,7 @@ static struct {
 	.audio_max_buffering_ms = 128,
 	.audio_peak_left_db = -INFINITY,
 	.audio_peak_right_db = -INFINITY,
+	.master_volume = 1.0f,
 };
 
 #pragma mark - 로그
@@ -244,6 +250,55 @@ void core_set_audio_format(uint32_t sample_rate, int channels)
 	core.speakers = channels == 1 ? SPEAKERS_MONO : SPEAKERS_STEREO;
 }
 
+// 섞은 소리 미터 (P13): 송출·녹화가 쓰는 트랙 1(믹스 0)을 받아 채널마다 피크. 마스터 볼륨·자르기 뒤의 값이다.
+// 이 콜백이 붙어 있어 출력이 없어도 믹스 0은 늘 섞인다
+static void master_audio(void *param, size_t mix_idx, struct audio_data *data)
+{
+	UNUSED_PARAMETER(param);
+	UNUSED_PARAMETER(mix_idx);
+	audio_t *audio = obs_get_audio();
+	const size_t channels = audio ? audio_output_get_channels(audio) : 1;
+	float peak[2] = {0.0f, 0.0f};
+	for (size_t c = 0; c < channels && c < 2; c++) {
+		const float *samples = (const float *)data->data[c];
+		if (!samples)
+			continue;
+		for (uint32_t i = 0; i < data->frames; i++)
+			peak[c] = fmaxf(peak[c], fabsf(samples[i]));
+	}
+	if (channels < 2)
+		peak[1] = peak[0];
+	// 블록(약 21ms)마다 0.9배: 화면이 초당 10번 읽어도 사이의 피크를 놓치지 않는다
+	atomic_store(&core.master_peak_left, fmaxf(peak[0], atomic_load(&core.master_peak_left) * 0.9f));
+	atomic_store(&core.master_peak_right, fmaxf(peak[1], atomic_load(&core.master_peak_right) * 0.9f));
+	atomic_store(&core.master_peak_time, os_gettime_ns());
+	if (!core.master_signal_logged && fmaxf(peak[0], peak[1]) > 0.001f) {
+		core.master_signal_logged = true;
+		blog(LOG_INFO, "[app] master audio: first signal (peak %.1f dB, master volume %.2f)",
+		     20.0f * log10f(fmaxf(peak[0], peak[1])), core.master_volume);
+	}
+}
+
+void core_set_master_volume(float multiplier)
+{
+	core.master_volume = multiplier < 0.0f ? 0.0f : multiplier;
+	audio_output_set_master_volume(obs_get_audio(), core.master_volume);
+}
+
+float core_master_volume(void)
+{
+	return core.master_volume;
+}
+
+void core_master_peak(float *left_db, float *right_db)
+{
+	const bool stale = os_gettime_ns() - atomic_load(&core.master_peak_time) > 1000000000ULL;
+	const float left = stale ? 0.0f : atomic_load(&core.master_peak_left);
+	const float right = stale ? 0.0f : atomic_load(&core.master_peak_right);
+	*left_db = left > 0.0f ? 20.0f * log10f(left) : -INFINITY;
+	*right_db = right > 0.0f ? 20.0f * log10f(right) : -INFINITY;
+}
+
 bool core_startup(const char *resource_path, uint32_t width, uint32_t height, uint32_t fps_num, uint32_t fps_den)
 {
 	if (!fps_num || !fps_den) {
@@ -278,6 +333,9 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 		blog(LOG_ERROR, "[app] obs_reset_audio2 failed");
 		return false;
 	}
+	audio_output_set_master_volume(obs_get_audio(), core.master_volume);
+	obs_add_raw_audio_callback(0, NULL, master_audio, NULL);
+	blog(LOG_INFO, "[app] master audio: volume %.2f, meter on track 1", core.master_volume);
 
 	if (!reset_video(width, height, fps_num, fps_den))
 		return false;
@@ -560,6 +618,7 @@ void core_get_stats(struct core_stats *stats)
 	}
 	obs_source_release(camera);
 	core_audio_input_peak(&stats->audio_peak_left_db, &stats->audio_peak_right_db);
+	core_master_peak(&stats->master_peak_left_db, &stats->master_peak_right_db);
 }
 
 void core_audio_input_peak(float *left_db, float *right_db)
