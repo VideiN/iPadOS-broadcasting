@@ -125,6 +125,9 @@ static uint64_t host_time_to_ns(uint64_t hostTime)
     BOOL _preferTap; /* set when the sink node delivered nothing */
     uint64_t _restartGeneration;
     BOOL _shutDown;
+    /* App in the background without outputs (P13): the engine is stopped and the session deactivated, so the
+     * microphone is not used and the app can be suspended (the app has the audio background mode) */
+    BOOL _suspended;
 }
 
 - (instancetype)initWithSource:(obs_source_t *)source
@@ -186,11 +189,37 @@ static uint64_t host_time_to_ns(uint64_t hostTime)
 
 #pragma mark - Engine
 
+- (void)setSuspended:(BOOL)suspended
+{
+    dispatch_async(_queue, ^{
+        if (self->_suspended == suspended || self->_shutDown) {
+            return;
+        }
+
+        self->_suspended = suspended;
+        self->_restartGeneration++;
+
+        if (suspended) {
+            [self stopEngine];
+            NSError *error = nil;
+            if (![[AVAudioSession sharedInstance] setActive:NO
+                                               withOptions:AVAudioSessionSetActiveOptionNotifyOthersOnDeactivation
+                                                     error:&error]) {
+                LOG(LOG_INFO, "setActive(NO) failed: %s", error.localizedDescription.UTF8String);
+            }
+            LOG(LOG_INFO, "suspended");
+        } else {
+            LOG(LOG_INFO, "resumed");
+            [self restart];
+        }
+    });
+}
+
 - (void)restart
 {
     [self stopEngine];
 
-    if (_shutDown) {
+    if (_shutDown || _suspended) {
         return;
     }
 
@@ -476,10 +505,18 @@ static const char *audio_input_get_name(void *unused)
     return obs_module_text("AudioInput");
 }
 
+static void audio_input_set_suspended(void *data, calldata_t *cd)
+{
+    IOSAudioInput *input = (__bridge IOSAudioInput *) data;
+    [input setSuspended:calldata_bool(cd, "suspended")];
+}
+
 static void *audio_input_create(obs_data_t *settings, obs_source_t *source)
 {
     IOSAudioInput *input = [[IOSAudioInput alloc] initWithSource:source];
     [input updateWithSettings:settings];
+    proc_handler_add(obs_source_get_proc_handler(source), "void set_suspended(bool suspended)",
+                     audio_input_set_suspended, (__bridge void *) input);
 
     return (__bridge_retained void *) input;
 }

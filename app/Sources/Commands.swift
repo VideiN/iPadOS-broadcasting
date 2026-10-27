@@ -41,6 +41,10 @@ struct StudioCommands: Commands {
             Button("리플레이 저장") { outputs.saveReplay() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
                 .disabled(!outputs.stats.replay_active)
+            Divider()
+            Button("방송 링크 공유") { BroadcastLink.shareCurrent() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(!outputs.stats.streaming)
         }
 
         CommandMenu("장면") {

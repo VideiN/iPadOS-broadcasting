@@ -189,6 +189,9 @@ final class AvatarRenderer {
     private var loading: Task<Void, Never>?
     private var targets: [Target] = []
     private var displayLink: CADisplayLink?
+    /// 앱이 뒤에 있는 동안(디스플레이 링크가 멈춤) GPU 작업이 허락되면 이 타이머로 그린다 (P13 백그라운드 송출)
+    private var backgroundTimer: Timer?
+    private var renderingObserver: NSObjectProtocol?
     private var lastTick: CFTimeInterval = 0
     private var frames = 0
     private var skipped = 0
@@ -224,6 +227,11 @@ final class AvatarRenderer {
             renderer.entities.append(root)
             renderer.activeCamera = camera
             self.renderer = renderer
+            renderingObserver = NotificationCenter.default.addObserver(
+                forName: BackgroundLive.renderingChanged, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateLink() }
+            }
         } catch {
             appLog("avatar: RealityRenderer failed: \(error)")
             host.status = "이 기기에서 3D를 그릴 수 없습니다: \(error.localizedDescription)"
@@ -257,6 +265,10 @@ final class AvatarRenderer {
         loading?.cancel()
         displayLink?.invalidate()
         displayLink = nil
+        backgroundTimer?.invalidate()
+        backgroundTimer = nil
+        if let renderingObserver { NotificationCenter.default.removeObserver(renderingObserver) }
+        renderingObserver = nil
         model?.removeFromParent()
         model = nil
         targets = []
@@ -515,12 +527,25 @@ final class AvatarRenderer {
     private final class LinkProxy: NSObject {
         weak var owner: AvatarRenderer?
         @objc func tick(_ link: CADisplayLink) {
-            MainActor.assumeIsolated { owner?.tick(link) }
+            MainActor.assumeIsolated { owner?.tick(timestamp: link.timestamp) }
         }
     }
 
     private func updateLink() {
         let run = showing && model != nil && renderer != nil && !targets.isEmpty
+        // 뒤에서는 디스플레이 링크가 멈춘다: GPU를 써도 될 때만 타이머로
+        let background = run && BackgroundLive.shared.backgroundRendering
+        if background, backgroundTimer == nil {
+            let timer = Timer(timeInterval: 1 / Double(max(settings.fps, 1)), repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick(timestamp: CACurrentMediaTime()) }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            backgroundTimer = timer
+            appLog("avatar: drawing with a timer in the background")
+        } else if !background, let timer = backgroundTimer {
+            timer.invalidate()
+            backgroundTimer = nil
+        }
         if run, displayLink == nil {
             let proxy = LinkProxy()
             proxy.owner = self
@@ -560,10 +585,14 @@ final class AvatarRenderer {
             ?? free.min { $0.lastUsed < $1.lastUsed }
     }
 
-    private func tick(_ link: CADisplayLink) {
-        guard let model, let renderer, UIApplication.shared.applicationState != .background else { return }
-        let deltaTime = lastTick > 0 ? min(0.1, link.timestamp - lastTick) : 1.0 / Double(settings.fps)
-        lastTick = link.timestamp
+    private func tick(timestamp: CFTimeInterval) {
+        guard let model, let renderer,
+            UIApplication.shared.applicationState != .background || BackgroundLive.shared.backgroundRendering
+        else { return }
+        // 디스플레이 링크와 뒤의 타이머가 겹쳐 부르면 한 번만
+        guard timestamp - lastTick > 0.5 / Double(max(settings.fps, 1)) else { return }
+        let deltaTime = lastTick > 0 ? min(0.1, timestamp - lastTick) : 1.0 / Double(settings.fps)
+        lastTick = timestamp
 
         applyFace()
         model.update(deltaTime: deltaTime)

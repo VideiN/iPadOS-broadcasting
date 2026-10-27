@@ -46,6 +46,8 @@ static struct {
 	enum video_range_type range;
 	uint32_t sample_rate;             // 오디오 출력 (P11)
 	enum speaker_layout speakers;
+	bool audio_fixed_buffering;       // P13
+	uint32_t audio_max_buffering_ms;
 
 	obs_source_t *audio_input; // 전역 오디오 입력 (출력 채널 1)
 	char *collection_path;
@@ -58,6 +60,8 @@ static struct {
 	.range = VIDEO_RANGE_PARTIAL,
 	.sample_rate = 48000,
 	.speakers = SPEAKERS_STEREO,
+	.audio_fixed_buffering = true,
+	.audio_max_buffering_ms = 128,
 	.audio_peak_left_db = -INFINITY,
 	.audio_peak_right_db = -INFINITY,
 };
@@ -226,6 +230,12 @@ void core_set_canvas_color(int colorspace, int range)
 	core.range = range == VIDEO_RANGE_FULL ? VIDEO_RANGE_FULL : VIDEO_RANGE_PARTIAL;
 }
 
+void core_set_audio_buffering(bool fixed, uint32_t max_ms)
+{
+	core.audio_fixed_buffering = fixed;
+	core.audio_max_buffering_ms = max_ms < 20 ? 20 : (max_ms > 960 ? 960 : max_ms);
+}
+
 void core_set_audio_format(uint32_t sample_rate, int channels)
 {
 	core.sample_rate = sample_rate == 44100 ? 44100 : 48000;
@@ -255,19 +265,26 @@ bool core_startup(const char *resource_path, uint32_t width, uint32_t height, ui
 	if (!load_modules(resource_path))
 		return false;
 
-	const struct obs_audio_info audio = {
+	// 고정 버퍼링이 아니면 libobs 기본(늘기만 하고 줄지 않음, 최대 약 960ms): 잠깐 멈췄다 오면 지연이 굳는다 (P6)
+	const struct obs_audio_info2 audio = {
 		.samples_per_sec = core.sample_rate,
 		.speakers = core.speakers,
+		.max_buffering_ms = core.audio_fixed_buffering ? core.audio_max_buffering_ms : 0,
+		.fixed_buffering = core.audio_fixed_buffering,
 	};
-	obs_reset_audio(&audio);
+	if (!obs_reset_audio2(&audio)) {
+		blog(LOG_ERROR, "[app] obs_reset_audio2 failed");
+		return false;
+	}
 
 	if (!reset_video(width, height, fps_num, fps_den))
 		return false;
 
-	blog(LOG_INFO, "[app] core started (%ux%u @ %.3f fps, %u/%u), color %s %s, audio %u Hz %s", width, height,
-	     core.fps, fps_num, fps_den, colorspace_name(core.colorspace),
+	blog(LOG_INFO, "[app] core started (%ux%u @ %.3f fps, %u/%u), color %s %s, audio %u Hz %s, buffering %s",
+	     width, height, core.fps, fps_num, fps_den, colorspace_name(core.colorspace),
 	     core.range == VIDEO_RANGE_FULL ? "full" : "partial", core.sample_rate,
-	     core.speakers == SPEAKERS_MONO ? "mono" : "stereo");
+	     core.speakers == SPEAKERS_MONO ? "mono" : "stereo",
+	     core.audio_fixed_buffering ? "fixed" : "increasing");
 	return true;
 }
 
@@ -355,6 +372,16 @@ bool core_save_collection(void)
 		return false;
 	return core_collection_save(core.collection_path,
 				    core.audio_input ? obs_source_get_name(core.audio_input) : NULL);
+}
+
+void core_audio_input_set_suspended(bool suspended)
+{
+	if (!core.audio_input)
+		return;
+	calldata_t cd = {0};
+	calldata_set_bool(&cd, "suspended", suspended);
+	proc_handler_call(obs_source_get_proc_handler(core.audio_input), "set_suspended", &cd);
+	calldata_free(&cd);
 }
 
 const char *core_audio_input_name(void)

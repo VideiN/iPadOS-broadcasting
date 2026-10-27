@@ -209,11 +209,15 @@ jobs:
           # -autotest-facelink: 그 페어링 코드로 얼굴 추적 받기를 켜고 합성 송신기를 받는다 (P9)
           # -autotest-avatar: 씬 시험이 아바타 소스를 첫 모델로 넣고, 그려서 움직이는지 본 뒤 다음 모델로 바꾼다 (P9)
           # -autotest-chzzk: RTMP 송출을 치지직 권장값(키프레임 1초, B프레임 없음)으로 보낸다 (P10)
+          # -autotest-share: 송출이 시작되면 뜨는 방송 링크 공유 창을 몇 초 뒤 닫는다 (P13)
+          # -autotest-background: 송출하는 동안 6초 자리 비움 장면 (P13, 앱을 떠난 것과 같은 코드)
+          # -autotest-p13: 출력 시험 뒤 시작 중 두 번 누르기, 연결 안 되는 서버로 송출 → 오류 알림 (P13)
           rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
             -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink \
-            -autotest-avatar test-avatar.vrm,test-avatar0.vrm -autotest-chzzk > app-run/app.log 2>&1 &
+            -autotest-avatar test-avatar.vrm,test-avatar0.vrm -autotest-chzzk \
+            -autotest-share -autotest-background -autotest-p13 > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -225,6 +229,11 @@ jobs:
             sleep 2
           done
           shoot app-run/simulator-chat.png
+          # 출력 시험 뒤의 P13 시험 (두 번 누르기, 오류 알림)
+          for _ in $(seq 1 30); do
+            grep -q 'p13 autotest: done' app-run/app.log && break
+            sleep 2
+          done
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -441,6 +450,28 @@ jobs:
           awk '/ui autotest: shot 2-settings/ { s = 1 } s == 1 && /settings sheet: closed/ { bad = 1 }
                s == 1 && /ui autotest: shot 3-settings-landscape/ { s = 2 }
                END { exit s == 2 && !bad ? 0 : 1 }' app-run/app-relaunch.log
+
+          # P13 안정성: 오디오 버퍼링 고정(지연이 굳지 않게), 녹화·리플레이를 같은 순간 시작해도 녹화 인코더는 하나,
+          # 시작 중 두 번째 누르기는 무시, 연결이 안 되는 서버로 송출하면 오류 알림
+          grep -q 'audio .* buffering fixed' app-run/app.log
+          grep -q 'buffering type:  fixed' app-run/app.log
+          grep -q 'autotest: started (recording true, streaming true, replay true)' app-run/app.log
+          awk '/autotest: done/ { exit } /Record Video: / { n++ } END { print "record encoders created during the output test: " n; exit n == 1 ? 0 : 1 }' \
+            app-run/app.log
+          grep -E 'p13 autotest|already starting|output alert' app-run/app.log
+          grep -q 'replay buffer: already starting, ignored' app-run/app.log
+          grep -q 'output alert: streaming stopped' app-run/app.log
+          grep -q 'p13 autotest: done (alert shown' app-run/app.log
+          # 방송 링크 공유 (P13): YouTube 시험 방송(mockBroadcast1)의 링크로 송출 시작 때 공유 창
+          grep -E 'share( autotest)?: ' app-run/app.log
+          grep -q 'share: link https://youtu.be/mockBroadcast1 (youtube)' app-run/app.log
+          grep -q 'share: sheet shown (stream started)' app-run/app.log
+          grep -q 'share autotest: ok' app-run/app.log
+          # 백그라운드 송출 (P13): 계속 처리 작업 등록, 자리 비움 장면을 켰다가 원래 장면으로
+          grep -E 'background( task| autotest)?: |away scene' app-run/app.log
+          grep -q 'background task: registered' app-run/app.log
+          grep -q 'away scene on: automatic' app-run/app.log
+          grep -q 'background autotest: ok' app-run/app.log
 
           # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {

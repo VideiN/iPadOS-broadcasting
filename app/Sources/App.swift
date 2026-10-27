@@ -24,6 +24,8 @@ struct BroadcastApp: App {
         }
         // 아바타 소스 (P9, iOS 18+): libobs가 뜰 때 등록되도록 먼저
         AvatarSources.install()
+        // 백그라운드 송출 (P13): 계속 처리 작업은 내기 전에 등록해야 한다
+        BackgroundLive.shared.register()
         Core.shared.start()
 
         // 아이폰 얼굴 추적 받기 (P9). CI(`-autotest-facelink <페어링 코드>`)는 그 코드로 켜고 합성 송신기를 받는다
@@ -79,6 +81,8 @@ final class Core: ObservableObject {
     @Published private(set) var color: CanvasColor
     /// 이 실행이 시작할 때 쓴 오디오 형식 (설정을 바꾸면 다시 열어야 적용된다)
     private(set) var audioFormat = (sampleRate: 48000, channels: 2)
+    /// 이 실행의 오디오 버퍼링 (P13)
+    private(set) var audioFixedBuffering = true
 
     private init() {
         AppSettings.register()
@@ -191,6 +195,8 @@ final class Core: ObservableObject {
         let audio = Self.startupAudioFormat()
         core_set_audio_format(audio.sampleRate, audio.channels)
         audioFormat = (Int(audio.sampleRate), Int(audio.channels))
+        audioFixedBuffering = AppSettings.defaults.bool(forKey: AppSettings.audioFixedBuffering)
+        core_set_audio_buffering(audioFixedBuffering, 128)
         var ok = false
         ready.enter()
         DispatchQueue.global(qos: .userInitiated).async {

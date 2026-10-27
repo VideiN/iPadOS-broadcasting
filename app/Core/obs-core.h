@@ -40,6 +40,9 @@ void core_log(const char *message);
 void core_set_canvas_color(int colorspace, int range);
 // 오디오 출력 형식 (P11). core_startup 전에만 바꿀 수 있다 (44100·48000, 1 모노·2 스테레오)
 void core_set_audio_format(uint32_t sample_rate, int channels);
+// 오디오 버퍼링 (P13). fixed면 처음 필요할 때 max_ms까지 한 번에 늘고 그 뒤로는 그대로(지연이 굳지 않음),
+// 아니면 libobs 기본(소스가 늦을 때마다 늘어 최대 약 960ms). core_startup 전에만
+void core_set_audio_buffering(bool fixed, uint32_t max_ms);
 
 // libobs를 시작한다 (모듈, 오디오, 비디오). 씬은 core_start_capture가 불러오거나 만든다.
 // resource_path는 앱 번들의 리소스 경로.
@@ -53,6 +56,8 @@ void core_start_capture(const char *collection_path);
 bool core_save_collection(void);
 // 전역 오디오 입력 소스의 이름 (믹서·속성에서 쓴다)
 const char *core_audio_input_name(void);
+// 전역 오디오 입력의 엔진을 멈추고 오디오 세션을 끈다 (P13: 출력 없이 백그라운드로 갈 때 마이크를 놓아 앱이 잠들게)
+void core_audio_input_set_suspended(bool suspended);
 
 // --- 씬·소스 (scenes.c) ---
 // 씬은 이름, 씬 항목은 id(obs_sceneitem_get_id), 소스는 이름으로 가리킨다. JSON은 core_free로 해제한다.
@@ -64,6 +69,11 @@ bool core_scene_remove(const char *name);        // 씬은 하나 이상 남긴�
 bool core_scene_rename(const char *name, const char *new_name);
 void core_scene_set_current(const char *name);
 void core_scene_move(const char *name, int offset); // 목록 안에서 위(-1)·아래(+1)로
+// 자리 비움 (P13): 백그라운드 동안 프로그램 출력만 바꾼다 (현재 씬·목록은 그대로). scene_name이 비면 자동 화면
+// (짙은 바탕 + image_path 이미지, 없으면 text 글자). 그 밖은 그 이름의 씬. core_away_end가 현재 씬으로 되돌린다
+bool core_away_begin(const char *scene_name, const char *image_path, const char *text);
+void core_away_end(void);
+bool core_away_active(void);
 
 // 현재 씬의 항목, 위에 있는 것부터: {"items": [{"id", "name", "type", "visible", "locked", "video", "audio"}]}
 char *core_scene_items_json(void);
@@ -169,15 +179,19 @@ struct core_output_stats {
 	uint64_t recording_bytes;
 	int record_total_frames;        // 녹화 파일에 들어간 비디오 프레임 (초당 증가량 = 실제 fps)
 	int record_stop_code;           // 마지막으로 멈춘 이유 (OBS_OUTPUT_*, 0이면 정상)
+	int record_stop_count;          // 녹화가 멈춘 횟수 (늘면 방금 멈춘 것, P13)
 
 	bool streaming;
 	bool stream_reconnecting;
+	double stream_reconnect_seconds; // 재연결을 시작한 뒤 지난 초 (재연결 중일 때만)
 	double streaming_seconds;
 	uint64_t stream_bytes;
 	int stream_dropped_frames;      // 네트워크가 못 따라가 버린 프레임
 	int stream_total_frames;
 	float stream_congestion;        // 0~1
 	int stream_stop_code;
+	int stream_stop_count;          // 송출이 멈춘 횟수 (연결 실패 포함, P13)
+	int stream_start_count;         // 송출이 시작된 횟수 (재연결은 세지 않음, P13)
 
 	bool replay_active;
 	uint64_t replay_bytes;          // 지금 메모리에 든 리플레이 크기

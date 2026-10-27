@@ -8,6 +8,7 @@
 
 #include <obs.h>
 #include <util/dstr.h>
+#include <util/platform.h>
 #include <util/threading.h>
 
 #include <pthread.h>
@@ -128,6 +129,11 @@ static struct {
 	obs_output_t *replay;
 	obs_service_t *service;
 
+	// 위의 포인터를 만들고 바꾸고 놓는 일 (P13): 시작·중지·저장이 잡는다. 메인의 상태 조회는 trylock이라
+	// 시작이 오래 걸려도 막히지 않고, 그동안은 마지막 결과(last_stats)를 돌려준다
+	pthread_mutex_t ops;
+	struct core_output_stats last_stats;
+
 	pthread_mutex_t mutex; // 아래 마지막 결과
 	int record_stop_code;
 	int stream_stop_code;
@@ -135,7 +141,11 @@ static struct {
 	char stream_error[512];
 	int replay_saved_count;
 	char replay_last_path[1024];
-} out = {.mutex = PTHREAD_MUTEX_INITIALIZER};
+	int record_stop_count;
+	int stream_stop_count;
+	int stream_start_count;
+	uint64_t reconnect_since; // 재연결을 시작한 시각 (os_gettime_ns, 0이면 아님)
+} out = {.ops = PTHREAD_MUTEX_INITIALIZER, .mutex = PTHREAD_MUTEX_INITIALIZER};
 
 void core_outputs_register(void)
 {
@@ -183,9 +193,12 @@ static void output_stopped(void *param, calldata_t *cd)
 
 	pthread_mutex_lock(&out.mutex);
 	if (is_stream) {
+		out.reconnect_since = 0;
+		out.stream_stop_count++;
 		out.stream_stop_code = code;
 		snprintf(out.stream_error, sizeof(out.stream_error), "%s", text);
 	} else {
+		out.record_stop_count++;
 		out.record_stop_code = code;
 		snprintf(out.record_error, sizeof(out.record_error), "%s", text);
 	}
@@ -198,6 +211,32 @@ static void output_signal_log(void *param, calldata_t *cd)
 	blog(LOG_INFO, "[app] %s", (const char *)param);
 }
 
+static void stream_started(void *param, calldata_t *cd)
+{
+	output_signal_log(param, cd);
+	pthread_mutex_lock(&out.mutex);
+	out.stream_start_count++;
+	pthread_mutex_unlock(&out.mutex);
+}
+
+// 재연결 중인 시간을 상태 줄에 보이려고 시작 시각을 둔다
+static void stream_reconnecting(void *param, calldata_t *cd)
+{
+	output_signal_log(param, cd);
+	pthread_mutex_lock(&out.mutex);
+	if (!out.reconnect_since)
+		out.reconnect_since = os_gettime_ns();
+	pthread_mutex_unlock(&out.mutex);
+}
+
+static void stream_reconnected(void *param, calldata_t *cd)
+{
+	output_signal_log(param, cd);
+	pthread_mutex_lock(&out.mutex);
+	out.reconnect_since = 0;
+	pthread_mutex_unlock(&out.mutex);
+}
+
 static obs_output_t *create_output(const char *id, const char *name, bool is_stream)
 {
 	obs_output_t *output = obs_output_create(id, name, NULL, NULL);
@@ -208,11 +247,13 @@ static obs_output_t *create_output(const char *id, const char *name, bool is_str
 
 	signal_handler_t *handler = obs_output_get_signal_handler(output);
 	signal_handler_connect(handler, "stop", output_stopped, is_stream ? (void *)1 : NULL);
-	signal_handler_connect(handler, "start", output_signal_log,
-			       (void *)(is_stream ? "streaming started" : "recording started"));
+	if (is_stream)
+		signal_handler_connect(handler, "start", stream_started, (void *)"streaming started");
+	else
+		signal_handler_connect(handler, "start", output_signal_log, (void *)"recording started");
 	if (is_stream) {
-		signal_handler_connect(handler, "reconnect", output_signal_log, (void *)"streaming reconnecting");
-		signal_handler_connect(handler, "reconnect_success", output_signal_log,
+		signal_handler_connect(handler, "reconnect", stream_reconnecting, (void *)"streaming reconnecting");
+		signal_handler_connect(handler, "reconnect_success", stream_reconnected,
 				       (void *)"streaming reconnected");
 	}
 	return output;
@@ -377,8 +418,15 @@ static struct core_audio_encoding checked_audio(const struct core_audio_encoding
 
 bool core_outputs_active(void)
 {
-	return (out.recording && obs_output_active(out.recording)) ||
-	       (out.streaming && obs_output_active(out.streaming)) || (out.replay && obs_output_active(out.replay));
+	if (pthread_mutex_trylock(&out.ops) != 0) {
+		// 시작·중지 중이면 켜진 것으로 본다 (캔버스 바꾸기 등을 막는 쪽이 안전하다)
+		return true;
+	}
+	const bool active = (out.recording && obs_output_active(out.recording)) ||
+			    (out.streaming && obs_output_active(out.streaming)) ||
+			    (out.replay && obs_output_active(out.replay));
+	pthread_mutex_unlock(&out.ops);
+	return active;
 }
 
 #pragma mark - 녹화
@@ -413,8 +461,8 @@ static bool start_recording_with(const char *path, const struct core_video_encod
 	return false;
 }
 
-bool core_recording_start(const char *path, const struct core_video_encoding *video_in,
-			  const struct core_audio_encoding *audio_in)
+static bool recording_start(const char *path, const struct core_video_encoding *video_in,
+			    const struct core_audio_encoding *audio_in)
 {
 	if (out.recording && obs_output_active(out.recording))
 		return true;
@@ -437,7 +485,7 @@ bool core_recording_start(const char *path, const struct core_video_encoding *vi
 }
 
 // 보통 멈춤은 인코더가 멈춘 시점까지의 패킷을 다 받은 뒤 끝난다. 인코더가 밀려 끝나지 않으면 강제로 멈춘다.
-void core_recording_stop(bool force)
+static void recording_stop(bool force)
 {
 	if (!out.recording)
 		return;
@@ -450,11 +498,27 @@ void core_recording_stop(bool force)
 	}
 }
 
+bool core_recording_start(const char *path, const struct core_video_encoding *video,
+			  const struct core_audio_encoding *audio)
+{
+	pthread_mutex_lock(&out.ops);
+	const bool ok = recording_start(path, video, audio);
+	pthread_mutex_unlock(&out.ops);
+	return ok;
+}
+
+void core_recording_stop(bool force)
+{
+	pthread_mutex_lock(&out.ops);
+	recording_stop(force);
+	pthread_mutex_unlock(&out.ops);
+}
+
 #pragma mark - 송출
 
 // HEVC는 Enhanced RTMP로 보낸다 (받는 쪽이 지원해야 한다, O4)
-bool core_streaming_start(const char *server, const char *key, const struct core_video_encoding *video_in,
-			  const struct core_audio_encoding *audio_in, const struct core_stream_options *options)
+static bool streaming_start(const char *server, const char *key, const struct core_video_encoding *video_in,
+			    const struct core_audio_encoding *audio_in, const struct core_stream_options *options)
 {
 	if (out.streaming && obs_output_active(out.streaming))
 		return true;
@@ -531,7 +595,7 @@ bool core_streaming_start(const char *server, const char *key, const struct core
 	return true;
 }
 
-void core_streaming_stop(bool force)
+static void streaming_stop(bool force)
 {
 	if (!out.streaming)
 		return;
@@ -542,6 +606,22 @@ void core_streaming_stop(bool force)
 	} else {
 		obs_output_stop(out.streaming);
 	}
+}
+
+bool core_streaming_start(const char *server, const char *key, const struct core_video_encoding *video,
+			  const struct core_audio_encoding *audio, const struct core_stream_options *options)
+{
+	pthread_mutex_lock(&out.ops);
+	const bool ok = streaming_start(server, key, video, audio, options);
+	pthread_mutex_unlock(&out.ops);
+	return ok;
+}
+
+void core_streaming_stop(bool force)
+{
+	pthread_mutex_lock(&out.ops);
+	streaming_stop(force);
+	pthread_mutex_unlock(&out.ops);
 }
 
 #pragma mark - 리플레이 버퍼
@@ -607,8 +687,8 @@ static bool start_replay_with(const char *directory, int seconds, int max_mb, co
 	return false;
 }
 
-bool core_replay_start(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video_in,
-		       const struct core_audio_encoding *audio_in)
+static bool replay_start(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video_in,
+			 const struct core_audio_encoding *audio_in)
 {
 	if (out.replay && obs_output_active(out.replay))
 		return true;
@@ -629,19 +709,32 @@ bool core_replay_start(const char *directory, int seconds, int max_mb, const str
 	return false;
 }
 
+bool core_replay_start(const char *directory, int seconds, int max_mb, const struct core_video_encoding *video,
+		       const struct core_audio_encoding *audio)
+{
+	pthread_mutex_lock(&out.ops);
+	const bool ok = replay_start(directory, seconds, max_mb, video, audio);
+	pthread_mutex_unlock(&out.ops);
+	return ok;
+}
+
 void core_replay_stop(void)
 {
+	pthread_mutex_lock(&out.ops);
 	if (out.replay)
 		obs_output_stop(out.replay);
+	pthread_mutex_unlock(&out.ops);
 }
 
 void core_replay_save(void)
 {
-	if (!out.replay || !obs_output_active(out.replay))
-		return;
-	calldata_t cd = {0};
-	proc_handler_call(obs_output_get_proc_handler(out.replay), "save", &cd);
-	calldata_free(&cd);
+	pthread_mutex_lock(&out.ops);
+	if (out.replay && obs_output_active(out.replay)) {
+		calldata_t cd = {0};
+		proc_handler_call(obs_output_get_proc_handler(out.replay), "save", &cd);
+		calldata_free(&cd);
+	}
+	pthread_mutex_unlock(&out.ops);
 }
 
 char *core_replay_last_path(void)
@@ -656,6 +749,14 @@ char *core_replay_last_path(void)
 
 void core_get_output_stats(struct core_output_stats *stats)
 {
+	// 시작·중지가 출력을 바꾸는 중이면 기다리지 않고 지난 결과를 준다 (메인 스레드가 부른다)
+	if (pthread_mutex_trylock(&out.ops) != 0) {
+		pthread_mutex_lock(&out.mutex);
+		*stats = out.last_stats;
+		pthread_mutex_unlock(&out.mutex);
+		return;
+	}
+
 	memset(stats, 0, sizeof(*stats));
 
 	struct obs_video_info ovi;
@@ -691,7 +792,14 @@ void core_get_output_stats(struct core_output_stats *stats)
 	stats->record_stop_code = out.record_stop_code;
 	stats->stream_stop_code = out.stream_stop_code;
 	stats->replay_saved_count = out.replay_saved_count;
+	stats->record_stop_count = out.record_stop_count;
+	stats->stream_stop_count = out.stream_stop_count;
+	stats->stream_start_count = out.stream_start_count;
+	if (out.reconnect_since && stats->stream_reconnecting)
+		stats->stream_reconnect_seconds = (double)(os_gettime_ns() - out.reconnect_since) / 1e9;
+	out.last_stats = *stats;
 	pthread_mutex_unlock(&out.mutex);
+	pthread_mutex_unlock(&out.ops);
 }
 
 char *core_output_last_error(bool stream)

@@ -47,12 +47,24 @@ enum AppSettings {
     static let canvasScale = "canvasScale"  // 출력 크기가 다를 때의 스케일 필터 (enum obs_scale_type)
     static let audioSampleRate = "audioSampleRate"  // 다음 실행부터
     static let audioChannels = "audioChannels"
+    static let audioFixedBuffering = "audioFixedBuffering"  // 오디오 버퍼링 고정 128ms (P13, 다음 실행부터)
     // 송출 연결 (P11)
     static let streamDynBitrate = "streamDynBitrate"
     static let streamReconnect = "streamReconnect"
     static let streamRetries = "streamRetries"
     static let streamRetrySeconds = "streamRetrySeconds"
     static let streamDelay = "streamDelay"
+    // 방송 링크 공유 (P13)
+    static let shareOnStart = "shareOnStart"  // 송출을 시작하면 공유 창
+    static let shareTemplate = "shareTemplate"  // 공유 문구 ({제목}, {링크})
+    static let chzzkChannel = "chzzkChannel"  // 치지직 채널 ID 또는 주소
+    static let broadcastLink = "broadcastLink"  // 직접 입력 송출의 시청 링크
+    static let youtubeChannelID = "youtubeChannelID"  // 로그인한 채널 ID (스트림 키만 쓸 때 라이브 링크)
+    // 백그라운드 송출 (P13)
+    static let backgroundLive = "backgroundLive"  // 앱을 떠나도 송출·녹화를 계속
+    static let backgroundScene = "backgroundScene"  // "" 자동 자리 비움 화면, "*" 지금 장면 그대로, 그 밖은 장면 이름
+    static let backgroundMute = "backgroundMute"  // 자리 비움 동안 소리 끄기
+    static let awayImage = "awayImage"  // 자동 자리 비움 화면의 이미지 (Documents/Media 안 경로, 없으면 글자만)
 
     /// 인코딩 설정 키 (P11): 송출은 "stream…", 녹화(리플레이 포함)는 "record…"
     enum EncoderKey: String, CaseIterable {
@@ -90,11 +102,15 @@ enum AppSettings {
             canvasScale: 2,
             audioSampleRate: 48000,
             audioChannels: 2,
+            audioFixedBuffering: true,
             streamDynBitrate: false,
             streamReconnect: true,
             streamRetries: 20,
             streamRetrySeconds: 5,
             streamDelay: 0,
+            shareOnStart: true,
+            backgroundLive: true,
+            backgroundMute: false,
         ])
         UserDefaults.standard.register(defaults: [
             streamCodec: "h264",
@@ -556,6 +572,10 @@ private struct StreamSettingsPage: View {
                 }
             }
             .disabled(outputs.stats.streaming)
+
+            BroadcastLinkSection(mode: streamMode)
+
+            BackgroundLiveSection()
         }
         .onAppear {
             streamKey = StreamKeyStore.load()
@@ -987,6 +1007,7 @@ private struct CanvasSettingsPage: View {
     @AppStorage(AppSettings.canvasScale) private var scaleType = 2
     @AppStorage(AppSettings.audioSampleRate) private var sampleRate = 48000
     @AppStorage(AppSettings.audioChannels) private var channels = 2
+    @AppStorage(AppSettings.audioFixedBuffering) private var fixedBuffering = true
 
     struct CanvasSize: Hashable {
         var width: UInt32
@@ -1081,13 +1102,17 @@ private struct CanvasSettingsPage: View {
                     Text("스테레오").tag(2)
                     Text("모노").tag(1)
                 }
+                Picker("버퍼링", selection: $fixedBuffering) {
+                    Text("고정 128ms (권장)").tag(true)
+                    Text("자동 늘림 (최대 960ms)").tag(false)
+                }
             } header: {
                 Text("오디오")
             } footer: {
-                if core.audioFormat != (sampleRate, channels) {
+                if core.audioFormat != (sampleRate, channels) || core.audioFixedBuffering != fixedBuffering {
                     Text("앱을 다시 열면 적용됩니다.").foregroundStyle(.orange)
                 } else {
-                    Text("바꾸면 앱을 다시 열 때 적용됩니다.")
+                    Text("바꾸면 앱을 다시 열 때 적용됩니다. 자동 늘림은 소리가 잠깐 늦게 오면 지연이 늘어난 채로 남을 수 있습니다.")
                 }
             }
         }

@@ -198,6 +198,8 @@ final class YouTubeAccount: ObservableObject {
             throw YouTubeError("이 Google 계정에 YouTube 채널이 없습니다.")
         }
         AppSettings.defaults.set(title, forKey: AppSettings.youtubeChannelTitle)
+        // 스트림 키만 쓰는 송출의 공유 링크(채널 라이브)에 쓴다 (P13)
+        if let id = items.first?["id"] as? String { AppSettings.defaults.set(id, forKey: AppSettings.youtubeChannelID) }
         await publish { $0.channelTitle = title }
     }
 
