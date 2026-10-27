@@ -1110,6 +1110,7 @@ void core_scene_item_remove(int64_t id)
 #pragma mark - 소스 추가
 
 // 앱에서 추가할 수 있는 소스 종류. 숨김·폐기·오디오 전용(전역 오디오 입력으로 따로 다룸) 종류는 뺀다.
+// 아이폰 마이크(FaceLink, P13)는 오디오 전용이지만 장면에 넣어 섞는다 (빠져 있어 실기기 0.1.139에서 추가할 수 없었음)
 char *core_source_types_json(void)
 {
 	obs_data_t *root = obs_data_create();
@@ -1120,7 +1121,7 @@ char *core_source_types_json(void)
 		const uint32_t flags = obs_get_source_output_flags(id);
 		if (flags & (OBS_SOURCE_CAP_DISABLED | OBS_SOURCE_DEPRECATED))
 			continue;
-		if (!(flags & OBS_SOURCE_VIDEO))
+		if (!(flags & OBS_SOURCE_VIDEO) && strcmp(id, "ios_facelink_audio") != 0)
 			continue;
 		// BGRA IOSurface 경로("Capture Card Device")는 iOS에서 확인하지 않았다
 		if (strcmp(id, "macos-avcapture-fast") == 0)
