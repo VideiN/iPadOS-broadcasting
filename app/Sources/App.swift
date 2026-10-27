@@ -200,6 +200,8 @@ final class Core: ObservableObject {
         audioFormat = (Int(audio.sampleRate), Int(audio.channels))
         audioFixedBuffering = AppSettings.defaults.bool(forKey: AppSettings.audioFixedBuffering)
         core_set_audio_buffering(audioFixedBuffering, 128)
+        let masterDB = AppSettings.defaults.double(forKey: AppSettings.masterVolumeDB)
+        core_set_master_volume(masterDB <= -60 ? 0 : Float(pow(10, masterDB / 20)))
         var ok = false
         ready.enter()
         DispatchQueue.global(qos: .userInitiated).async {

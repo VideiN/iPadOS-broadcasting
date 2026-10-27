@@ -1008,45 +1008,49 @@ struct AudioDock: View {
 
     var body: some View {
         Dock("오디오") {
-            VStack(alignment: .leading, spacing: 10) {
-                deviceMenu
-                InputMeter(level: level, muted: muted)
-                HStack(spacing: 8) {
-                    Button {
-                        muted.toggle()
-                        core_source_set_muted(name, muted)
-                        SceneModel.shared.setNeedsSave()
-                    } label: {
-                        Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                            .foregroundStyle(muted ? Color.red : Color.accentColor)
-                            .frame(width: 30, height: 28)
+            // 아이폰 마이크·마스터 줄이 늘어 독이 낮으면 넘친다 (P13)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    deviceMenu
+                    InputMeter(level: level, muted: muted)
+                    HStack(spacing: 8) {
+                        Button {
+                            muted.toggle()
+                            core_source_set_muted(name, muted)
+                            SceneModel.shared.setNeedsSave()
+                        } label: {
+                            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                                .foregroundStyle(muted ? Color.red : Color.accentColor)
+                                .frame(width: 30, height: 28)
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(muted ? "음소거 해제" : "음소거")
+                        // 끄는 동안 바로 들리게 바꾼다 (불러온 값으로 바뀔 때는 쓰지 않는다)
+                        Slider(value: $volumeDB, in: -60...0) { editing in
+                            self.editing = editing
+                            if !editing { SceneModel.shared.setNeedsSave() }
+                        }
+                        .onChange(of: volumeDB) { _, db in
+                            guard editing else { return }
+                            core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
+                        }
+                        Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 56, alignment: .trailing)
                     }
-                    .buttonStyle(.borderless)
-                    .accessibilityLabel(muted ? "음소거 해제" : "음소거")
-                    // 끄는 동안 바로 들리게 바꾼다 (불러온 값으로 바뀔 때는 쓰지 않는다)
-                    Slider(value: $volumeDB, in: -60...0) { editing in
-                        self.editing = editing
-                        if !editing { SceneModel.shared.setNeedsSave() }
+                    // 아이폰 마이크 소스 (P13): 지금 장면에 있으면 줄마다 음소거·볼륨
+                    ForEach(model.items.filter { $0.type == "ios_facelink_audio" }) { item in
+                        RemoteAudioRow(name: item.name)
                     }
-                    .onChange(of: volumeDB) { _, db in
-                        guard editing else { return }
-                        core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
+                    if !model.items.contains(where: { $0.type == "ios_facelink_audio" }) {
+                        RemoteAudioMissing()
                     }
-                    Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
-                        .frame(width: 56, alignment: .trailing)
+                    Divider()
+                    MasterAudioRow()
                 }
-                // 아이폰 마이크 소스 (P13): 지금 장면에 있으면 줄마다 음소거·볼륨
-                ForEach(model.items.filter { $0.type == "ios_facelink_audio" }) { item in
-                    RemoteAudioRow(name: item.name)
-                }
-                if !model.items.contains(where: { $0.type == "ios_facelink_audio" }) {
-                    RemoteAudioMissing()
-                }
-                Spacer(minLength: 0)
+                .padding(12)
             }
-            .padding(12)
         } toolbar: {
             DockButton("오디오 필터", "waveform") { sheets.editFilters(name) }
                 .disabled(name.isEmpty)
@@ -1182,6 +1186,39 @@ struct RemoteAudioMeter: View {
     }
 }
 
+/// 마스터 (P13): 송출·녹화로 나가는 섞은 소리의 미터와 볼륨. libobs가 섞은 뒤 자르기 전에 곱한다 (audio-io.c)
+struct MasterAudioRow: View {
+    @AppStorage(AppSettings.masterVolumeDB) private var volumeDB = 0.0
+    @State private var level = InputLevel(master: true)
+    @State private var editing = false
+
+    static func multiplier(_ db: Double) -> Float {
+        db <= -60 ? 0 : Float(pow(10, db / 20))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("마스터 (송출·녹화로 나가는 소리)", systemImage: "slider.vertical.3")
+                .font(.subheadline)
+                .lineLimit(1)
+            InputMeter(level: level, muted: false)
+            HStack(spacing: 8) {
+                Slider(value: $volumeDB, in: -60...0) { editing in
+                    self.editing = editing
+                    if !editing { appLog("master volume: \(volumeDB <= -60 ? "off" : String(format: "%.1f dB", volumeDB))") }
+                }
+                .onChange(of: volumeDB) { _, db in core_set_master_volume(Self.multiplier(db)) }
+                Text(volumeDB <= -60 ? "-∞ dB" : String(format: "%.1f dB", volumeDB))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 56, alignment: .trailing)
+            }
+        }
+        .onAppear { level.start() }
+        .onDisappear { level.stop() }
+    }
+}
+
 /// 아이폰에서 소리가 오는데 지금 장면에 아이폰 마이크 소스가 없을 때 (받기 상태만 따로 관찰)
 struct RemoteAudioMissing: View {
     @ObservedObject private var receiver = FaceLinkReceiver.shared
@@ -1195,11 +1232,16 @@ struct RemoteAudioMissing: View {
     }
 }
 
-/// 오디오 입력의 최근 피크 (core_audio_input_peak를 초당 10번, 메인 스레드)
+/// 오디오 입력의 최근 피크 (core_audio_input_peak를 초당 10번, 메인 스레드). master면 섞은 소리 (core_master_peak)
 final class InputLevel: ObservableObject {
     @Published private(set) var left: Float = -.infinity
     @Published private(set) var right: Float = -.infinity
     private var timer: Timer?
+    private let master: Bool
+
+    init(master: Bool = false) {
+        self.master = master
+    }
 
     func start() {
         guard timer == nil else { return }
@@ -1214,7 +1256,11 @@ final class InputLevel: ObservableObject {
     private func update() {
         var left: Float = -.infinity
         var right: Float = -.infinity
-        core_audio_input_peak(&left, &right)
+        if master {
+            core_master_peak(&left, &right)
+        } else {
+            core_audio_input_peak(&left, &right)
+        }
         if left != self.left { self.left = left }
         if right != self.right { self.right = right }
     }

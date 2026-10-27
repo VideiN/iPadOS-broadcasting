@@ -48,6 +48,7 @@ enum AppSettings {
     static let audioSampleRate = "audioSampleRate"  // 다음 실행부터
     static let audioChannels = "audioChannels"
     static let audioFixedBuffering = "audioFixedBuffering"  // 오디오 버퍼링 고정 128ms (P13, 다음 실행부터)
+    static let masterVolumeDB = "masterVolumeDB"  // 마스터 볼륨 dB (-60 = 끔, P13)
     // 송출 연결 (P11)
     static let streamDynBitrate = "streamDynBitrate"
     static let streamReconnect = "streamReconnect"
@@ -103,6 +104,7 @@ enum AppSettings {
             audioSampleRate: 48000,
             audioChannels: 2,
             audioFixedBuffering: true,
+            masterVolumeDB: 0.0,
             streamDynBitrate: false,
             streamReconnect: true,
             streamRetries: 20,

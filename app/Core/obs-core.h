@@ -23,6 +23,8 @@ struct core_stats {
 	float camera_fps;              // 카메라가 실제로 보내는 초당 프레임 (캔버스 fps보다 낮을 수 있다)
 	float audio_peak_left_db;      // 오디오 입력의 최근 피크, 왼쪽·오른쪽 (dBFS, 무음이면 -inf)
 	float audio_peak_right_db;
+	float master_peak_left_db;     // 송출·녹화로 나가는 섞은 소리(트랙 1, 마스터 볼륨 뒤)의 피크 (P13)
+	float master_peak_right_db;
 };
 
 enum core_device_kind {
@@ -272,6 +274,11 @@ void core_display_destroy(void *display);
 void core_get_stats(struct core_stats *stats);
 // 오디오 입력의 최근 피크 L/R만 (core_stats의 값과 같다). 오디오 독의 미터가 자주 부른다
 void core_audio_input_peak(float *left_db, float *right_db);
+// 섞은 소리(트랙 1, 마스터 볼륨 뒤)의 최근 피크 L/R (P13)
+void core_master_peak(float *left_db, float *right_db);
+// 마스터 볼륨 (배수, 1 = 그대로). core_startup 전에 불러도 되고, 그 뒤에는 바로 바뀐다 (P13)
+void core_set_master_volume(float multiplier);
+float core_master_volume(void);
 
 // --- 채팅 소스 (P7, plugins/ios-chat의 proc handler) ---
 // 메인 스레드에서 부른다. libobs가 아직 안 떴으면 아무것도 하지 않는다.
