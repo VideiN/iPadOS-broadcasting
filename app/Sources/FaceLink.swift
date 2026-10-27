@@ -74,6 +74,53 @@ struct FaceFrame {
     }
 }
 
+/// 몸 뼈 (P13). VMC는 Unity HumanBodyBones 이름을 쓴다. 순서는 VRMKit `HumanoidBone.allCases`와 같다
+/// (엄지만 이름이 다르다: Unity·VRM 0.x의 Proximal·Intermediate·Distal = VRM 1.0의 Metacarpal·Proximal·Distal)
+enum BodyBone {
+    static let names: [String] = {
+        var names = [
+            "Hips", "LeftUpperLeg", "RightUpperLeg", "LeftLowerLeg", "RightLowerLeg", "LeftFoot", "RightFoot", "Spine",
+            "Chest", "Neck", "Head", "LeftShoulder", "RightShoulder", "LeftUpperArm", "RightUpperArm", "LeftLowerArm",
+            "RightLowerArm", "LeftHand", "RightHand", "LeftToes", "RightToes", "LeftEye", "RightEye", "Jaw",
+        ]
+        for side in ["Left", "Right"] {
+            for finger in ["Thumb", "Index", "Middle", "Ring", "Little"] {
+                for joint in ["Proximal", "Intermediate", "Distal"] { names.append(side + finger + joint) }
+            }
+        }
+        names.append("UpperChest")
+        return names
+    }()
+
+    private static let indices: [String: Int] = Dictionary(
+        uniqueKeysWithValues: names.enumerated().map { ($1.lowercased(), $0) })
+
+    static func index(_ name: String) -> Int? { indices[name.lowercased()] }
+
+    static let head = index("Head")!
+    static let leftEye = index("LeftEye")!
+    static let rightEye = index("RightEye")!
+}
+
+/// 한 프레임의 몸 자세 (P13). 뼈마다 부모 기준 로컬 회전(정규화한 T 자세가 단위 회전), 좌표는 VMC(Unity)
+struct BodyFrame {
+    var rotations = [simd_quatf](repeating: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), count: BodyBone.names.count)
+    /// 받은 뼈 (비트마다 하나)
+    var present: UInt64 = 0
+    /// /VMC/Ext/Root/Pos의 회전 (몸 전체 방향)
+    var root: simd_quatf?
+    var receivedAt: TimeInterval = 0
+    var sender = ""
+
+    var presentCount: Int { present.nonzeroBitCount }
+    func has(_ index: Int) -> Bool { present & (1 << UInt64(index)) != 0 }
+
+    mutating func set(_ index: Int, _ rotation: simd_quatf) {
+        rotations[index] = rotation
+        present |= 1 << UInt64(index)
+    }
+}
+
 // MARK: - OSC
 
 /// OSC 1.0의 필요한 만큼: 메시지·번들 읽기와 메시지 쓰기. 받는 패킷은 남이 보낸 것이므로 길이를 모두 확인한다
@@ -265,6 +312,13 @@ struct FaceLinkStatus: Equatable {
     var disconnects = 0
     /// 받지 않고 있는 보내는 쪽 (마지막 Hello 5초 안)
     var request: FaceLinkRequest?
+    /// 몸 뼈를 보내는 쪽 (P13): 얼굴을 보내는 쪽이거나, "다른 VMC 앱 받기"면 몸만 보내는 다른 VMC 앱 (mocopi 등)
+    var bodySender: String?
+    var bodyBones = 0
+    var bodyFPS = 0.0
+    /// 아이폰 마이크 (P13, 3.8 소리 패킷): 받는 중이면 표본률
+    var audioRate = 0
+    var audioChannels = 0
 }
 
 /// 페어링 코드 없이 Hello를 보낸 쪽(아이폰 앱에서 Bonjour 목록·주소로 고른 경우: 이 iPad에서 허락하면 받는다),
@@ -302,6 +356,8 @@ final class FaceLinkEngine: @unchecked Sendable {
         /// 조립 중인 프레임. stale이면 Apply를 만나도 버린다
         var pending: FaceFrame?
         var pendingStale = false
+        /// 이 패킷에서 받은 몸 뼈 (패킷을 다 읽으면 한 프레임으로)
+        var bodyPending: BodyFrame?
         var warnedToken = false
 
         init(_ connection: NWConnection) {
@@ -321,6 +377,7 @@ final class FaceLinkEngine: @unchecked Sendable {
     private let lock = NSLock()
     private var sharedStatus = FaceLinkStatus()
     private var sharedFrame: FaceFrame?
+    private var sharedBody: BodyFrame?
 
     // 아래는 큐에서만
     private var config: Config?
@@ -332,6 +389,15 @@ final class FaceLinkEngine: @unchecked Sendable {
     private var peers: [NWEndpoint: Peer] = [:]
     private var active: Peer?
     private var lastFrame = FaceFrame()
+    /// 몸 (P13): 마지막 몸 프레임, 그것을 보낸 쪽(얼굴과 다를 수 있다)
+    private var lastBody = BodyFrame()
+    private var bodyPeer: Peer?
+    /// 몸만 보내는 쪽(bodyPeer)의 마지막 프레임. 1초 안이면 얼굴 송신기의 몸 뼈보다 이것을 쓴다
+    private var bodyPeerTime: TimeInterval = 0
+    private var lastBodyTime: TimeInterval = 0
+    private var bodyTimes: [TimeInterval] = []
+    /// 소리 (P13)
+    private var lastAudioTime: TimeInterval = 0
     private var lastFrameTime: TimeInterval = 0
     private var frameTimes: [TimeInterval] = []
     private var timer: DispatchSourceTimer?
@@ -352,6 +418,12 @@ final class FaceLinkEngine: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return sharedFrame
+    }
+
+    func latestBody() -> BodyFrame? {
+        lock.lock()
+        defer { lock.unlock() }
+        return sharedBody
     }
 
     /// 설정대로 듣는다 (nil이면 멈춘다). 같은 설정이면 그대로
@@ -472,6 +544,7 @@ final class FaceLinkEngine: @unchecked Sendable {
         for peer in peers.values { peer.connection.cancel() }
         peers.removeAll()
         active = nil
+        bodyPeer = nil
         requestTime = 0
         updateStatus { $0.request = nil }
     }
@@ -534,6 +607,11 @@ final class FaceLinkEngine: @unchecked Sendable {
     private func handle(packet: Data, from peer: Peer) {
         let now = ProcessInfo.processInfo.systemUptime
         peer.lastPacket = now
+        // 소리 패킷 (P13, 3.8): OSC가 아니라 "FLAU"로 시작한다 (OSC는 '/'나 '#')
+        if packet.count >= 28, packet.starts(with: Self.audioMagic) {
+            handleAudio([UInt8](packet), from: peer, now: now)
+            return
+        }
         guard packet.count <= 65_000, let messages = OSC.decode([UInt8](packet)) else {
             updateStatus { $0.invalid += 1 }
             return
@@ -549,14 +627,124 @@ final class FaceLinkEngine: @unchecked Sendable {
                 // 토큰 없이 VMC만 보내는 앱은 설정으로 허락했을 때만, 지금 받는 쪽이 없거나 끊겼을 때
                 if let config, config.acceptVMC, peer.helloName == nil, activeIsIdle(now) {
                     activate(peer, vmc: true)
+                } else if let config, config.acceptVMC, peer.helloName == nil, Self.isBodyMessage(message),
+                    bodyPeer == nil || bodyPeer === peer || now - bodyPeerTime > 1
+                {
+                    // 얼굴은 다른 쪽(아이폰)에서 받는 중이고, 이 VMC 앱은 몸 뼈만 (mocopi, PC의 몸 추적 앱 등)
+                    bodyPeer = peer
+                    handleBodyMessage(message, from: peer)
+                    continue
                 } else {
                     ignoredPacket = true
                     continue
                 }
             }
             handleFrameMessage(message, from: peer, now: now)
+            // 얼굴 송신기의 몸 뼈: 몸만 보내는 앱이 따로 있으면 그쪽이 이긴다
+            if Self.isBodyMessage(message), bodyPeer == nil || now - bodyPeerTime > 1 {
+                handleBodyMessage(message, from: peer)
+            }
         }
         if ignoredPacket { updateStatus { $0.ignored += 1 } }
+        // 몸은 패킷 하나가 한 프레임 (몸만 보내는 VMC 앱은 Blend/Apply 없이 /VMC/Ext/OK로 끝낸다)
+        if let body = peer.bodyPending {
+            peer.bodyPending = nil
+            commitBody(body, from: peer, now: now)
+        }
+    }
+
+    // MARK: 소리 (P13)
+
+    private static let audioMagic = Data("FLAU".utf8)
+
+    /// FLAU 패킷: 0 "FLAU", 4 버전(1), 5 형식(1 = PCM s16 리틀 엔디언), 6 채널(1·2), 7 예약, 8 순번(u32),
+    /// 12 표본 시각(u64), 20 표본률(u32), 24 표본 수(u16), 26 예약, 28~ 데이터 (정수는 빅 엔디언, OSC와 같게)
+    private func handleAudio(_ bytes: [UInt8], from peer: Peer, now: TimeInterval) {
+        // 받는 중인 보내는 쪽(페어링·허락 규칙 그대로)의 소리만
+        guard peer === active else {
+            updateStatus { $0.ignored += 1 }
+            return
+        }
+        func be(_ offset: Int, _ count: Int) -> UInt64 {
+            bytes[offset..<offset + count].reduce(0) { $0 << 8 | UInt64($1) }
+        }
+        let channels = Int(bytes[6])
+        let frames = Int(be(24, 2))
+        let rate = UInt32(be(20, 4))
+        guard bytes[4] == 1, bytes[5] == 1, (1...2).contains(channels), (1...4096).contains(frames),
+            (8000...96000).contains(rate), bytes.count == 28 + frames * channels * 2
+        else {
+            updateStatus { $0.invalid += 1 }
+            return
+        }
+        let sequence = UInt32(be(8, 4))
+        bytes.withUnsafeBytes { raw in
+            let samples = raw.baseAddress!.advanced(by: 28).assumingMemoryBound(to: Int16.self)
+            core_facelink_audio_push(sequence, rate, Int32(channels), samples, Int32(frames))
+        }
+        if lastAudioTime == 0 || now - lastAudioTime > 1 {
+            appLog("facelink: audio from \(peer.helloName ?? peer.address) (\(rate) Hz, \(channels) ch)")
+            updateStatus {
+                $0.audioRate = Int(rate)
+                $0.audioChannels = channels
+            }
+        }
+        lastAudioTime = now
+    }
+
+    // MARK: 몸 (P13)
+
+    private static func isBodyMessage(_ message: OSC.Message) -> Bool {
+        switch message.address {
+        case "/VMC/Ext/Root/Pos": return true
+        case "/VMC/Ext/Bone/Pos": return message.string(0).flatMap(BodyBone.index) != nil
+        default: return false
+        }
+    }
+
+    /// /VMC/Ext/Bone/Pos·Root/Pos: s 이름, f 위치 3, f 회전 4 (위치는 쓰지 않는다)
+    private func handleBodyMessage(_ message: OSC.Message, from peer: Peer) {
+        guard let name = message.string(0) else { return }
+        let numbers = (1...7).compactMap { message.float($0) }
+        guard numbers.count == 7 else { return }
+        let rotation = simd_quatf(ix: numbers[3], iy: numbers[4], iz: numbers[5], r: numbers[6])
+        guard simd_length(rotation.vector) > 0.001 else { return }
+        var body: BodyFrame
+        if let pending = peer.bodyPending {
+            body = pending
+        } else {
+            // 한 프레임이 여러 패킷(번들)으로 나뉘어 와도 되게, 이번에 안 온 뼈는 지난 값을 이어 쓴다 (같은 보내는 쪽일 때만)
+            body = lastBody.sender == (peer.helloName ?? "VMC \(peer.host)") ? lastBody : BodyFrame()
+        }
+        if message.address == "/VMC/Ext/Root/Pos" {
+            body.root = simd_normalize(rotation)
+        } else if let index = BodyBone.index(name) {
+            body.set(index, simd_normalize(rotation))
+        }
+        peer.bodyPending = body
+    }
+
+    private func commitBody(_ frame: BodyFrame, from peer: Peer, now: TimeInterval) {
+        // 몸 뼈가 없는 패킷(얼굴 송신기의 머리·눈뿐)은 몸으로 치지 않는다
+        let bones = frame.present & ~(1 << UInt64(BodyBone.head) | 1 << UInt64(BodyBone.leftEye) | 1 << UInt64(BodyBone.rightEye))
+        guard bones != 0 || frame.root != nil else { return }
+        var frame = frame
+        frame.receivedAt = now
+        frame.sender = peer.helloName ?? "VMC \(peer.host)"
+        let newSender = status().bodySender != frame.sender
+        if peer !== active {
+            bodyPeer = peer
+            bodyPeerTime = now
+        }
+        lastBody = frame
+        lastBodyTime = now
+        bodyTimes.append(now)
+        lock.lock()
+        sharedBody = frame
+        sharedStatus.bodySender = frame.sender
+        sharedStatus.bodyBones = frame.presentCount
+        lock.unlock()
+        if newSender { appLog("facelink: body from \(frame.sender) \(peer.address) (\(frame.presentCount) bones)") }
     }
 
     private func activeIsIdle(_ now: TimeInterval) -> Bool {
@@ -596,6 +784,10 @@ final class FaceLinkEngine: @unchecked Sendable {
         // 이름은 화면과 로그에만 쓴다. 너무 길면 자른다
         peer.helloName = String(name.prefix(64))
         peer.helloApp = message.string(2).map { String($0.prefix(32)) }
+        // v1.1: 여섯째 인자 = 보내는 것 (face,body,hands,audio). 화면에 앱 버전과 같이 보인다
+        if let features = message.string(5), !features.isEmpty {
+            peer.helloApp = (peer.helloApp ?? "?") + " · " + String(features.prefix(40))
+        }
         if peer !== active && activeIsIdle(now) {
             appLog(
                 "facelink: sender '\(peer.helloName ?? "")' \(peer.address) (protocol \(version), app \(peer.helloApp ?? "?"))"
@@ -742,7 +934,27 @@ final class FaceLinkEngine: @unchecked Sendable {
         let now = ProcessInfo.processInfo.systemUptime
         frameTimes.removeAll { now - $0 > 1 }
         let fps = Double(frameTimes.count)
-        updateStatus { $0.fps = fps }
+        bodyTimes.removeAll { now - $0 > 1 }
+        let bodyFPS = Double(bodyTimes.count)
+        if lastAudioTime > 0, now - lastAudioTime > 1 {
+            lastAudioTime = 0
+            core_facelink_audio_stopped()
+            appLog("facelink: no audio for 1 s")
+            updateStatus { $0.audioRate = 0 }
+        }
+        let bodyGone = lastBodyTime > 0 && now - lastBodyTime > 1
+        if bodyGone, status().bodySender != nil {
+            appLog("facelink: no body frames for 1 s")
+            bodyPeer = nil
+        }
+        updateStatus {
+            $0.fps = fps
+            $0.bodyFPS = bodyFPS
+            if bodyGone {
+                $0.bodySender = nil
+                $0.bodyBones = 0
+            }
+        }
 
         // 1초 넘게 프레임이 없으면 끊김 (아바타는 중립으로)
         if active != nil, lastFrameTime > 0, now - lastFrameTime > 1 {
@@ -818,6 +1030,8 @@ final class FaceLinkReceiver: ObservableObject {
 
     /// 아바타 소스가 읽는다 (어느 스레드에서나)
     nonisolated func latestFrame() -> FaceFrame? { engine.latestFrame() }
+    /// 몸 뼈 (P13, 어느 스레드에서나)
+    nonisolated func latestBody() -> BodyFrame? { engine.latestBody() }
 
     /// 설정을 읽어 듣기를 켜거나 끈다
     func applySettings() {
@@ -1014,6 +1228,11 @@ final class FaceLinkReceiver: ObservableObject {
                 + String(format: "%.0f fps, ", status.fps)
                 + "blendshapes \(frame?.presentCount ?? 0)/\(FaceBlendShape.names.count), head \(headTurned ? "yes" : "no"), "
                 + "eyes \(eyes ? "yes" : "no"))")
+        // 몸 (P13): 얼굴 송신기가 함께 보내는 왼팔·손가락 뼈
+        let bodyFromSender = await wait(5) { status.bodySender == "CI 송신기" && status.bodyBones >= 5 }
+        appLog(
+            "facelink autotest: body \(bodyFromSender ? "ok" : "failed") (sender '\(status.bodySender ?? "-")', "
+                + "bones \(status.bodyBones), \(Int(status.bodyFPS)) fps)")
         calibrate()
 
         let lost = await wait(30) { status.trackingLostFrames > 0 }
@@ -1041,9 +1260,36 @@ final class FaceLinkReceiver: ObservableObject {
             "facelink autotest: pairing request \(requested ? "seen" : "not seen"), prompt \(asked ? "shown" : "not shown"), "
                 + "allowed sender \(allowedReceiving ? "receiving" : "not receiving")")
 
+        // 아이폰 마이크 (P13): 허락 송신기가 보내는 1 kHz 소리 패킷(가끔 빠지고 한 번 순서가 바뀜)을 장면 밖의 시험용 소스로
+        let audioSource = core_facelink_audio_test_begin()
+        var audio = core_facelink_audio_stats()
+        let audioOK = await wait(10) {
+            core_facelink_audio_get_stats(&audio)
+            return audio.receiving && audio.packets > 150 && audio.output_peak > 0.1
+        }
+        core_facelink_audio_get_stats(&audio)
+        core_facelink_audio_test_end(audioSource)
+        appLog(
+            "facelink audio: \(audioOK ? "ok" : "failed") ("
+                + String(format: "peak %.1f dB", 20 * log10(max(Double(audio.output_peak), 1e-6)))
+                + ", packets \(audio.packets), lost \(audio.lost), late \(audio.late), buffer \(audio.buffer_ms) ms, "
+                + "underruns \(audio.underruns))")
+
+        // 몸만 보내는 VMC 앱 (mocopi 같은 것, P13): "다른 VMC 앱 받기"를 켜면 얼굴은 지금 쪽에서, 몸은 그 앱에서
+        UserDefaults.standard.set(true, forKey: AppSettings.faceLinkAcceptVMC)
+        applySettings()
+        let bodyOnly = await wait(15) { status.bodySender?.hasPrefix("VMC ") == true && status.bodyBones >= 10 }
+        let faceKept = status.senderName == "CI 허락 송신기"
+        appLog(
+            "facelink autotest: body-only sender \(bodyOnly ? "ok" : "failed") (body '\(status.bodySender ?? "-")', "
+                + "bones \(status.bodyBones), face still from '\(status.senderName ?? "-")')")
+        UserDefaults.standard.set(false, forKey: AppSettings.faceLinkAcceptVMC)
+        applySettings()
+
         let ok =
             receiving && frame?.presentCount == FaceBlendShape.names.count && headTurned && eyes && lost && disconnected
-            && filtered && firstSender && requested && asked && promptClosed && allowedReceiving
+            && filtered && firstSender && requested && asked && promptClosed && allowedReceiving && bodyFromSender
+            && bodyOnly && faceKept && audioOK
         appLog("facelink autotest: \(ok ? "ok" : "failed")")
     }
 }
@@ -1155,6 +1401,13 @@ struct FaceLinkSettingsView: View {
             if let name = status.senderName {
                 LabeledContent("보내는 쪽", value: [name, status.senderApp.map { "앱 \($0)" }].compactMap { $0 }.joined(separator: " · "))
                 if let address = status.senderAddress { LabeledContent("보내는 주소", value: address) }
+            }
+            if status.audioRate > 0 {
+                LabeledContent(
+                    "소리", value: "\(status.audioRate) Hz \(status.audioChannels == 2 ? "스테레오" : "모노") · 아이폰 마이크 소스로 섞기")
+            }
+            if let body = status.bodySender {
+                LabeledContent("몸", value: "\(body) · 뼈 \(status.bodyBones)개 · \(Int(status.bodyFPS)) fps")
             }
             LabeledContent("Bonjour", value: status.advertised.map { "\"\($0)\"로 알리는 중" } ?? "알리지 못함 (QR·주소로 연결)")
             if let error = status.error {

@@ -11,6 +11,10 @@ on:
         description: TestFlight에 올리기 (이 브랜치를 testflight 환경이 허락해야 한다)
         type: boolean
         default: false
+      skip_tests:
+        description: 시뮬레이터 시험 건너뛰기 (기기용 빌드·IPA·TestFlight만)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -209,11 +213,15 @@ jobs:
           # -autotest-facelink: 그 페어링 코드로 얼굴 추적 받기를 켜고 합성 송신기를 받는다 (P9)
           # -autotest-avatar: 씬 시험이 아바타 소스를 첫 모델로 넣고, 그려서 움직이는지 본 뒤 다음 모델로 바꾼다 (P9)
           # -autotest-chzzk: RTMP 송출을 치지직 권장값(키프레임 1초, B프레임 없음)으로 보낸다 (P10)
+          # -autotest-share: 송출이 시작되면 뜨는 방송 링크 공유 창을 몇 초 뒤 닫는다 (P13)
+          # -autotest-background: 송출하는 동안 6초 자리 비움 장면 (P13, 앱을 떠난 것과 같은 코드)
+          # -autotest-p13: 출력 시험 뒤 시작 중 두 번 누르기, 연결 안 되는 서버로 송출 → 오류 알림 (P13)
           rotate_device landscape
           xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation landscape \
             -autotest-scenes -autotest-output 20 rtmp://127.0.0.1:1935/live -autotest-youtube http://127.0.0.1:8098 \
             -autotest-chat http://127.0.0.1:8098 -autotest-facelink ci-facelink \
-            -autotest-avatar test-avatar.vrm,test-avatar0.vrm -autotest-chzzk > app-run/app.log 2>&1 &
+            -autotest-avatar test-avatar.vrm,test-avatar0.vrm -autotest-chzzk \
+            -autotest-share -autotest-background -autotest-p13 > app-run/app.log 2>&1 &
           # CI 시뮬레이터의 GPU가 느려 첫 화면이 늦게 뜰 수 있어 여러 번 찍는다
           for t in 10 40 80; do
             sleep $((t - ${prev:-0})); prev=$t
@@ -225,6 +233,11 @@ jobs:
             sleep 2
           done
           shoot app-run/simulator-chat.png
+          # 출력 시험 뒤의 P13 시험 (두 번 누르기, 오류 알림)
+          for _ in $(seq 1 30); do
+            grep -q 'p13 autotest: done' app-run/app.log && break
+            sleep 2
+          done
 
           # 멈춤 진단용: 모든 스레드의 스택과 시스템 로그
           pid=$(pgrep -f "$(basename "$app")/" | head -1 || true)
@@ -360,6 +373,11 @@ jobs:
           cat app-run/facelink-sender.log
           grep -E 'facelink( autotest)?: ' app-run/app.log | sed -n '1,40p'
           grep -q 'facelink autotest: ok' app-run/app.log
+          # 몸 (P13): 얼굴 송신기가 함께 보낸 팔·손가락 뼈, "다른 VMC 앱 받기"를 켜면 몸만 보내는 VMC 앱(mocopi 같은 것)
+          grep -q 'facelink autotest: body ok' app-run/app.log
+          grep -q 'facelink autotest: body-only sender ok' app-run/app.log
+          # 아이폰 마이크 (P13): 허락 송신기의 1 kHz 소리 패킷이 지터 버퍼를 지나 소스에서 나온다 (빠진 것·순서 바뀐 것 포함)
+          grep -q 'facelink audio: ok' app-run/app.log
           grep -q 'facelink sender: calibrate received' app-run/facelink-sender.log
           if grep -q '^FAIL' app-run/facelink-sender.log; then exit 1; fi
           # 아바타 소스 (P9): VRM 1.0과 0.x를 불러와 투명한 바탕에 그리고, 얼굴 값(없으면 시험용 얼굴)으로 움직인다
@@ -367,6 +385,9 @@ jobs:
           grep -q "avatar: loaded 'test-avatar.vrm' (VRM 1.0)" app-run/app.log
           grep -q "avatar: loaded 'test-avatar0.vrm' (VRM 0.x)" app-run/app.log
           grep -q 'avatar autotest: ok' app-run/app.log
+          # 몸 (P13): 시험용 몸(왼팔 들기, 거울이면 아바타의 오른팔)으로 손이 대기 자세(팔 내림)보다 움직인다. 그림 avatar-<n>-body.png
+          grep -q 'avatar body: ok (model 1' app-run/app.log
+          grep -q 'avatar body: ok (model 2' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다
           grep -q 'media autotest: added' app-run/app.log
           # 채팅 소스 (P7): WebKit으로 그린 메시지, 위험한 입력은 글자로만, 함정 서버에 요청 없음
@@ -441,6 +462,28 @@ jobs:
           awk '/ui autotest: shot 2-settings/ { s = 1 } s == 1 && /settings sheet: closed/ { bad = 1 }
                s == 1 && /ui autotest: shot 3-settings-landscape/ { s = 2 }
                END { exit s == 2 && !bad ? 0 : 1 }' app-run/app-relaunch.log
+
+          # P13 안정성: 오디오 버퍼링 고정(지연이 굳지 않게), 녹화·리플레이를 같은 순간 시작해도 녹화 인코더는 하나,
+          # 시작 중 두 번째 누르기는 무시, 연결이 안 되는 서버로 송출하면 오류 알림
+          grep -q 'audio .* buffering fixed' app-run/app.log
+          grep -q 'buffering type:  fixed' app-run/app.log
+          grep -q 'autotest: started (recording true, streaming true, replay true)' app-run/app.log
+          awk '/autotest: done/ { exit } /\[app\] Record Video: / { n++ } END { print "record encoders created during the output test: " n; exit n == 1 ? 0 : 1 }' \
+            app-run/app.log
+          grep -E 'p13 autotest|already starting|output alert' app-run/app.log
+          grep -q 'replay buffer: already starting, ignored' app-run/app.log
+          grep -q 'output alert: streaming stopped' app-run/app.log
+          grep -q 'p13 autotest: done (alert shown' app-run/app.log
+          # 방송 링크 공유 (P13): YouTube 시험 방송(mockBroadcast1)의 링크로 송출 시작 때 공유 창
+          grep -E 'share( autotest)?: ' app-run/app.log
+          grep -q 'share: link https://youtu.be/mockBroadcast1 (youtube)' app-run/app.log
+          grep -q 'share: sheet shown (stream started)' app-run/app.log
+          grep -q 'share autotest: ok' app-run/app.log
+          # 백그라운드 송출 (P13): 계속 처리 작업 등록, 자리 비움 장면을 켰다가 원래 장면으로
+          grep -E 'background( task| autotest)?: |away scene' app-run/app.log
+          grep -q 'background task: registered' app-run/app.log
+          grep -q 'away scene on: automatic' app-run/app.log
+          grep -q 'background autotest: ok' app-run/app.log
 
           # 녹화 파일(Hybrid MP4), 받은 송출(FLV), 리플레이를 ffprobe로 확인: 비디오·오디오 코덱과 길이
           check_media() {
@@ -570,9 +613,14 @@ jobs:
           name: libobs-ios-${{ matrix.platform }}
           path: dist/libobs-ios-${{ matrix.platform }}
 
+  # 시뮬레이터 시험은 기능을 더하지 않는 커밋이면 건너뛴다 (2026-10-27 사용자): 커밋 메시지에 [skip tests],
+  # 수동 실행은 skip_tests. 기기용 빌드·IPA·TestFlight는 그대로
   libobs-simulator:
     name: libobs (${{ matrix.platform }})
     needs: deps
+    if: >-
+      ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, '[skip tests]')) &&
+      !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
     runs-on: macos-26
     strategy:
       matrix:
@@ -618,6 +666,58 @@ jobs:
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
         run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
+
+  # 작업 브랜치 → testflight (2026-10-27 사용자): 작업 브랜치에 푸시한 빌드가 시험을 통과하거나 [skip tests]로 건너뛰면
+  # testflight 브랜치에 병합(앞으로 감기, 안 되면 병합 커밋, 충돌이면 실패)하고, testflight에서 이 워크플로를
+  # "TestFlight에 올리기"로 실행한다. GITHUB_TOKEN의 push는 새 실행을 만들지 않아서 workflow_dispatch로 연다
+  # (그 실행은 시험을 다시 하지 않는다). 커밋 메시지에 [no testflight]면 하지 않는다. 포크·PR에서는 돌지 않는다
+  promote:
+    name: Promote to testflight
+    needs: [libobs-device, libobs-simulator]
+    # 시험이 건너뛰어진(skipped) 작업에 걸려 있으면 기본으로는 같이 건너뛰므로 always()로 열고 결과를 직접 본다
+    if: >-
+      ${{ always() && github.event_name == 'push' && github.repository == 'VideiN/iPadOS-broadcasting' &&
+      github.ref != 'refs/heads/main' && github.ref != 'refs/heads/testflight' &&
+      !contains(github.event.head_commit.message, '[no testflight]') &&
+      needs.libobs-device.result == 'success' &&
+      (needs.libobs-simulator.result == 'success' || needs.libobs-simulator.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Merge into testflight
+        id: merge
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git fetch origin testflight
+          git checkout -B testflight origin/testflight
+          if git merge-base --is-ancestor "$GITHUB_SHA" HEAD; then
+            echo "testflight already has $GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "pushed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git merge-base --is-ancestor HEAD "$GITHUB_SHA"; then
+            git merge --ff-only "$GITHUB_SHA"
+          elif ! git merge --no-ff -m "Merge $GITHUB_REF_NAME into testflight ($(git rev-parse --short "$GITHUB_SHA"))" "$GITHUB_SHA"; then
+            git merge --abort || true
+            echo "::error::$GITHUB_REF_NAME does not merge into testflight cleanly; merge it by hand"
+            exit 1
+          fi
+          git push origin testflight
+          echo "testflight → $(git rev-parse --short HEAD) ($GITHUB_REF_NAME $(git rev-parse --short "$GITHUB_SHA"))" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to TestFlight
+        if: steps.merge.outputs.pushed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ios.yml --repo "$GITHUB_REPOSITORY" --ref testflight -f testflight=true -f skip_tests=true
 
   # 올린 빌드가 App Store Connect에서 처리되어 TestFlight에 나오는지 확인한다 (보통 5~30분, 기다리기만 하므로 Linux).
   # 올리기 결과만 본다 (#96: 기본 조건 success()는 앞의 앞 작업까지 본다)

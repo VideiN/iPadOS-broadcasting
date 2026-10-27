@@ -97,10 +97,13 @@ static obs_source_t *find_scene_locked(const char *name)
 	return NULL;
 }
 
+static bool away_active; // 자리 비움 중에는 프로그램 출력을 바꾸지 않는다 (아래 P13)
+
 static void set_current_locked(obs_source_t *scene)
 {
 	sc.current = scene;
-	obs_set_output_source(0, scene);
+	if (!away_active)
+		obs_set_output_source(0, scene);
 }
 
 // 새 씬 (목록에 넣고 참조는 목록이 가진다)
@@ -1798,4 +1801,107 @@ bool core_collection_save(const char *path, const char *audio_input_name)
 	if (!saved)
 		blog(LOG_WARNING, "[app] failed to save the scene collection to %s", path);
 	return saved;
+}
+
+#pragma mark - 자리 비움 (P13)
+
+// 앱이 백그라운드에 있는 동안(카메라를 못 쓴다) 프로그램 출력만 다른 장면으로 바꾼다. 씬 목록·현재 씬(미리보기·UI)은
+// 그대로 두고, 돌아오면 현재 씬으로 되돌린다. 자동 화면은 저장되지 않는 비공개 장면과 소스로 만든다.
+static obs_source_t *away_scene; // 자동 화면 (참조), 다른 장면을 쓰면 NULL
+
+static void away_add(obs_scene_t *scene, const char *id, obs_data_t *settings, bool fit)
+{
+	obs_source_t *source = obs_source_create_private(id, id, settings);
+	if (!source)
+		return;
+	obs_sceneitem_t *item = obs_scene_add(scene, source);
+	obs_source_release(source);
+	if (!item)
+		return;
+	uint32_t width, height;
+	canvas_size(&width, &height);
+	if (fit) {
+		fit_item_to_canvas(item);
+	} else {
+		struct vec2 pos = {width * 0.5f, height * 0.5f};
+		obs_sceneitem_set_alignment(item, OBS_ALIGN_CENTER);
+		obs_sceneitem_set_pos(item, &pos);
+	}
+}
+
+static obs_source_t *make_away_scene(const char *image_path, const char *text)
+{
+	uint32_t width, height;
+	canvas_size(&width, &height);
+	obs_scene_t *scene = obs_scene_create_private("away");
+	if (!scene)
+		return NULL;
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "width", width);
+	obs_data_set_int(settings, "height", height);
+	obs_data_set_int(settings, "color", 0xFF201814); // ABGR: 짙은 남색
+	away_add(scene, "color_source_v3", settings, false);
+	obs_data_release(settings);
+
+	if (image_path && *image_path) {
+		settings = obs_data_create();
+		obs_data_set_string(settings, "file", image_path);
+		away_add(scene, "image_source", settings, true);
+		obs_data_release(settings);
+	} else {
+		settings = obs_data_create();
+		obs_data_set_string(settings, "text", text && *text ? text : "잠시 자리를 비웠습니다");
+		obs_data_set_int(settings, "size", height / 12 > 16 ? height / 12 : 16);
+		obs_data_set_int(settings, "align", 1); // 가운데
+		away_add(scene, "ios_text_source", settings, false);
+		obs_data_release(settings);
+	}
+	return obs_scene_get_source(scene);
+}
+
+bool core_away_begin(const char *scene_name, const char *image_path, const char *text)
+{
+	pthread_mutex_lock(&sc.mutex);
+	if (away_active) {
+		pthread_mutex_unlock(&sc.mutex);
+		return true;
+	}
+	obs_source_t *target = NULL;
+	if (!scene_name || !*scene_name) {
+		away_scene = make_away_scene(image_path, text);
+		target = away_scene;
+	} else {
+		target = find_scene_locked(scene_name);
+	}
+	if (target) {
+		obs_set_output_source(0, target);
+		away_active = true;
+	}
+	pthread_mutex_unlock(&sc.mutex);
+
+	blog(target ? LOG_INFO : LOG_WARNING, "[app] away scene %s: %s", target ? "on" : "not found",
+	     target == away_scene ? "automatic" : (scene_name ? scene_name : ""));
+	return target != NULL;
+}
+
+void core_away_end(void)
+{
+	pthread_mutex_lock(&sc.mutex);
+	const bool was_active = away_active;
+	if (away_active)
+		obs_set_output_source(0, sc.current);
+	away_active = false;
+	obs_source_t *scene = away_scene;
+	away_scene = NULL;
+	pthread_mutex_unlock(&sc.mutex);
+
+	obs_source_release(scene);
+	if (was_active)
+		blog(LOG_INFO, "[app] away scene off, back to '%s'", sc.current ? obs_source_get_name(sc.current) : "");
+}
+
+bool core_away_active(void)
+{
+	return away_active;
 }

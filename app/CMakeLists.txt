@@ -127,7 +127,7 @@ target_link_libraries(
     OBS::filters
     OBS::ffmpeg
 )
-target_sources(app-core PRIVATE Core/avatar-source.c)
+target_sources(app-core PRIVATE Core/avatar-source.c Core/facelink-audio-source.c)
 target_link_libraries(app-core PUBLIC "$<LINK_LIBRARY:FRAMEWORK,IOSurface.framework>")
 set_source_files_properties(Core/capture-format.m Core/crash-log.m PROPERTIES COMPILE_OPTIONS "-fobjc-arc;-fmodules")
 
@@ -206,6 +206,9 @@ add_executable(
   Sources/Commands.swift
   Sources/GlassStudio.swift
   Sources/TransformEditor.swift
+  Sources/Overlay.swift
+  Sources/BroadcastLink.swift
+  Sources/BackgroundLive.swift
 )
 target_link_libraries(app PRIVATE app-core VRMRealityKit)
 # 정적 라이브러리 안의 Objective-C 카테고리(mac-avcapture의 AVCaptureDeviceFormat+OBSListable)는

@@ -74,10 +74,20 @@ cp "$app_entitlements" "$entitlements"
 if [ "$(profile_value Entitlements:beta-reports-active || true)" = "true" ]; then
   /usr/libexec/PlistBuddy -c "Add :beta-reports-active bool true" "$entitlements"
 fi
+# 선택 기능: App ID·프로필에 아직 없으면 빼고 올린다 (그 기능만 안 됨). 나머지는 없으면 실패
+optional_entitlements="com.apple.developer.background-tasks.continued-processing.gpu"
 for key in $(/usr/libexec/PlistBuddy -c Print "$app_entitlements" | sed -nE 's/^ +([^ ]+) = .*/\1/p'); do
   if ! profile_value "Entitlements:$key" > /dev/null; then
-    echo "::error::the App ID does not have $key (turn it on in the developer portal, then make the profile again)"
-    exit 1
+    case " $optional_entitlements " in
+      *" $key "*)
+        echo "::warning::the App ID does not have $key yet: uploading without it (turn on Background GPU Access, make the profile again, update APPLE_PROFILE_BASE64)"
+        /usr/libexec/PlistBuddy -c "Delete :$key" "$entitlements"
+        ;;
+      *)
+        echo "::error::the App ID does not have $key (turn it on in the developer portal, then make the profile again)"
+        exit 1
+        ;;
+    esac
   fi
 done
 

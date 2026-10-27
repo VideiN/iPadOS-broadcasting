@@ -113,6 +113,12 @@ struct AvatarSettings: Equatable {
     var width = 1080
     var height = 1080
     var fps = 30
+    /// 몸 추적 (P13): VMC 몸 뼈를 따른다
+    var bodyTracking = true
+    /// 대기 움직임: 숨쉬기, 머리를 따라 가슴이 조금
+    var idleMotion = true
+    /// 팔을 T 자세에서 내리는 각도
+    var armAngle: Float = 65
 
     init() {}
 
@@ -125,6 +131,9 @@ struct AvatarSettings: Equatable {
         width = min(max((object["width"] as? NSNumber)?.intValue ?? width, 16), 4096)
         height = min(max((object["height"] as? NSNumber)?.intValue ?? height, 16), 4096)
         fps = min(max((object["fps"] as? NSNumber)?.intValue ?? fps, 1), 60)
+        bodyTracking = object["body_tracking"] as? Bool ?? bodyTracking
+        idleMotion = object["idle_motion"] as? Bool ?? idleMotion
+        armAngle = min(max((object["arm_angle"] as? NSNumber)?.floatValue ?? armAngle, 0), 85)
     }
 }
 
@@ -189,6 +198,9 @@ final class AvatarRenderer {
     private var loading: Task<Void, Never>?
     private var targets: [Target] = []
     private var displayLink: CADisplayLink?
+    /// 앱이 뒤에 있는 동안(디스플레이 링크가 멈춤) GPU 작업이 허락되면 이 타이머로 그린다 (P13 백그라운드 송출)
+    private var backgroundTimer: Timer?
+    private var renderingObserver: NSObjectProtocol?
     private var lastTick: CFTimeInterval = 0
     private var frames = 0
     private var skipped = 0
@@ -196,8 +208,15 @@ final class AvatarRenderer {
 
     private var neck: BoneRest?
     private var head: BoneRest?
-    /// VRM의 기본 자세는 팔을 옆으로 편 T 자세: 위팔을 아래로 내리는 회전 (모델 공간)
-    private var arms: [(bone: BoneRest, turn: simd_quatf)] = []
+    /// 몸 (P13): 휴머노이드 뼈(BodyBone 번호)마다 정지 자세. 모델에 없는 뼈는 nil
+    private var bodyRests: [BoneRest?] = []
+    /// 뼈마다 지금 적용 중인 모델 공간 회전 차이 (정지 자세 기준)
+    private var bodyApplied: [simd_quatf] = []
+    /// T 자세 팔을 내리는 회전과 팔꿈치를 앞으로 조금 굽히는 회전 (모델 공간, 왼쪽·오른쪽)
+    private var armDown: [simd_quatf] = [simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)]
+    private var elbowBend: [simd_quatf] = [simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)]
+    /// 이번 프레임에 얼굴이 목·머리를 정함
+    private var faceDrivesHead = false
     private var facesPlusZ = true
     private var faceMap = FaceMap()
     private var headDelta = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
@@ -224,6 +243,11 @@ final class AvatarRenderer {
             renderer.entities.append(root)
             renderer.activeCamera = camera
             self.renderer = renderer
+            renderingObserver = NotificationCenter.default.addObserver(
+                forName: BackgroundLive.renderingChanged, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.updateLink() }
+            }
         } catch {
             appLog("avatar: RealityRenderer failed: \(error)")
             host.status = "이 기기에서 3D를 그릴 수 없습니다: \(error.localizedDescription)"
@@ -245,6 +269,7 @@ final class AvatarRenderer {
             frameCamera()
         }
         if new.fps != old.fps { displayLink?.preferredFrameRateRange = Self.frameRange(new.fps) }
+        if new.armAngle != old.armAngle { updateArmPose() }
         updateLink()
     }
 
@@ -257,6 +282,10 @@ final class AvatarRenderer {
         loading?.cancel()
         displayLink?.invalidate()
         displayLink = nil
+        backgroundTimer?.invalidate()
+        backgroundTimer = nil
+        if let renderingObserver { NotificationCenter.default.removeObserver(renderingObserver) }
+        renderingObserver = nil
         model?.removeFromParent()
         model = nil
         targets = []
@@ -323,19 +352,16 @@ final class AvatarRenderer {
 
         neck = rest(of: .neck, in: entity)
         head = rest(of: .head, in: entity)
-        arms = []
-        for (upper, lower) in [(HumanoidBone.leftUpperArm, HumanoidBone.leftLowerArm), (.rightUpperArm, .rightLowerArm)] {
-            guard let bone = rest(of: upper, in: entity), let pose = entity.pose,
-                let lowerIndex = entity.humanoid.nodeIndex(for: lower)
-            else { continue }
-            // 팔이 +X로 뻗었으면 Z축으로 -65°, -X면 +65° 돌려 아래로
-            let reach = pose.modelMatrix(ofNode: lowerIndex).columns.3.x - pose.modelMatrix(ofNode: bone.index).columns.3.x
-            arms.append((bone, simd_quatf(angle: (reach > 0 ? -65 : 65) * .pi / 180, axis: [0, 0, 1])))
-        }
+        // 몸 뼈: BodyBone(VMC 이름)과 VRMKit HumanoidBone은 같은 순서다
+        let bones = HumanoidBone.allCases
+        if bones.count != BodyBone.names.count { appLog("avatar: humanoid bone list mismatch (\(bones.count))") }
+        bodyRests = BodyBone.names.indices.map { $0 < bones.count ? rest(of: bones[$0], in: entity) : nil }
+        bodyApplied = Array(repeating: simd_quatf(ix: 0, iy: 0, iz: 0, r: 1), count: BodyBone.names.count)
+        updateArmPose()
         faceMap = Self.faceMap(for: entity)
         headDelta = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
         neutral = true
-        entity.setUpdateHandler({ [weak self] _ in self?.poseHead() }, at: .afterAnimation)
+        entity.setUpdateHandler({ [weak self] _ in self?.poseBody() }, at: .afterAnimation)
         frameCamera()
 
         let version: String
@@ -352,6 +378,23 @@ final class AvatarRenderer {
         frames = 0
         AvatarAutotest.modelLoaded(path: settings.model)
         updateLink()
+    }
+
+    /// 팔 각도 설정으로 대기 자세의 팔을 정한다. 팔이 +X로 뻗었으면 Z축으로 −각도, −X면 +각도 돌려 아래로.
+    /// 팔꿈치는 정면 쪽으로 10° (T 자세에서 Y축으로 굽힌 뒤 팔 전체를 내린다)
+    private func updateArmPose() {
+        guard let model, let pose = model.pose else { return }
+        let front: Float = facesPlusZ ? 1 : -1
+        for (side, (upper, lower)) in [(HumanoidBone.leftUpperArm, HumanoidBone.leftLowerArm), (.rightUpperArm, .rightLowerArm)]
+            .enumerated()
+        {
+            guard let upperIndex = model.humanoid.nodeIndex(for: upper), let lowerIndex = model.humanoid.nodeIndex(for: lower)
+            else { continue }
+            let reach = pose.modelMatrix(ofNode: lowerIndex).columns.3.x - pose.modelMatrix(ofNode: upperIndex).columns.3.x
+            let sign: Float = reach > 0 ? -1 : 1
+            armDown[side] = simd_quatf(angle: sign * settings.armAngle * .pi / 180, axis: [0, 0, 1])
+            elbowBend[side] = simd_quatf(angle: sign * front * 10 * .pi / 180, axis: [0, 1, 0])
+        }
     }
 
     private func rest(of bone: HumanoidBone, in entity: VRMEntity) -> BoneRest? {
@@ -416,8 +459,9 @@ final class AvatarRenderer {
 
     // MARK: 얼굴
 
-    /// 모델 공간에서 고개 돌림(headDelta)의 반을 목, 나머지를 머리에 (정지 자세 기준이라 쌓이지 않는다)
-    private func poseHead() {
+    /// 몸 뼈(bodyApplied)를 부모부터, 그다음 고개 돌림(headDelta)의 반을 목, 나머지를 머리에.
+    /// 모두 모델 공간 정지 자세 기준이라 쌓이지 않는다
+    private func poseBody() {
         guard let pose = model?.pose else { return }
         func turn(_ bone: BoneRest?, by delta: simd_quatf) {
             guard let bone else { return }
@@ -425,11 +469,104 @@ final class AvatarRenderer {
             pose.setLocalRotation(simd_normalize(parent.inverse * (delta * bone.restModel)), ofNode: bone.index)
         }
         let identity = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
-        if neck != nil {
-            turn(neck, by: simd_slerp(identity, headDelta, 0.5))
+        for index in BodyPose.order where index < bodyRests.count && index < bodyApplied.count {
+            // 눈은 시선(lookAt), 턱은 표정이 맡는다. 얼굴을 받고 있으면 목·머리는 아래에서
+            if BodyPose.faceOnly.contains(index) || (faceDrivesHead && BodyPose.headBones.contains(index)) { continue }
+            turn(bodyRests[index], by: bodyApplied[index])
         }
-        turn(head, by: headDelta)
-        for arm in arms { turn(arm.bone, by: arm.turn) }
+        if faceDrivesHead {
+            if neck != nil {
+                turn(neck, by: simd_slerp(identity, headDelta, 0.5))
+            }
+            turn(head, by: headDelta)
+        }
+    }
+
+    /// 몸 추적 값과 대기 자세로 이번 프레임의 뼈 회전을 정한다 (applyFace 뒤에)
+    private func applyBody() {
+        guard model != nil, !bodyApplied.isEmpty else { return }
+        let identity = simd_quatf(ix: 0, iy: 0, iz: 0, r: 1)
+        let now = ProcessInfo.processInfo.systemUptime
+        var body: BodyFrame?
+        if settings.bodyTracking, let frame = FaceLinkReceiver.shared.latestBody(), now - frame.receivedAt < 0.5 {
+            body = frame
+        } else if let test = AvatarAutotest.testBody(frame: frames) {
+            body = test
+        }
+
+        // 대기 자세: 팔을 내리고 팔꿈치를 조금, 숨쉬기(가슴 0.25Hz ±1.5°)와 고개를 따라 가슴이 조금
+        let t = Float(now)
+        var breath = identity
+        var follow = identity
+        if settings.idleMotion {
+            breath = simd_quatf(angle: 1.5 * .pi / 180 * sin(t * 2 * .pi * 0.25), axis: [1, 0, 0])
+            follow = simd_slerp(identity, headDelta, 0.08)
+        }
+        let sway = settings.idleMotion
+            ? simd_quatf(angle: 0.8 * .pi / 180 * sin(t * 2 * .pi * 0.07), axis: [0, 0, 1]) : identity
+        let chestTarget = BodyPose.upperChest < bodyRests.count && bodyRests[BodyPose.upperChest] != nil
+            ? BodyPose.upperChest : BodyPose.chest
+        var idle = [simd_quatf](repeating: identity, count: bodyApplied.count)
+        var target = idle
+        var tracked = [Bool](repeating: false, count: bodyApplied.count)
+        var chain = idle  // VMC(Unity) 공간에서 부모부터 쌓은 회전
+        let mirror = settings.mirror
+
+        for index in BodyPose.order {
+            let parent = BodyPose.parents[index]
+            // 대기 자세: 따로 정한 뼈가 아니면 부모를 따라간다 (로컬 회전이 정지 자세 그대로)
+            var own = parent.map { idle[$0] } ?? identity
+            switch index {
+            case BodyPose.spine: own = own * sway
+            case chestTarget: own = own * follow * breath
+            case BodyPose.leftUpperArm: own = own * armDown[0]
+            case BodyPose.rightUpperArm: own = own * armDown[1]
+            case BodyPose.leftLowerArm: own = (parent.map { idle[$0] } ?? identity) * elbowBend[0]
+            case BodyPose.rightLowerArm: own = (parent.map { idle[$0] } ?? identity) * elbowBend[1]
+            default: break
+            }
+            idle[index] = own
+
+            // 추적: 거울이면 반대쪽 뼈의 값을 좌우 반사해서
+            guard let body else {
+                target[index] = own
+                continue
+            }
+            let source = mirror ? BodyPose.mirrored[index] : index
+            var local = identity
+            if body.has(source) {
+                local = body.rotations[source]
+                if mirror { local = simd_quatf(ix: local.imag.x, iy: -local.imag.y, iz: -local.imag.z, r: local.real) }
+            }
+            var base = parent.map { chain[$0] } ?? identity
+            if parent == nil, var root = body.root {
+                if mirror { root = simd_quatf(ix: root.imag.x, iy: -root.imag.y, iz: -root.imag.z, r: root.real) }
+                base = root
+            }
+            chain[index] = base * local
+            if body.has(source) {
+                target[index] = Self.modelRotation(fromUnity: chain[index], facesPlusZ: facesPlusZ)
+                tracked[index] = true
+            } else if let parent, tracked[parent] {
+                target[index] = target[parent]
+                tracked[index] = true
+            } else {
+                target[index] = own
+            }
+        }
+        let blend: Float = body != nil ? 0.5 : 0.15
+        for index in bodyApplied.indices {
+            bodyApplied[index] = simd_slerp(bodyApplied[index], target[index], blend)
+        }
+    }
+
+    /// VMC(Unity: 왼손 좌표, +Z 앞) 회전 → 모델 공간. VRM 1.0은 +Z, 0.x는 −Z를 보는 오른손 좌표
+    static func modelRotation(fromUnity q: simd_quatf, facesPlusZ: Bool) -> simd_quatf {
+        var result = facesPlusZ
+            ? simd_quatf(ix: q.imag.x, iy: -q.imag.y, iz: -q.imag.z, r: q.real)
+            : simd_quatf(ix: -q.imag.x, iy: -q.imag.y, iz: q.imag.z, r: q.real)
+        if result.real < 0 { result = simd_quatf(vector: -result.vector) }
+        return result
     }
 
     /// FaceLink의 값(Unity 왼손 좌표, 사용자 기준) → 표정, 고개(headDelta), 시선
@@ -445,6 +582,8 @@ final class AvatarRenderer {
             face = test
         }
 
+        // 얼굴이 있으면 목·머리는 얼굴이 (없으면 몸 추적의 목·머리, 그것도 없으면 대기 자세)
+        faceDrivesHead = face != nil || FaceLinkReceiver.shared.latestBody() == nil || !settings.bodyTracking
         guard let face else {
             // 받지 않으면 정면, 무표정으로 천천히
             headDelta = simd_slerp(headDelta, identity, 0.15)
@@ -515,12 +654,25 @@ final class AvatarRenderer {
     private final class LinkProxy: NSObject {
         weak var owner: AvatarRenderer?
         @objc func tick(_ link: CADisplayLink) {
-            MainActor.assumeIsolated { owner?.tick(link) }
+            MainActor.assumeIsolated { owner?.tick(timestamp: link.timestamp) }
         }
     }
 
     private func updateLink() {
         let run = showing && model != nil && renderer != nil && !targets.isEmpty
+        // 뒤에서는 디스플레이 링크가 멈춘다: GPU를 써도 될 때만 타이머로
+        let background = run && BackgroundLive.shared.backgroundRendering
+        if background, backgroundTimer == nil {
+            let timer = Timer(timeInterval: 1 / Double(max(settings.fps, 1)), repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.tick(timestamp: CACurrentMediaTime()) }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            backgroundTimer = timer
+            appLog("avatar: drawing with a timer in the background")
+        } else if !background, let timer = backgroundTimer {
+            timer.invalidate()
+            backgroundTimer = nil
+        }
         if run, displayLink == nil {
             let proxy = LinkProxy()
             proxy.owner = self
@@ -560,13 +712,26 @@ final class AvatarRenderer {
             ?? free.min { $0.lastUsed < $1.lastUsed }
     }
 
-    private func tick(_ link: CADisplayLink) {
-        guard let model, let renderer, UIApplication.shared.applicationState != .background else { return }
-        let deltaTime = lastTick > 0 ? min(0.1, link.timestamp - lastTick) : 1.0 / Double(settings.fps)
-        lastTick = link.timestamp
+    private func tick(timestamp: CFTimeInterval) {
+        guard let model, let renderer,
+            UIApplication.shared.applicationState != .background || BackgroundLive.shared.backgroundRendering
+        else { return }
+        // 디스플레이 링크와 뒤의 타이머가 겹쳐 부르면 한 번만
+        guard timestamp - lastTick > 0.5 / Double(max(settings.fps, 1)) else { return }
+        let deltaTime = lastTick > 0 ? min(0.1, timestamp - lastTick) : 1.0 / Double(settings.fps)
+        lastTick = timestamp
 
         applyFace()
+        applyBody()
         model.update(deltaTime: deltaTime)
+        if let pose = model.pose, let left = model.humanoid.nodeIndex(for: .leftHand),
+            let right = model.humanoid.nodeIndex(for: .rightHand)
+        {
+            // 거울이면 시험용 몸의 왼팔은 아바타의 오른팔이 된다: 두 손 다
+            AvatarAutotest.observeHands(
+                frame: frames + 1, left: pose.modelMatrix(ofNode: left).columns.3,
+                right: pose.modelMatrix(ofNode: right).columns.3)
+        }
 
         guard let target = nextTarget() else {
             skipped += 1
@@ -599,6 +764,71 @@ final class AvatarRenderer {
     }
 }
 
+// MARK: - 몸 뼈 표 (P13)
+
+/// BodyBone 번호로 본 휴머노이드 뼈대: 부모, 부모가 먼저 오는 순서, 좌우 바꾼 번호
+enum BodyPose {
+    private static func i(_ name: String) -> Int { BodyBone.index(name)! }
+
+    static let spine = i("Spine"), chest = i("Chest"), upperChest = i("UpperChest")
+    static let leftUpperArm = i("LeftUpperArm"), rightUpperArm = i("RightUpperArm")
+    static let leftLowerArm = i("LeftLowerArm"), rightLowerArm = i("RightLowerArm")
+    static let headBones: Set<Int> = [i("Neck"), i("Head")]
+    static let faceOnly: Set<Int> = [i("LeftEye"), i("RightEye"), i("Jaw")]
+
+    /// Unity 휴머노이드의 부모 (중간 뼈가 모델에 없어도 표는 그대로: 없는 뼈는 회전을 넘겨주기만 한다)
+    static let parents: [Int?] = BodyBone.names.map { name in
+        func p(_ parent: String) -> Int? { BodyBone.index(parent) }
+        switch name {
+        case "Hips": return nil
+        case "Spine", "LeftUpperLeg", "RightUpperLeg": return p("Hips")
+        case "Chest": return p("Spine")
+        case "UpperChest": return p("Chest")
+        case "Neck", "LeftShoulder", "RightShoulder": return p("UpperChest")
+        case "Head": return p("Neck")
+        case "LeftEye", "RightEye", "Jaw": return p("Head")
+        default: break
+        }
+        for side in ["Left", "Right"] where name.hasPrefix(side) {
+            let part = String(name.dropFirst(side.count))
+            switch part {
+            case "UpperArm": return p(side + "Shoulder")
+            case "LowerArm": return p(side + "UpperArm")
+            case "Hand": return p(side + "LowerArm")
+            case "LowerLeg": return p(side + "UpperLeg")
+            case "Foot": return p(side + "LowerLeg")
+            case "Toes": return p(side + "Foot")
+            default:
+                if part.hasSuffix("Proximal") { return p(side + "Hand") }
+                if part.hasSuffix("Intermediate") { return p(side + part.replacingOccurrences(of: "Intermediate", with: "Proximal")) }
+                if part.hasSuffix("Distal") { return p(side + part.replacingOccurrences(of: "Distal", with: "Intermediate")) }
+            }
+        }
+        return nil
+    }
+
+    /// 부모가 먼저
+    static let order: [Int] = {
+        var result: [Int] = []
+        var seen = Set<Int>()
+        func visit(_ index: Int) {
+            guard !seen.contains(index) else { return }
+            if let parent = parents[index] { visit(parent) }
+            seen.insert(index)
+            result.append(index)
+        }
+        for index in BodyBone.names.indices { visit(index) }
+        return result
+    }()
+
+    /// 좌우를 바꾼 번호 (거울)
+    static let mirrored: [Int] = BodyBone.names.map { name in
+        let swapped = name.replacingOccurrences(of: "Left", with: "\u{1}").replacingOccurrences(of: "Right", with: "Left")
+            .replacingOccurrences(of: "\u{1}", with: "Right")
+        return BodyBone.index(swapped) ?? BodyBone.index(name)!
+    }
+}
+
 // MARK: - CI
 
 /// CI (`-autotest-avatar <VRM 1.0 파일>,<VRM 0.x 파일>`, Documents 안): 씬 시험이 첫 모델로 아바타 소스를 넣고,
@@ -618,6 +848,10 @@ enum AvatarAutotest {
     nonisolated(unsafe) private static var firstSnapshot: [UInt8]?
     nonisolated(unsafe) private static var results: [String] = []
     nonisolated(unsafe) private static var allOK = true
+    /// 몸 시험 (P13): 대기 자세일 때와 시험용 몸(왼팔 들기)일 때의 두 손 위치 (모델 공간)
+    nonisolated(unsafe) private static var handIdle: [SIMD4<Float>]?
+    nonisolated(unsafe) private static var handBody: [SIMD4<Float>]?
+    nonisolated(unsafe) private static var pending: String?
 
     static var firstModel: String? { models.first.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil } }
 
@@ -648,7 +882,37 @@ enum AvatarAutotest {
         return frame
     }
 
-    /// 그림 하나를 다 그렸을 때 (GPU 완료 스레드). 첫 그림부터 30장, 45장째를 찍는다
+    /// 시험용 몸 (P13): 그림 50장째부터 왼팔을 앞으로 들고 손가락을 굽힌다 (VMC 로컬 회전, Unity 좌표)
+    static func testBody(frame: Int) -> BodyFrame? {
+        let index: Int? = lock.withLock {
+            guard stage < models.count, sourceName != nil, let start = loadedAt, start >= 0 else { return nil }
+            return frame - start
+        }
+        guard let index, index >= 50 else { return nil }
+        var body = BodyFrame()
+        body.set(BodyPose.leftUpperArm, simd_quatf(angle: -1.2, axis: [0, 0, 1]))
+        body.set(BodyPose.leftLowerArm, simd_quatf(angle: 0.6, axis: [0, 1, 0]))
+        for finger in ["LeftIndexProximal", "LeftMiddleProximal", "LeftRingProximal"] {
+            body.set(BodyBone.index(finger)!, simd_quatf(angle: 0.8, axis: [0, 0, 1]))
+        }
+        body.receivedAt = ProcessInfo.processInfo.systemUptime
+        body.sender = "test"
+        return body
+    }
+
+    /// 매 프레임 두 손 위치 (메인 스레드): 44장째(대기)와 74장째(시험용 몸)를 둔다
+    static func observeHands(frame: Int, left: SIMD4<Float>, right: SIMD4<Float>) {
+        lock.withLock {
+            guard stage < models.count, let start = loadedAt, start >= 0 else { return }
+            switch frame - start {
+            case 44: handIdle = [left, right]
+            case 74: handBody = [left, right]
+            default: break
+            }
+        }
+    }
+
+    /// 그림 하나를 다 그렸을 때 (GPU 완료 스레드). 첫 그림부터 30장, 45장째를 찍고, 75장째에 몸 시험을 본다
     static func rendered(frame: Int, surface: IOSurface) {
         lock.lock()
         guard stage < models.count, let start = loadedAt else {
@@ -659,6 +923,10 @@ enum AvatarAutotest {
         let index = frame - (loadedAt ?? frame)
         let currentStage = stage
         lock.unlock()
+        if index == 75 {
+            finishBody(surface: surface, stage: currentStage)
+            return
+        }
         guard index == 30 || index == 45 else { return }
 
         let pixels = snapshot(surface, name: "avatar-\(currentStage + 1)-\(index == 30 ? "a" : "b")")
@@ -688,6 +956,26 @@ enum AvatarAutotest {
         allOK = allOK && ok
         results.append(String(format: "model %ld %@ (coverage %.1f%%, moved %.2f%%)", currentStage + 1,
                               ok ? "ok" : "failed", coverage, moved))
+        lock.unlock()
+        appLog("avatar autotest: \(results.last ?? "")")
+        // 다음 모델은 몸 시험(75장째) 뒤에
+    }
+
+    /// 몸 시험 (P13): 시험용 몸으로 왼손이 대기 자세보다 5cm 넘게 움직였는지. 그림을 남기고 다음 모델로
+    private static func finishBody(surface: IOSurface, stage currentStage: Int) {
+        _ = snapshot(surface, name: "avatar-\(currentStage + 1)-body")
+        lock.lock()
+        var moved: Float = -1
+        if let idle = handIdle, let body = handBody {
+            for (a, b) in zip(idle, body) {
+                moved = max(moved, simd_distance(SIMD3(a.x, a.y, a.z), SIMD3(b.x, b.y, b.z)) * 100)
+            }
+        }
+        let ok = moved > 5
+        allOK = allOK && ok
+        let line = String(format: "avatar body: %@ (model %ld, raised hand moved %.1f cm)", ok ? "ok" : "failed", currentStage + 1, moved)
+        handIdle = nil
+        handBody = nil
         stage += 1
         loadedAt = nil
         let next = stage < models.count ? models[stage] : nil
@@ -696,7 +984,7 @@ enum AvatarAutotest {
         let passed = allOK
         lock.unlock()
 
-        appLog("avatar autotest: \(results.last ?? "")")
+        appLog(line)
         if let next, let name {
             DispatchQueue.main.async {
                 core_source_update(name, encodeJSON(["model": .string(next)]))

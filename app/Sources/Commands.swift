@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// 메뉴 막대와 키보드 단축키 (P10). iPadOS 26부터 화면 위쪽 메뉴 막대에 보이고,
@@ -11,9 +12,48 @@ extension Notification.Name {
     static let studioCommand = Notification.Name("studioCommand")
 }
 
+/// 메뉴가 보는 값만, 바뀔 때만 (P13). Outputs는 1초마다, SceneModel은 선택 상자·끌기 중에 자주 알리는데,
+/// 메뉴가 그것들을 직접 보면 그때마다 메뉴 막대를 다시 만들어 열어 둔 메뉴가 닫히고 깜빡였다 (실기기 #131)
+final class MenuState: ObservableObject {
+    struct Item: Equatable {
+        var visible: Bool
+    }
+
+    @Published private(set) var streaming = false
+    @Published private(set) var recording = false
+    @Published private(set) var replay = false
+    @Published private(set) var preparing = false
+    @Published private(set) var scenes: [String] = []
+    @Published private(set) var currentScene = ""
+    @Published private(set) var item: Item?
+    @Published private(set) var cropMode = false
+
+    private var subscriptions: Set<AnyCancellable> = []
+
+    init(outputs: Outputs, model: SceneModel) {
+        outputs.$stats.map(\.streaming).removeDuplicates().sink { [weak self] in self?.streaming = $0 }
+            .store(in: &subscriptions)
+        outputs.$stats.map(\.recording).removeDuplicates().sink { [weak self] in self?.recording = $0 }
+            .store(in: &subscriptions)
+        outputs.$stats.map(\.replay_active).removeDuplicates().sink { [weak self] in self?.replay = $0 }
+            .store(in: &subscriptions)
+        outputs.$streamPreparing.removeDuplicates().sink { [weak self] in self?.preparing = $0 }
+            .store(in: &subscriptions)
+        model.$scenes.removeDuplicates().sink { [weak self] in self?.scenes = $0 }.store(in: &subscriptions)
+        model.$currentScene.removeDuplicates().sink { [weak self] in self?.currentScene = $0 }.store(in: &subscriptions)
+        model.$items.combineLatest(model.$selection)
+            .map { items, selection in items.first { $0.id == selection }.map { Item(visible: $0.visible) } }
+            .removeDuplicates()
+            .sink { [weak self] in self?.item = $0 }
+            .store(in: &subscriptions)
+        model.$cropMode.removeDuplicates().sink { [weak self] in self?.cropMode = $0 }.store(in: &subscriptions)
+    }
+}
+
 struct StudioCommands: Commands {
-    @ObservedObject var outputs: Outputs
-    @ObservedObject var model: SceneModel
+    let outputs: Outputs
+    let model: SceneModel
+    @ObservedObject var menu: MenuState
     @AppStorage(AppSettings.previewEnabled) private var previewEnabled = true
     @AppStorage("showDiagnostics") private var showDiagnostics = true
     @AppStorage(AppSettings.chatPanelShown) private var chatShown = true
@@ -30,25 +70,29 @@ struct StudioCommands: Commands {
         CommandGroup(replacing: .newItem) {}
 
         CommandMenu("방송") {
-            Button(outputs.stats.streaming ? "송출 중지" : "송출 시작") { post(.toggleStream) }
+            Button(menu.streaming ? "송출 중지" : "송출 시작") { post(.toggleStream) }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-                .disabled(outputs.streamPreparing)
-            Button(outputs.stats.recording ? "녹화 중지" : "녹화 시작") { outputs.toggleRecording() }
+                .disabled(menu.preparing)
+            Button(menu.recording ? "녹화 중지" : "녹화 시작") { outputs.toggleRecording() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Divider()
-            Button(outputs.stats.replay_active ? "리플레이 버퍼 끄기" : "리플레이 버퍼 켜기") { outputs.toggleReplay() }
+            Button(menu.replay ? "리플레이 버퍼 끄기" : "리플레이 버퍼 켜기") { outputs.toggleReplay() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
             Button("리플레이 저장") { outputs.saveReplay() }
                 .keyboardShortcut("e", modifiers: [.command, .shift])
-                .disabled(!outputs.stats.replay_active)
+                .disabled(!menu.replay)
+            Divider()
+            Button("방송 링크 공유") { BroadcastLink.shareCurrent() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(!menu.streaming)
         }
 
         CommandMenu("장면") {
             // 앞의 장면 아홉 개는 ⌘1~⌘9. 지금 장면에 체크
-            ForEach(Array(model.scenes.prefix(9).enumerated()), id: \.offset) { index, scene in
+            ForEach(Array(menu.scenes.prefix(9).enumerated()), id: \.offset) { index, scene in
                 Toggle(
                     scene,
-                    isOn: Binding(get: { scene == model.currentScene }, set: { if $0 { model.switchTo(scene) } })
+                    isOn: Binding(get: { scene == menu.currentScene }, set: { if $0 { model.switchTo(scene) } })
                 )
                 .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
             }
@@ -62,7 +106,8 @@ struct StudioCommands: Commands {
         }
 
         CommandMenu("소스") {
-            let item = model.selectedItem
+            // 고른 항목 (메뉴는 있는지·보이는지만 본다, 누를 때 지금 항목을 다시 읽는다)
+            let item = menu.item
             Button("소스 추가…") { post(.addSource) }
                 .keyboardShortcut("n", modifiers: .command)
             Divider()
@@ -70,43 +115,43 @@ struct StudioCommands: Commands {
                 .keyboardShortcut("i", modifiers: .command)
                 .disabled(item == nil)
             Button(item?.visible == false ? "보이기" : "숨기기") {
-                if let item { model.setVisible(item, !item.visible) }
+                if let item = model.selectedItem { model.setVisible(item, !item.visible) }
             }
             .keyboardShortcut("h", modifiers: [.command, .option])
             .disabled(item == nil)
             Button("화면에 맞추기") {
-                if let item { model.fit(item) }
+                if let item = model.selectedItem { model.fit(item) }
             }
             .keyboardShortcut("f", modifiers: .command)
             .disabled(item == nil)
             // 미리보기 편집 (P11)
             Divider()
             Button("시계 방향으로 90° 돌리기") {
-                if let item { model.rotate(item, by: 90) }
+                if let item = model.selectedItem { model.rotate(item, by: 90) }
             }
             .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
             .disabled(item == nil)
             Button("반시계 방향으로 90° 돌리기") {
-                if let item { model.rotate(item, by: -90) }
+                if let item = model.selectedItem { model.rotate(item, by: -90) }
             }
             .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
             .disabled(item == nil)
             Button("좌우 뒤집기") {
-                if let item { model.flip(item, horizontal: true) }
+                if let item = model.selectedItem { model.flip(item, horizontal: true) }
             }
             .disabled(item == nil)
             Button("상하 뒤집기") {
-                if let item { model.flip(item, horizontal: false) }
+                if let item = model.selectedItem { model.flip(item, horizontal: false) }
             }
             .disabled(item == nil)
-            Toggle("자르기", isOn: Binding(get: { model.cropMode }, set: { model.cropMode = $0 }))
+            Toggle("자르기", isOn: Binding(get: { menu.cropMode }, set: { model.cropMode = $0 }))
                 .keyboardShortcut("c", modifiers: [.command, .option])
                 .disabled(item == nil)
             Button("변형 편집…") { post(.transform) }
                 .keyboardShortcut("e", modifiers: [.command, .option])
                 .disabled(item == nil)
             Button("원래대로 (크기·회전·자르기)") {
-                if let item { model.resetTransform(item) }
+                if let item = model.selectedItem { model.resetTransform(item) }
             }
             .disabled(item == nil)
         }

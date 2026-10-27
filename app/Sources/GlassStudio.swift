@@ -12,11 +12,13 @@ extension EnvironmentValues {
 extension Outputs {
     var streamButtonTitle: String {
         if streamPreparing { return "방송 준비 중…" }
+        if streamStarting { return "시작 중…" }
         if streamStopping { return "멈추는 중 (누르면 강제)" }
         return stats.streaming ? "송출 중지" : "송출 시작"
     }
 
     var recordButtonTitle: String {
+        if recordStarting { return "시작 중…" }
         if recordStopping { return "멈추는 중 (누르면 강제)" }
         return stats.recording ? "녹화 중지" : "녹화 시작"
     }
@@ -177,7 +179,7 @@ struct GlassStudio: View {
                     // 송출 서버를 정하지 않았거나 로그인하지 않았으면 설정의 송출 페이지를 연다
                     if !outputs.toggleStreaming() { sheets.openSettings(.stream) }
                 }
-                .disabled(outputs.streamPreparing)
+                .disabled(outputs.streamPreparing || outputs.streamStarting)
 
                 outputButton(
                     outputs.recordButtonTitle, outputs.stats.recording ? "stop.circle.fill" : "record.circle", .red,
@@ -185,6 +187,7 @@ struct GlassStudio: View {
                 ) {
                     outputs.toggleRecording()
                 }
+                .disabled(outputs.recordStarting)
 
                 if outputs.stats.replay_active {
                     outputButton("리플레이 저장", "square.and.arrow.down", .green, active: true) { outputs.saveReplay() }

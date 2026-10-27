@@ -46,6 +46,16 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             // 백그라운드로 가거나 끝나기 전에 씬 구성을 저장한다
             if phase != .active && core.isRunning { model.saveNow() }
+            // 백그라운드 송출 (P13): 출력 중이면 자리 비움 장면, 아니면 마이크를 놓는다
+            guard core.isRunning else { return }
+            let stats = outputs.stats
+            if phase == .background {
+                BackgroundLive.shared.enteredBackground(
+                    outputsActive: stats.recording || stats.streaming || stats.replay_active || stats.stream_reconnecting
+                        || outputs.recordStarting || outputs.streamStarting || outputs.streamPreparing)
+            } else if phase == .active {
+                BackgroundLive.shared.becameActive()
+            }
         }
     }
 
@@ -429,16 +439,28 @@ private struct StudioSheetsModifier: ViewModifier {
 struct StatusBar: View {
     @ObservedObject var outputs: Outputs
     @ObservedObject var diagnostics: Diagnostics
+    @ObservedObject private var background = BackgroundLive.shared
     @Environment(\.dockChrome) private var chrome
+    @State private var showingError = false
 
     var body: some View {
         let stats = outputs.stats
 
         HStack(spacing: 10) {
             if stats.stream_reconnecting {
-                StatusChip(text: "재연결 중", color: .orange)
+                StatusChip(
+                    text: stats.stream_reconnect_seconds >= 1
+                        ? "재연결 중 \(Int(stats.stream_reconnect_seconds))초" : "재연결 중", color: .orange)
             } else if stats.streaming {
                 StatusChip(text: "LIVE " + formatClock(stats.streaming_seconds), color: .blue)
+                // 방송 링크 공유 (P13)
+                Button {
+                    BroadcastLink.shareCurrent()
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("방송 링크 공유")
             }
             if stats.recording {
                 StatusChip(text: "REC " + formatClock(stats.recording_seconds), color: .red)
@@ -449,13 +471,37 @@ struct StatusBar: View {
                 StatusChip(text: "REPLAY", color: .green)
             }
             if !stats.streaming && !stats.stream_reconnecting && !stats.recording && !stats.replay_active {
-                Text(outputs.streamPreparing ? "방송 준비 중…" : "대기 중")
+                if let failure = failureText {
+                    // 마지막 시작·송출·녹화가 오류로 끝났으면 다음 시작까지 남긴다 (누르면 이유)
+                    Button {
+                        showingError = true
+                    } label: {
+                        StatusChip(text: failure, color: .red)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showingError) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(failure).font(.headline)
+                            Text(errorDetail).font(.callout).textSelection(.enabled)
+                            Button("복사") { UIPasteboard.general.string = errorDetail }
+                        }
+                        .padding()
+                        .frame(maxWidth: 360)
+                    }
+                } else {
+                    Text(outputs.streamPreparing ? "방송 준비 중…" : "대기 중")
+                }
+            }
+            if let notice = background.notice {
+                Text(notice).foregroundStyle(.orange)
             }
 
             Spacer(minLength: 8)
 
             if stats.streaming {
+                // 네트워크가 밀리면(혼잡) 주황
                 Text(String(format: "%.0f kbps", outputs.streamKbps))
+                    .foregroundStyle(stats.stream_congestion > 0.2 ? Color.orange : Color.secondary)
                 Text(dropText(stats))
             }
             Text(String(format: "%.1f fps", diagnostics.stats.active_fps))
@@ -467,6 +513,19 @@ struct StatusBar: View {
         .padding(.horizontal, chrome == .glass ? 16 : 10)
         .frame(maxWidth: chrome == .glass ? nil : .infinity, maxHeight: chrome == .glass ? nil : .infinity)
         .background(chrome == .glass ? Color.clear : Color(white: 0.07))
+    }
+
+    private var failureText: String? {
+        if !outputs.streamPrepareError.isEmpty || (outputs.stats.stream_stop_code != 0 && !outputs.streamError.isEmpty) {
+            return "송출 실패"
+        }
+        if outputs.stats.record_stop_code != 0 && !outputs.recordError.isEmpty { return "녹화 실패" }
+        return nil
+    }
+
+    private var errorDetail: String {
+        [outputs.streamPrepareError, outputs.streamError, outputs.recordError].filter { !$0.isEmpty }
+            .joined(separator: "\n")
     }
 
     /// 네트워크가 못 따라가 버린 프레임 (PC OBS의 "Dropped Frames")
@@ -937,6 +996,7 @@ struct SourcesDock: View {
 /// 전역 오디오 입력: 장치, 미터, 볼륨, 음소거, 필터. iPadOS는 오디오 입력 경로를 하나만 쓰므로 믹서가 아니라 입력 하나다
 struct AudioDock: View {
     @ObservedObject var core: Core
+    @ObservedObject private var model = SceneModel.shared
     let sheets: StudioSheets
     /// 미터는 따로 관찰한다 (초당 10번 바뀌는 값에 독 전체를 다시 그리지 않게)
     @State private var level = InputLevel()
@@ -976,6 +1036,10 @@ struct AudioDock: View {
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                         .frame(width: 56, alignment: .trailing)
+                }
+                // 아이폰 마이크 소스 (P13): 지금 장면에 있으면 줄마다 음소거·볼륨
+                ForEach(model.items.filter { $0.type == "ios_facelink_audio" }) { item in
+                    RemoteAudioRow(name: item.name)
                 }
                 Spacer(minLength: 0)
             }
@@ -1028,6 +1092,61 @@ struct AudioDock: View {
         let multiplier = core_source_volume(name)
         volumeDB = multiplier > 0 ? max(-60, 20 * log10(Double(multiplier))) : -60
         muted = core_source_muted(name)
+    }
+}
+
+/// 오디오 독의 아이폰 마이크 줄 (P13): 음소거·볼륨과 받기 상태. 아이패드 마이크와 둘 다 켜면 같은 목소리가 두 번 들어간다
+struct RemoteAudioRow: View {
+    let name: String
+    @State private var volumeDB: Double = 0
+    @State private var muted = false
+    @State private var editing = false
+    @State private var state = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(name, systemImage: "iphone.radiowaves.left.and.right")
+                .font(.subheadline)
+                .lineLimit(1)
+            HStack(spacing: 8) {
+                Button {
+                    muted.toggle()
+                    core_source_set_muted(name, muted)
+                    SceneModel.shared.setNeedsSave()
+                } label: {
+                    Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .foregroundStyle(muted ? Color.red : Color.accentColor)
+                        .frame(width: 30, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel(muted ? "음소거 해제" : "음소거")
+                Slider(value: $volumeDB, in: -60...0) { editing in
+                    self.editing = editing
+                    if !editing { SceneModel.shared.setNeedsSave() }
+                }
+                .onChange(of: volumeDB) { _, db in
+                    guard editing else { return }
+                    core_source_set_volume(name, db <= -60 ? 0 : Float(pow(10, db / 20)))
+                }
+            }
+            Text(state).font(.caption2).foregroundStyle(.secondary)
+        }
+        .onAppear {
+            let multiplier = core_source_volume(name)
+            volumeDB = multiplier > 0 ? max(-60, 20 * log10(Double(multiplier))) : -60
+            muted = core_source_muted(name)
+        }
+        .task {
+            while !Task.isCancelled {
+                var stats = core_facelink_audio_stats()
+                core_facelink_audio_get_stats(&stats)
+                state =
+                    stats.receiving
+                    ? "받는 중 · 버퍼 \(stats.buffer_ms) ms · 잃은 패킷 \(stats.lost) · 아이패드 마이크와 같이 켜면 소리가 겹칩니다"
+                    : "받지 않는 중 (아이폰 FaceLink 앱에서 소리 보내기)"
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
     }
 }
 
@@ -1116,12 +1235,13 @@ struct ControlsDock: View {
                         // 송출 서버를 정하지 않았거나 YouTube에 로그인하지 않았으면 설정의 송출 페이지를 연다
                         if !outputs.toggleStreaming() { sheets.openSettings(.stream) }
                     }
-                    .disabled(outputs.streamPreparing)
+                    .disabled(outputs.streamPreparing || outputs.streamStarting)
 
                     control(recordTitle, outputs.stats.recording ? "stop.circle.fill" : "record.circle", .red,
                             prominent: true) {
                         outputs.toggleRecording()
                     }
+                    .disabled(outputs.recordStarting)
 
                     if outputs.stats.replay_active {
                         HStack(spacing: 6) {
@@ -1138,7 +1258,10 @@ struct ControlsDock: View {
                             .accessibilityLabel("리플레이 끄기")
                         }
                     } else {
-                        control("리플레이 시작", "gobackward", .green) { outputs.toggleReplay() }
+                        control(outputs.replayStarting ? "시작 중…" : "리플레이 시작", "gobackward", .green) {
+                            outputs.toggleReplay()
+                        }
+                        .disabled(outputs.replayStarting)
                     }
 
                     // 화면 켜고 끄기와 설정은 작게 2×2 (가로 화면의 독 높이에 다 들어가게). 켜져 있으면 파랗게

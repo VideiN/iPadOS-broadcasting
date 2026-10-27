@@ -17,6 +17,11 @@ final class Outputs: ObservableObject {
     /// 방송 준비 실패 이유 (다음 송출 시도까지 보인다)
     @Published private(set) var streamPrepareError = ""
 
+    /// 시작을 요청하고 결과를 기다리는 중 (P13). 이때 같은 단추를 또 누르면 무시한다
+    @Published private(set) var recordStarting = false
+    @Published private(set) var replayStarting = false
+    @Published private(set) var streamStarting = false
+
     @Published private(set) var streamFPS: Double = 0
     @Published private(set) var recordFPS: Double = 0
 
@@ -25,6 +30,14 @@ final class Outputs: ObservableObject {
     private var lastReplaySavedCount: Int32 = 0
 
     private var timer: AnyCancellable?
+    /// 출력 시작·중지·저장은 모두 이 한 줄로 (P13): 녹화와 리플레이가 같은 인코더를 동시에 만들거나 놓지 않게
+    static let queue = DispatchQueue(label: "outputs", qos: .userInitiated)
+    /// 멈춤·시작을 센 값 (늘면 방금 일어난 것): 오류로 멈추면 알리고, 송출이 시작되면 링크를 공유한다
+    private var seenRecordStops: Int32 = 0
+    private var seenStreamStops: Int32 = 0
+    private var seenStreamStarts: Int32 = 0
+    /// 지금 송출이 어느 모드로 시작했는지 (방송 링크용)
+    private(set) var streamTarget: BroadcastLink.Target?
     private var lastStreamBytes: UInt64 = 0
     private var lastStreamFrames: Int32 = 0
     private var lastRecordFrames: Int32 = 0
@@ -84,21 +97,52 @@ final class Outputs: ObservableObject {
         streamError = Self.lastError(stream: true)
         if !stats.recording { recordStopping = false }
         // 녹화가 끝나면 고른 폴더의 접근을 놓는다
-        if !stats.recording && !startingRecording && recordingFolder != nil { releaseRecordingFolder() }
+        if !stats.recording && !recordStarting && recordingFolder != nil { releaseRecordingFolder() }
         if !stats.streaming { streamStopping = false }
+        noticeEvents(stats)
+        BackgroundLive.shared.outputsChanged(
+            active: stats.recording || stats.streaming || stats.replay_active || stats.stream_reconnecting,
+            stats: stats, kbps: streamKbps)
+    }
+
+    /// 오류로 멈춘 출력을 알리고(시트 위에서도 보이는 창), 송출이 새로 시작되면 방송 링크를 공유한다
+    private func noticeEvents(_ stats: core_output_stats) {
+        if stats.record_stop_count != seenRecordStops {
+            seenRecordStops = stats.record_stop_count
+            if stats.record_stop_code != 0 {
+                OutputAlert.show(title: "녹화가 멈췄습니다", message: recordError, log: "recording stopped: \(recordError)")
+            }
+        }
+        if stats.stream_stop_count != seenStreamStops {
+            seenStreamStops = stats.stream_stop_count
+            if stats.stream_stop_code != 0 {
+                OutputAlert.show(title: "송출이 멈췄습니다", message: streamError, log: "streaming stopped: \(streamError)")
+            }
+        }
+        if stats.stream_start_count != seenStreamStarts {
+            seenStreamStarts = stats.stream_start_count
+            BroadcastLink.streamStarted(streamTarget)
+        }
     }
 
     /// 시작·중지는 인코더 세션을 만들고 닫느라 시간이 걸릴 수 있어 메인 스레드 밖에서 한다
     func toggleRecording() {
+        guard !recordStarting else {
+            appLog("recording: already starting, ignored")
+            return
+        }
         let active = stats.recording
         let force = recordStopping
         if active { recordStopping = true }
 
         let (video, audio) = Self.recordEncoding()
         let path = active ? "" : newRecordingPath()
-        if !active { startingRecording = true }
+        if !active {
+            recordStarting = true
+            BackgroundLive.shared.userStartedOutput("녹화")
+        }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Self.queue.async {
             var started = false
             if active {
                 core_recording_stop(force)
@@ -110,7 +154,7 @@ final class Outputs: ObservableObject {
             }
             DispatchQueue.main.async {
                 if !active {
-                    self.startingRecording = false
+                    self.recordStarting = false
                     if !started { self.releaseRecordingFolder() }
                 }
                 self.update()
@@ -120,14 +164,22 @@ final class Outputs: ObservableObject {
 
     /// 리플레이 버퍼 켜기·끄기. 저장 위치는 앱의 Recordings 폴더 (고른 외장 폴더는 녹화에만 쓴다)
     func toggleReplay() {
+        guard !replayStarting else {
+            appLog("replay buffer: already starting, ignored")
+            return
+        }
         let active = stats.replay_active
         let defaults = AppSettings.defaults
         let seconds = Int32(defaults.integer(forKey: AppSettings.replaySeconds))
         let maxMB = Int32(defaults.integer(forKey: AppSettings.replayMaxMB))
         let (video, audio) = Self.recordEncoding()
         let directory = RecordingFolder.defaultFolder.path
+        if !active {
+            replayStarting = true
+            BackgroundLive.shared.userStartedOutput("리플레이")
+        }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Self.queue.async {
             if active {
                 core_replay_stop()
             } else {
@@ -136,7 +188,10 @@ final class Outputs: ObservableObject {
                 let ok = core_replay_start(directory, seconds, maxMB, &video, &audio)
                 appLog("replay buffer start \(ok ? "requested" : "failed")")
             }
-            DispatchQueue.main.async { self.update() }
+            DispatchQueue.main.async {
+                if !active { self.replayStarting = false }
+                self.update()
+            }
         }
     }
 
@@ -148,13 +203,16 @@ final class Outputs: ObservableObject {
     }
 
     func saveReplay() {
-        DispatchQueue.global(qos: .userInitiated).async { core_replay_save() }
+        Self.queue.async { core_replay_save() }
     }
 
     /// 송출 서버를 아직 정하지 않았거나 YouTube에 로그인하지 않았으면 false (설정을 열어야 함)
     @discardableResult
     func toggleStreaming() -> Bool {
-        guard !streamPreparing else { return true }
+        guard !streamPreparing, !streamStarting else {
+            appLog("streaming: already starting, ignored")
+            return true
+        }
         let active = stats.streaming
         let defaults = AppSettings.defaults
         let mode = defaults.string(forKey: AppSettings.streamMode)
@@ -167,13 +225,15 @@ final class Outputs: ObservableObject {
             guard YouTubeAccount.shared.loggedIn else { return false }
             streamPreparing = true
             streamPrepareError = ""
+            BackgroundLive.shared.userStartedOutput("송출")
             Task {
                 do {
                     let target = try await YouTubeAccount.shared.prepareStream()
                     await MainActor.run {
                         self.startStreaming(
                             server: target.server, key: target.key,
-                            encoding: .stream(chzzk: false, canvasHeight: Core.shared.height))
+                            encoding: .stream(chzzk: false, canvasHeight: Core.shared.height),
+                            target: .youtube(broadcastID: target.broadcastID))
                     }
                 } catch {
                     appLog("youtube: stream preparation failed: \(error.localizedDescription)")
@@ -191,7 +251,7 @@ final class Outputs: ObservableObject {
             let force = streamStopping
             streamStopping = true
             if youtube { YouTubeAccount.shared.endBroadcast() }
-            DispatchQueue.global(qos: .userInitiated).async {
+            Self.queue.async {
                 core_streaming_stop(force)
                 DispatchQueue.main.async { self.update() }
             }
@@ -200,19 +260,30 @@ final class Outputs: ObservableObject {
             let key = chzzk ? Chzzk.keyStore.load() : StreamKeyStore.load()
             guard !chzzk || !key.isEmpty else { return false }
             streamPrepareError = ""
-            startStreaming(server: server, key: key, encoding: .stream(chzzk: chzzk, canvasHeight: Core.shared.height))
+            BackgroundLive.shared.userStartedOutput("송출")
+            startStreaming(
+                server: server, key: key, encoding: .stream(chzzk: chzzk, canvasHeight: Core.shared.height),
+                target: chzzk ? .chzzk : .manual)
         }
         return true
     }
 
-    private func startStreaming(server: String, key: String, encoding: EncoderSettings) {
+    private func startStreaming(server: String, key: String, encoding: EncoderSettings, target: BroadcastLink.Target) {
         let video = Self.streamVideo(encoding)
         let options = StreamOptions.current()
-        DispatchQueue.global(qos: .userInitiated).async {
+        streamStarting = true
+        streamTarget = target
+        Self.queue.async {
             let ok = Self.start(server: server, key: key, video: video, audio: encoding.audio, options: options)
             appLog("streaming start \(ok ? "requested" : "failed")")
             DispatchQueue.main.async {
                 self.streamPreparing = false
+                self.streamStarting = false
+                if !ok {
+                    OutputAlert.show(
+                        title: "송출을 시작하지 못했습니다", message: Self.lastError(stream: true),
+                        log: "streaming failed to start")
+                }
                 self.update()
             }
         }
@@ -249,6 +320,8 @@ final class Outputs: ObservableObject {
                 do {
                     let target = try await YouTubeAccount.shared.runAutotest(base: base)
                     appLog("youtube autotest: ok (broadcast \(target.broadcastID ?? "none"))")
+                    // 송출이 시작되면 이 방송의 링크로 공유 창을 띄운다 (P13, -autotest-share가 닫는다)
+                    await MainActor.run { self.streamTarget = .youtube(broadcastID: target.broadcastID) }
                     self.runOutputAutotest(seconds: seconds, path: path, server: target.server, key: target.key)
                     // -autotest-chat <mock 주소>: 이 방송의 채팅을 직접·패널·API로 받아 본다 (P7)
                     Task { @MainActor in await ChatFeed.shared.runAutotest() }
@@ -276,15 +349,27 @@ final class Outputs: ObservableObject {
         let record = EncoderSettings(codec: "hevc", rateControl: "ABR", videoKbps: 20000, audioKbps: 192)
         let recordVideo = Self.streamVideo(record)
         let queue = DispatchQueue.global(qos: .userInitiated)
+        DispatchQueue.main.async { BackgroundLive.shared.userStartedOutput("CI") }
         queue.asyncAfter(deadline: .now() + 3) {
-            var video = recordVideo
-            var audio = record.audio
-            let recording = core_recording_start(path, &video, &audio)
+            // 녹화와 리플레이 버퍼(7초, 목록에 없는 직접 입력 값)를 두 스레드에서 같은 순간 시작한다 (P13):
+            // 같은 녹화 인코더를 같이 쓰므로 인코더는 한 번만 만들어져야 한다 (CI가 "Record Video:" 줄을 센다)
+            var started = [false, false]
+            let lock = NSLock()
+            DispatchQueue.concurrentPerform(iterations: 2) { index in
+                var video = recordVideo
+                var audio = record.audio
+                let ok =
+                    index == 0
+                    ? core_recording_start(path, &video, &audio)
+                    : core_replay_start(RecordingFolder.defaultFolder.path, 7, 2048, &video, &audio)
+                lock.withLock { started[index] = ok }
+            }
+            let (recording, replay) = (started[0], started[1])
             let streaming = Self.start(
                 server: server, key: key, video: streamVideo, audio: encoding.audio, options: options)
-            // 리플레이 버퍼(7초, 목록에 없는 직접 입력 값)는 녹화 인코더를 같이 쓴다. 끝에 저장한다 (P5, P11)
-            let replay = core_replay_start(RecordingFolder.defaultFolder.path, 7, 2048, &video, &audio)
             appLog("autotest: started (recording \(recording), streaming \(streaming), replay \(replay))")
+            // -autotest-background: 송출하는 동안 6초 자리 비움 (P13)
+            DispatchQueue.main.async { BackgroundLive.shared.runAutotest(after: 5) }
 
             queue.asyncAfter(deadline: .now() + seconds) {
                 core_replay_save()
@@ -316,7 +401,31 @@ final class Outputs: ObservableObject {
                         appLog(
                             "autotest: done (record error '\(Self.lastError(stream: false))', stream error '\(Self.lastError(stream: true))')"
                         )
+                        DispatchQueue.main.async { self.runStabilityAutotest() }
                     }
+                }
+            }
+        }
+    }
+
+    /// CI (`-autotest-p13`, 출력 시험이 끝난 뒤): 시작 중 두 번 누르기를 무시하는지, 연결이 안 되는 서버로 송출하면
+    /// 오류 알림이 뜨는지 (P13)
+    private func runStabilityAutotest() {
+        guard ProcessInfo.processInfo.arguments.contains("-autotest-p13") else { return }
+        appLog("p13 autotest: start")
+        // 리플레이 시작을 연달아 두 번: 두 번째는 무시돼야 한다. 켜지면 끈다
+        toggleReplay()
+        toggleReplay()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+            if self.stats.replay_active { self.toggleReplay() }
+            // 아무도 듣지 않는 포트: 연결 실패로 멈추고 알림이 떠야 한다
+            let encoding = EncoderSettings(codec: "h264", rateControl: "CBR", videoKbps: 1000, audioKbps: 128)
+            self.startStreaming(server: "rtmp://127.0.0.1:9/live", key: "autotest", encoding: encoding, target: .manual)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                MainActor.assumeIsolated {
+                    let shown = OutputAlert.dismissForTest()
+                    appLog(
+                        "p13 autotest: done (alert \(shown ? "shown" : "missing"), stream error '\(Self.lastError(stream: true))')")
                 }
             }
         }
@@ -374,7 +483,6 @@ final class Outputs: ObservableObject {
 
     /// 설정에서 고른 폴더(외장 저장장치 등)는 보안 범위 접근을 녹화가 끝날 때까지 유지한다
     private var recordingFolder: URL?
-    private var startingRecording = false
 
     private func newRecordingPath() -> String {
         releaseRecordingFolder()
@@ -391,7 +499,7 @@ final class Outputs: ObservableObject {
         recordingFolder = nil
     }
 
-    private static func lastError(stream: Bool) -> String {
+    static func lastError(stream: Bool) -> String {
         guard let error = core_output_last_error(stream) else { return "" }
         defer { core_free(error) }
         return String(cString: error)

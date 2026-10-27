@@ -112,6 +112,9 @@ static void avatar_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "width", 1080);
 	obs_data_set_default_int(settings, "height", 1080);
 	obs_data_set_default_int(settings, "fps", 30);
+	obs_data_set_default_bool(settings, "body_tracking", true);
+	obs_data_set_default_bool(settings, "idle_motion", true);
+	obs_data_set_default_int(settings, "arm_angle", 65);
 }
 
 static obs_properties_t *avatar_properties(void *data)
@@ -135,6 +138,10 @@ static obs_properties_t *avatar_properties(void *data)
 
 	obs_properties_add_bool(props, "face_tracking", "아이폰 얼굴 추적을 따라 움직이기");
 	obs_properties_add_bool(props, "mirror", "거울처럼 움직이기 (고개를 왼쪽으로 돌리면 화면에서도 왼쪽)");
+	// 몸 (P13): VMC 몸 뼈(아이폰, mocopi 같은 몸 추적 앱)와 대기 자세
+	obs_properties_add_bool(props, "body_tracking", "몸 추적을 따라 움직이기 (팔·손가락 등, 받고 있을 때)");
+	obs_properties_add_bool(props, "idle_motion", "대기 움직임 (숨쉬기, 고개를 따라 가슴이 조금)");
+	obs_properties_add_int_slider(props, "arm_angle", "팔 내리는 각도 (추적하지 않을 때)", 0, 85, 1);
 
 	obs_properties_add_int(props, "width", "너비", 128, 4096, 2);
 	obs_properties_add_int(props, "height", "높이", 128, 4096, 2);

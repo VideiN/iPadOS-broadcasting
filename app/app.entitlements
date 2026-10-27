@@ -5,5 +5,9 @@
 	<!-- LiveContainer 게스트에서는 효과가 없고 호스트의 값이 적용된다 (계획 6장). 넣어 두어도 해는 없다. -->
 	<key>com.apple.developer.kernel.increased-memory-limit</key>
 	<true/>
+	<!-- 백그라운드 송출 (P13): 계속 처리 작업이 뒤에서도 GPU를 쓴다 (App ID의 Background GPU Access).
+	     프로필에 아직 없으면 testflight.sh가 빼고 올린다 -->
+	<key>com.apple.developer.background-tasks.continued-processing.gpu</key>
+	<true/>
 </dict>
 </plist>
