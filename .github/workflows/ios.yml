@@ -381,7 +381,7 @@ jobs:
           grep -q "avatar: loaded 'test-avatar.vrm' (VRM 1.0)" app-run/app.log
           grep -q "avatar: loaded 'test-avatar0.vrm' (VRM 0.x)" app-run/app.log
           grep -q 'avatar autotest: ok' app-run/app.log
-          # 몸 (P13): 시험용 몸(왼팔 들기)으로 왼손이 대기 자세(팔 내림)보다 움직인다. 그림 avatar-<n>-body.png
+          # 몸 (P13): 시험용 몸(왼팔 들기, 거울이면 아바타의 오른팔)으로 손이 대기 자세(팔 내림)보다 움직인다. 그림 avatar-<n>-body.png
           grep -q 'avatar body: ok (model 1' app-run/app.log
           grep -q 'avatar body: ok (model 2' app-run/app.log
           # 미디어 소스 (P5): 테스트 파일을 디코딩해 첫 프레임을 내고, 끝나면 반복한다

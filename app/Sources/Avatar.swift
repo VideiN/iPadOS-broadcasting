@@ -724,8 +724,13 @@ final class AvatarRenderer {
         applyFace()
         applyBody()
         model.update(deltaTime: deltaTime)
-        if let pose = model.pose, let hand = model.humanoid.nodeIndex(for: .leftHand) {
-            AvatarAutotest.observeHand(frame: frames + 1, position: pose.modelMatrix(ofNode: hand).columns.3)
+        if let pose = model.pose, let left = model.humanoid.nodeIndex(for: .leftHand),
+            let right = model.humanoid.nodeIndex(for: .rightHand)
+        {
+            // 거울이면 시험용 몸의 왼팔은 아바타의 오른팔이 된다: 두 손 다
+            AvatarAutotest.observeHands(
+                frame: frames + 1, left: pose.modelMatrix(ofNode: left).columns.3,
+                right: pose.modelMatrix(ofNode: right).columns.3)
         }
 
         guard let target = nextTarget() else {
@@ -843,9 +848,9 @@ enum AvatarAutotest {
     nonisolated(unsafe) private static var firstSnapshot: [UInt8]?
     nonisolated(unsafe) private static var results: [String] = []
     nonisolated(unsafe) private static var allOK = true
-    /// 몸 시험 (P13): 대기 자세일 때와 시험용 몸(왼팔 들기)일 때의 왼손 위치 (모델 공간)
-    nonisolated(unsafe) private static var handIdle: SIMD4<Float>?
-    nonisolated(unsafe) private static var handBody: SIMD4<Float>?
+    /// 몸 시험 (P13): 대기 자세일 때와 시험용 몸(왼팔 들기)일 때의 두 손 위치 (모델 공간)
+    nonisolated(unsafe) private static var handIdle: [SIMD4<Float>]?
+    nonisolated(unsafe) private static var handBody: [SIMD4<Float>]?
     nonisolated(unsafe) private static var pending: String?
 
     static var firstModel: String? { models.first.flatMap { FileManager.default.fileExists(atPath: $0) ? $0 : nil } }
@@ -895,13 +900,13 @@ enum AvatarAutotest {
         return body
     }
 
-    /// 매 프레임 왼손 위치 (메인 스레드): 44장째(대기)와 74장째(시험용 몸)를 둔다
-    static func observeHand(frame: Int, position: SIMD4<Float>) {
+    /// 매 프레임 두 손 위치 (메인 스레드): 44장째(대기)와 74장째(시험용 몸)를 둔다
+    static func observeHands(frame: Int, left: SIMD4<Float>, right: SIMD4<Float>) {
         lock.withLock {
             guard stage < models.count, let start = loadedAt, start >= 0 else { return }
             switch frame - start {
-            case 44: handIdle = position
-            case 74: handBody = position
+            case 44: handIdle = [left, right]
+            case 74: handBody = [left, right]
             default: break
             }
         }
@@ -962,11 +967,13 @@ enum AvatarAutotest {
         lock.lock()
         var moved: Float = -1
         if let idle = handIdle, let body = handBody {
-            moved = simd_distance(SIMD3(idle.x, idle.y, idle.z), SIMD3(body.x, body.y, body.z)) * 100
+            for (a, b) in zip(idle, body) {
+                moved = max(moved, simd_distance(SIMD3(a.x, a.y, a.z), SIMD3(b.x, b.y, b.z)) * 100)
+            }
         }
         let ok = moved > 5
         allOK = allOK && ok
-        let line = String(format: "avatar body: %@ (model %ld, left hand moved %.1f cm)", ok ? "ok" : "failed", currentStage + 1, moved)
+        let line = String(format: "avatar body: %@ (model %ld, raised hand moved %.1f cm)", ok ? "ok" : "failed", currentStage + 1, moved)
         handIdle = nil
         handBody = nil
         stage += 1
