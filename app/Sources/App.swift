@@ -12,6 +12,9 @@ private let processStartUptime = ProcessInfo.processInfo.systemUptime
 
 @main
 struct BroadcastApp: App {
+    /// 메뉴 막대가 보는 값 (바뀔 때만 알린다)
+    @StateObject private var menuState = MenuState(outputs: .shared, model: .shared)
+
     init() {
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         core_log_open(documents.appendingPathComponent("broadcast.log").path)
@@ -54,7 +57,7 @@ struct BroadcastApp: App {
             ContentView()
                 .persistentSystemOverlays(.hidden)
         }
-        .commands { StudioCommands(outputs: .shared, model: .shared) }
+        .commands { StudioCommands(outputs: .shared, model: .shared, menu: menuState) }
     }
 }
 

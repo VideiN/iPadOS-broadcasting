@@ -331,7 +331,20 @@ struct SourcePropertiesView: View {
         if filter.contains("mp4") || filter.contains("mov") || filter.contains("media") {
             return [.movie, .audio]
         }
-        return [.item]
+        // 필터의 확장자(예: "VRM (*.vrm)")로. .item은 폴더도 포함해 아이패드 파일 선택 창이 고른 파일을 열지 못하고
+        // "열기"가 꺼진 채로 남았다 (P13 실기기: VRM을 골라도 확인이 안 눌림). 파일만(.data)
+        var types: [UTType] = []
+        if let regex = try? NSRegularExpression(pattern: #"\*\.([A-Za-z0-9]+)"#) {
+            let range = NSRange(filter.startIndex..., in: filter)
+            for match in regex.matches(in: filter, range: range) {
+                if let extRange = Range(match.range(at: 1), in: filter),
+                    let type = UTType(filenameExtension: String(filter[extRange]), conformingTo: .data)
+                {
+                    types.append(type)
+                }
+            }
+        }
+        return types + [.data]
     }
 
     /// 고른 파일을 Documents/Media로 복사한다. 원본 위치의 접근 권한은 앱을 다시 켜면 사라지기 때문이다.
