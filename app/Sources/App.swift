@@ -226,7 +226,9 @@ final class Core: ObservableObject {
                 SceneModel.shared.runAutotestIfRequested()
                 // CI: 시뮬레이터에는 카메라가 없어 시험 그림으로 업스케일 방식들을 돌린다
                 if ProcessInfo.processInfo.arguments.contains("-autotest-upscale") {
-                    DispatchQueue.global(qos: .userInitiated).async { _ = core_upscale_selftest() }
+                    let marker = NSTemporaryDirectory() + "upscale-shot"
+                    try? FileManager.default.removeItem(atPath: marker)
+                    DispatchQueue.global(qos: .userInitiated).async { _ = core_upscale_selftest(marker) }
                 }
                 Outputs.shared.runAutotestIfRequested()
                 Outputs.shared.runSRTAutotestIfRequested()

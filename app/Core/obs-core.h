@@ -132,8 +132,9 @@ int core_scene_item_get_scale_filter(int64_t id);
 void core_scene_item_set_scale_filter(int64_t id, int filter);
 // 업스케일 시험 (OBSAVUpscaler). 지금 카메라 소스가 무엇을 하는지 한 줄 (끄면 빈 문자열)
 void core_camera_upscale_status(char *buffer, size_t size);
-// CI: 시험 그림을 모든 방식에 넣고, 카메라 소스를 거쳐 캔버스에 그리고, 스케일 필터를 돌려 본다. 오래 걸리므로 백그라운드에서 부른다
-bool core_upscale_selftest(void);
+// CI: 시험 그림을 모든 방식에 넣고, 카메라 소스를 거쳐 캔버스에 그리고, 스케일 필터를 돌려 본다. 오래 걸리므로 백그라운드에서 부른다.
+// 캔버스에 그린 채로 CI가 화면을 찍어 shot_marker 파일을 만들 때까지 기다린다 (최대 60초)
+bool core_upscale_selftest(const char *shot_marker);
 // 자르기 전 원본 전체의 네 모서리 (core_scene_item_box와 같은 순서). 자르지 않았거나 바운드 항목이면 false
 bool core_scene_item_uncropped_box(int64_t id, float corners[8]);
 void core_scene_item_set_visible(int64_t id, bool visible);

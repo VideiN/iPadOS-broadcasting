@@ -1696,7 +1696,7 @@ void core_scene_item_set_scale_filter(int64_t id, int filter)
 	obs_sceneitem_release(item);
 }
 
-bool core_upscale_selftest(void)
+bool core_upscale_selftest(const char *shot_marker)
 {
 	obs_scene_t *scene = current_scene();
 	if (!scene) {
@@ -1723,9 +1723,16 @@ bool core_upscale_selftest(void)
 	if (width != 2560 || height != 1440)
 		ok = false;
 
-	// CI가 캔버스를 찍는 동안 기다린다. 그 뒤 OBS 스케일 필터들이 Metal에서 그려지는지 (이 항목은 2560x1440을 캔버스로 줄인다)
+	// CI가 캔버스를 찍을 때까지 기다린다. 앱 로그는 파일에 늦게 닿을 수 있어 고정 시간으로는 놓쳤다 (#151).
+	// 그 뒤 OBS 스케일 필터들이 Metal에서 그려지는지 (이 항목은 2560x1440을 캔버스로 줄인다)
 	blog(LOG_INFO, "upscale selftest: shot");
-	os_sleep_ms(4000);
+	bool shot = false;
+	for (int i = 0; i < 300 && !shot; i++) {
+		shot = os_file_exists(shot_marker);
+		if (!shot)
+			os_sleep_ms(200);
+	}
+	blog(LOG_INFO, "upscale selftest: %s", shot ? "canvas shot taken" : "no canvas shot in time");
 	const enum obs_scale_type filters[] = {OBS_SCALE_POINT, OBS_SCALE_BICUBIC, OBS_SCALE_BILINEAR, OBS_SCALE_LANCZOS,
 					       OBS_SCALE_AREA};
 	for (size_t i = 0; i < sizeof(filters) / sizeof(filters[0]); i++) {
