@@ -27,7 +27,7 @@ jobs:
   # 의존성은 ios/deps/build-deps.sh나 ios/config.env가 바뀔 때만 다시 빌드하고 캐시에 둔다.
   deps:
     name: deps (${{ matrix.platform }})
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       matrix:
         platform: [iphoneos, iphonesimulator]
@@ -41,7 +41,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .deps/ios-${{ matrix.platform }}
-          key: ios-deps-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
+          key: ios-deps-xcode-27-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
 
       - name: Build deps
         if: steps.cache.outputs.cache-hit != 'true'
@@ -52,7 +52,7 @@ jobs:
   libobs-device:
     name: libobs (${{ matrix.platform }})
     needs: deps
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       matrix:
         platform: [iphoneos]
@@ -70,7 +70,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: .deps/ios-${{ matrix.platform }}
-          key: ios-deps-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
+          key: ios-deps-xcode-27-${{ matrix.platform }}-${{ hashFiles('ios/deps/**', 'ios/config.env') }}
           fail-on-cache-miss: true
 
       - name: Configure
@@ -624,7 +624,7 @@ jobs:
     if: >-
       ${{ !(github.event_name == 'push' && contains(github.event.head_commit.message, '[skip tests]')) &&
       !(github.event_name == 'workflow_dispatch' && inputs.skip_tests) }}
-    runs-on: macos-26
+    runs-on: xcode-27
     strategy:
       matrix:
         platform: [iphonesimulator]
@@ -641,7 +641,7 @@ jobs:
     if: >-
       (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/testflight')) ||
       (github.event_name == 'workflow_dispatch' && inputs.testflight)
-    runs-on: macos-26
+    runs-on: xcode-27
     environment: testflight
     outputs:
       bundle: ${{ steps.upload.outputs.bundle }}
