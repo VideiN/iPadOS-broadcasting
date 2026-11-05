@@ -224,6 +224,10 @@ final class Core: ObservableObject {
                 self.observeDeviceChanges()
                 SceneModel.shared.refresh()
                 SceneModel.shared.runAutotestIfRequested()
+                // CI: 시뮬레이터에는 카메라가 없어 시험 그림으로 업스케일 방식들을 돌린다
+                if ProcessInfo.processInfo.arguments.contains("-autotest-upscale") {
+                    DispatchQueue.global(qos: .userInitiated).async { _ = core_upscale_selftest() }
+                }
                 Outputs.shared.runAutotestIfRequested()
                 Outputs.shared.runSRTAutotestIfRequested()
                 // 유튜브 채팅 받기 (P7): 채팅 소스나 패널이 있고 로그인돼 있으면 받는다

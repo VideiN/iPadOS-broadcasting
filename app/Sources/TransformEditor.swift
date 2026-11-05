@@ -7,6 +7,7 @@ struct TransformEditor: View {
 
     @State private var value: SceneModel.Transform?
     @State private var keepAspect = true
+    @State private var scaleFilter = 0
 
     var body: some View {
         Form {
@@ -60,6 +61,20 @@ struct TransformEditor: View {
                     Text("자르기 (원본 픽셀)")
                 }
                 Section {
+                    Picker("스케일 필터", selection: $scaleFilter) {
+                        Text("끄기 (GPU 기본)").tag(0)
+                        Text("점").tag(1)
+                        Text("쌍선형").tag(3)
+                        Text("바이큐빅").tag(2)
+                        Text("Lanczos").tag(4)
+                        Text("영역").tag(5)
+                    }
+                } header: {
+                    Text("캔버스에 그릴 때 (시험)")
+                } footer: {
+                    Text("소스 크기가 캔버스의 이 항목 크기와 다를 때 쓰입니다. 카메라 소스 속성의 업스케일과 따로 동작합니다.")
+                }
+                Section {
                     Button("원래대로 (크기·회전·자르기)", role: .destructive) {
                         model.resetTransform(item)
                         self.value = model.transform(of: item)
@@ -69,7 +84,14 @@ struct TransformEditor: View {
                 Text("이 소스를 찾을 수 없습니다.")
             }
         }
-        .onAppear { value = model.transform(of: item) }
+        .onAppear {
+            value = model.transform(of: item)
+            scaleFilter = model.scaleFilter(of: item)
+        }
+        .onChange(of: scaleFilter) { old, new in
+            guard old != new, new != model.scaleFilter(of: item) else { return }
+            model.setScaleFilter(item, new)
+        }
         .onChange(of: value) { old, new in
             guard let old, let new, old != new else { return }
             model.setTransform(item, clamped(new))

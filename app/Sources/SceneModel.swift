@@ -351,6 +351,16 @@ final class SceneModel: ObservableObject {
             sourceHeight: Int(t.source_height))
     }
 
+    /// OBS의 스케일 필터 (enum obs_scale_type). 소스를 캔버스 크기로 그릴 때 쓴다
+    func scaleFilter(of item: SceneItem) -> Int {
+        Int(core_scene_item_get_scale_filter(item.id))
+    }
+
+    func setScaleFilter(_ item: SceneItem, _ filter: Int) {
+        core_scene_item_set_scale_filter(item.id, Int32(filter))
+        changed()
+    }
+
     func setTransform(_ item: SceneItem, _ value: Transform) {
         var t = core_item_transform()
         guard core_scene_item_get_transform(item.id, &t) else { return }

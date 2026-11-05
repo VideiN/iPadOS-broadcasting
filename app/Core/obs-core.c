@@ -631,6 +631,26 @@ void core_audio_input_peak(float *left_db, float *right_db)
 	*right_db = audio_stale ? -INFINITY : atomic_load(&core.audio_peak_right_db);
 }
 
+void core_camera_upscale_status(char *buffer, size_t size)
+{
+	if (size == 0)
+		return;
+	buffer[0] = 0;
+
+	obs_source_t *camera = scenes_primary_camera();
+	if (!camera)
+		return;
+
+	calldata_t cd = {0};
+	if (proc_handler_call(obs_source_get_proc_handler(camera), "get_upscale_status", &cd)) {
+		const char *status = calldata_string(&cd, "status");
+		if (status)
+			snprintf(buffer, size, "%s", status);
+	}
+	calldata_free(&cd);
+	obs_source_release(camera);
+}
+
 #pragma mark - 채팅
 
 void core_chat_push(const char *json)

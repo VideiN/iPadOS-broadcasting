@@ -7,6 +7,9 @@
 
 #import "OBSAVCapture.h"
 #import "AVCaptureDeviceFormat+OBSListable.h"
+#if TARGET_OS_IOS
+#import "OBSAVUpscaler.h"
+#endif
 
 #include <util/platform.h>
 
@@ -777,6 +780,45 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
             [self AVCaptureLog:LOG_INFO withFormat:@"Device delivers %.1f fps", self.deliveredFrameRate];
         }
     }
+}
+
+- (NSString *)upscaleStatus
+{
+    NSString *mode = self.upscaleMode;
+    if (mode.length == 0 || [mode isEqualToString:@"off"]) {
+        return @"";
+    }
+    return self.upscaler.status ?: @"";
+}
+
+- (BOOL)outputUpscaledImageBuffer:(CVImageBufferRef)imageBuffer timestamp:(uint64_t)timestamp
+{
+    NSString *mode = self.upscaleMode;
+    if (mode.length == 0 || [mode isEqualToString:@"off"]) {
+        return NO;
+    }
+    if (!self.upscaler) {
+        self.upscaler = [[OBSAVUpscaler alloc] init];
+    }
+
+    CVPixelBufferRef upscaled = [self.upscaler createUpscaledFrom:imageBuffer mode:mode];
+    if (!upscaled) {
+        return NO;
+    }
+
+    CVPixelBufferLockBaseAddress(upscaled, kCVPixelBufferLock_ReadOnly);
+    OBSAVCaptureVideoFrame frame = {0};
+    frame.format = VIDEO_FORMAT_BGRA;
+    frame.width = (uint32_t) CVPixelBufferGetWidth(upscaled);
+    frame.height = (uint32_t) CVPixelBufferGetHeight(upscaled);
+    frame.linesize[0] = (uint32_t) CVPixelBufferGetBytesPerRow(upscaled);
+    frame.data[0] = CVPixelBufferGetBaseAddress(upscaled);
+    frame.timestamp = timestamp;
+    frame.full_range = true;
+    obs_source_output_video(_captureInfo->source, &frame);
+    CVPixelBufferUnlockBaseAddress(upscaled, kCVPixelBufferLock_ReadOnly);
+    CVPixelBufferRelease(upscaled);
+    return YES;
 }
 
 /// Removes this source's device input. In the shared session another source may still use the same device.
@@ -1903,6 +1945,20 @@ static void OBSLogMultiCamCost(AVCaptureSession *session)
 
                 break;
             } else {
+#if TARGET_OS_IOS
+                if (self.upscaleCompareRequested) {
+                    self.upscaleCompareRequested = NO;
+                    NSDateFormatter *formatter = [[NSDateFormatter alloc] init];
+                    formatter.dateFormat = @"yyyyMMdd-HHmmss";
+                    [OBSAVUpscaler compareFrame:imageBuffer
+                                           name:[formatter stringFromDate:[NSDate date]]
+                                     iterations:30
+                                     completion:nil];
+                }
+                if ([self outputUpscaledImageBuffer:imageBuffer timestamp:(uint64_t) presentationNanoTimeStamp.value]) {
+                    break;
+                }
+#endif
                 OBSAVCaptureVideoFrame *frame = _captureInfo->videoFrame;
 
                 frame->timestamp = presentationNanoTimeStamp.value;

@@ -313,6 +313,24 @@ jobs:
           xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
           sleep 2
           cp "$data_dir/Documents/Recordings/encoding-test.mp4" app-run/ || true
+
+          # 업스케일 시험: 시뮬레이터에는 카메라가 없어 앱이 1080p 시험 그림을 모든 방식에 넣고(PNG·시간 저장), 카메라 소스를 거쳐
+          # 2560x1440으로 캔버스에 그린다. MetalFX와 VT 초해상도는 기기용 코드라 여기서는 "안 됨"으로 나온다
+          xcrun simctl launch --console-pty "$SIM_UDID" "$bundle_id" -canvas 640x360@30 -orientation portrait \
+            -autotest-upscale > app-run/app-upscale.log 2>&1 &
+          for _ in $(seq 1 90); do
+            grep -q 'upscale selftest: shot' app-run/app-upscale.log && break
+            sleep 2
+          done
+          shoot app-run/upscale-canvas.png
+          for _ in $(seq 1 30); do
+            grep -qE 'upscale selftest: (ok|failed)' app-run/app-upscale.log && break
+            sleep 2
+          done
+          xcrun simctl terminate "$SIM_UDID" "$bundle_id" || true
+          sleep 2
+          cp -R "$data_dir/Documents/upscale-compare" app-run/ || true
+
           (sleep 5; kill "$ffmpeg_srt_pid" 2> /dev/null) &
           wait "$ffmpeg_srt_pid" || true
           cat app-run/ffmpeg-srt.log
@@ -332,6 +350,11 @@ jobs:
           grep -q 'ios-audio-input\] first buffer' app-run/app.log
           if grep -q 'failed to load' app-run/app.log; then exit 1; fi
           grep -q 'capture started' app-run/broadcast.log
+
+          # 업스케일 시험: 되는 방식은 1440p·불투명·같은 밝기, 소스 크기 2560x1440, OBS 스케일 필터까지
+          grep -E 'upscale (compare|selftest)' app-run/app-upscale.log
+          cat app-run/upscale-compare/selftest/report.txt || true
+          grep -q 'upscale selftest: ok' app-run/app-upscale.log
 
           # 씬·소스 (P4)
           grep -q 'created the default scene' app-run/app.log

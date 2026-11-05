@@ -6,6 +6,10 @@
 //
 
 #import "plugin-main.h"
+#if TARGET_OS_IOS
+#import "OBSAVUpscaler.h"
+#include <util/platform.h>
+#endif
 
 #pragma mark av-capture API
 
@@ -19,6 +23,52 @@ static void av_capture_get_frame_rate(void *data, calldata_t *cd)
 {
     OBSAVCapture *capture = (__bridge OBSAVCapture *) data;
     calldata_set_float(cd, "fps", capture.deliveredFrameRate);
+}
+
+static void av_capture_get_upscale_status(void *data, calldata_t *cd)
+{
+    OBSAVCapture *capture = (__bridge OBSAVCapture *) data;
+    calldata_set_string(cd, "status", capture.upscaleStatus.UTF8String);
+}
+
+/// CI: the simulator has no camera, so a test pattern goes through every mode and then through this source
+static void av_capture_upscale_selftest(void *data, calldata_t *cd)
+{
+    OBSAVCapture *capture = (__bridge OBSAVCapture *) data;
+    CVPixelBufferRef pattern = [OBSAVUpscaler createTestPattern];
+    __block BOOL ok = pattern != NULL;
+
+    if (pattern) {
+        dispatch_semaphore_t done = dispatch_semaphore_create(0);
+        [OBSAVUpscaler compareFrame:pattern
+                               name:@"selftest"
+                         iterations:3
+                         completion:^(BOOL compared) {
+                             ok = compared;
+                             dispatch_semaphore_signal(done);
+                         }];
+        dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+
+        capture.upscaleMode = @"vt_transfer";
+        for (int i = 0; i < 60; i++) {
+            if (![capture outputUpscaledImageBuffer:pattern timestamp:os_gettime_ns()]) {
+                ok = NO;
+            }
+            os_sleep_ms(33);
+        }
+        blog(LOG_INFO, "upscale selftest: status '%s'", capture.upscaleStatus.UTF8String);
+        CVPixelBufferRelease(pattern);
+    }
+    calldata_set_bool(cd, "ok", ok);
+}
+
+static bool av_capture_upscale_compare_clicked(obs_properties_t *properties __unused, obs_property_t *property __unused,
+                                               void *data)
+{
+    OBSAVCapture *capture = (__bridge OBSAVCapture *) data;
+    capture.upscaleCompareRequested = YES;
+    blog(LOG_INFO, "upscale compare: requested");
+    return false;
 }
 #endif
 
@@ -37,6 +87,11 @@ static void *av_capture_create(obs_data_t *settings, obs_source_t *source)
     // iOS port: lets the app show the frame rate the device really delivers
     proc_handler_add(obs_source_get_proc_handler(source), "void get_frame_rate(out float fps)",
                      av_capture_get_frame_rate, (__bridge void *) capture);
+    capture.upscaleMode = @(obs_data_get_string(settings, "upscale"));
+    proc_handler_add(obs_source_get_proc_handler(source), "void get_upscale_status(out string status)",
+                     av_capture_get_upscale_status, (__bridge void *) capture);
+    proc_handler_add(obs_source_get_proc_handler(source), "void upscale_selftest(out bool ok)",
+                     av_capture_upscale_selftest, (__bridge void *) capture);
 #endif
 
     return (void *) CFBridgingRetain(capture);
@@ -88,6 +143,9 @@ static void av_capture_set_defaults(obs_data_t *settings)
     obs_data_set_default_string(settings, "preset", AVCaptureSessionPresetHigh.UTF8String);
 
     obs_data_set_default_bool(settings, "enable_audio", true);
+#if TARGET_OS_IOS
+    obs_data_set_default_string(settings, "upscale", "off");
+#endif
 }
 
 static void av_fast_capture_set_defaults(obs_data_t *settings)
@@ -143,6 +201,20 @@ static obs_properties_t *av_capture_properties(void *av_capture)
 
         configure_property(use_buffering, !isFastPath, !isFastPath, NULL, NULL);
         configure_property(frame_rates, isFastPath, isFastPath, NULL, NULL);
+
+#if TARGET_OS_IOS
+        // iOS port: experiment to find the best way from a 1080p capture card to a 1440p canvas (OBSAVUpscaler.h)
+        if (!isFastPath && capture) {
+            obs_property_t *upscale = obs_properties_add_list(properties, "upscale", "업스케일 1440p (시험)",
+                                                              OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+            obs_property_list_add_string(upscale, "끄기", "off");
+            for (NSString *mode in [OBSAVUpscaler modes]) {
+                obs_property_list_add_string(upscale, [OBSAVUpscaler labelForMode:mode].UTF8String, mode.UTF8String);
+            }
+            obs_properties_add_button2(properties, "upscale_compare", "모든 방식 비교해 저장 (PNG, 시간)",
+                                       av_capture_upscale_compare_clicked, (__bridge void *) capture);
+        }
+#endif
     }
 
     return properties;
@@ -152,6 +224,15 @@ static void av_capture_update(void *av_capture, obs_data_t *settings)
 {
     OBSAVCapture *capture = (__bridge OBSAVCapture *) (av_capture);
     capture.captureInfo->settings = settings;
+
+#if TARGET_OS_IOS
+    // iOS port: the app sends one changed setting at a time. Another upscale mode must not restart the capture.
+    NSString *upscaleMode = @(obs_data_get_string(settings, "upscale"));
+    if (![upscaleMode isEqualToString:capture.upscaleMode]) {
+        capture.upscaleMode = upscaleMode;
+        return;
+    }
+#endif
 
     [capture updateSessionwithError:NULL];
 }

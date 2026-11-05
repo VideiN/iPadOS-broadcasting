@@ -12,6 +12,7 @@
 #include <graphics/vec3.h>
 #include <util/darray.h>
 #include <util/dstr.h>
+#include <util/platform.h>
 
 #include <math.h>
 #include <pthread.h>
@@ -1671,6 +1672,76 @@ obs_source_t *scenes_primary_camera(void)
 
 	free_items(&list);
 	return camera;
+}
+
+#pragma mark - 업스케일 시험
+
+int core_scene_item_get_scale_filter(int64_t id)
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return OBS_SCALE_DISABLE;
+	const int filter = (int)obs_sceneitem_get_scale_filter(item);
+	obs_sceneitem_release(item);
+	return filter;
+}
+
+void core_scene_item_set_scale_filter(int64_t id, int filter)
+{
+	obs_sceneitem_t *item = find_item(id);
+	if (!item)
+		return;
+	obs_sceneitem_set_scale_filter(item, (enum obs_scale_type)filter);
+	blog(LOG_INFO, "[app] item scale filter: %d", filter);
+	obs_sceneitem_release(item);
+}
+
+bool core_upscale_selftest(void)
+{
+	obs_scene_t *scene = current_scene();
+	if (!scene) {
+		blog(LOG_WARNING, "upscale selftest: failed (no scene)");
+		return false;
+	}
+
+	obs_source_t *source = obs_source_create(CAMERA_SOURCE_ID, "업스케일 시험", NULL, NULL);
+	if (!source) {
+		blog(LOG_WARNING, "upscale selftest: failed (no camera source type)");
+		return false;
+	}
+	obs_sceneitem_t *item = obs_scene_add(scene, source);
+	fit_item_to_canvas(item);
+
+	calldata_t cd = {0};
+	bool ok = proc_handler_call(obs_source_get_proc_handler(source), "upscale_selftest", &cd) &&
+		  calldata_bool(&cd, "ok");
+	calldata_free(&cd);
+
+	const uint32_t width = obs_source_get_width(source);
+	const uint32_t height = obs_source_get_height(source);
+	blog(LOG_INFO, "upscale selftest: source is %ux%u after the upscaled frames", width, height);
+	if (width != 2560 || height != 1440)
+		ok = false;
+
+	// CI가 캔버스를 찍는 동안 기다린다. 그 뒤 OBS 스케일 필터들이 Metal에서 그려지는지 (이 항목은 2560x1440을 캔버스로 줄인다)
+	blog(LOG_INFO, "upscale selftest: shot");
+	os_sleep_ms(4000);
+	const enum obs_scale_type filters[] = {OBS_SCALE_POINT, OBS_SCALE_BICUBIC, OBS_SCALE_BILINEAR, OBS_SCALE_LANCZOS,
+					       OBS_SCALE_AREA};
+	for (size_t i = 0; i < sizeof(filters) / sizeof(filters[0]); i++) {
+		obs_sceneitem_set_scale_filter(item, filters[i]);
+		os_sleep_ms(500);
+		if (obs_sceneitem_get_scale_filter(item) != filters[i])
+			ok = false;
+	}
+	blog(LOG_INFO, "upscale selftest: scale filters drawn, lagged frames %u of %u", obs_get_lagged_frames(),
+	     obs_get_total_frames());
+
+	obs_sceneitem_remove(item);
+	obs_source_release(source);
+
+	blog(LOG_INFO, "upscale selftest: %s", ok ? "ok" : "failed");
+	return ok;
 }
 
 #pragma mark - 저장·불러오기

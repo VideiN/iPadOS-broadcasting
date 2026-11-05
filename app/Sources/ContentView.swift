@@ -19,6 +19,9 @@ struct DiagnosticsOverlay: View {
             Text("메모리 \(megabytes(stats.memory_footprint)) MB (여유 \(megabytes(stats.memory_available)) MB)")
             Text("발열  \(diagnostics.thermalState)")
             Text("카메라 \(cameraSize(stats))")
+            if let upscale = upscaleStatus() {
+                Text("업스케일 \(upscale)")
+            }
             // 섞은 소리(송출·녹화로 나가는 것, 마스터 볼륨 뒤). 마이크 입력만이 아니다 (P13)
             HStack(alignment: .top, spacing: 6) {
                 Text("출력")
@@ -42,6 +45,14 @@ struct DiagnosticsOverlay: View {
     private func cameraSize(_ stats: core_stats) -> String {
         stats.camera_width > 0
             ? String(format: "%ux%u  %.1f fps", stats.camera_width, stats.camera_height, stats.camera_fps) : "프레임 없음"
+    }
+
+    /// 카메라 소스의 업스케일 시험 상태 (방식, 크기, 프레임당 시간). 끄면 nil
+    private func upscaleStatus() -> String? {
+        var buffer = [CChar](repeating: 0, count: 200)
+        core_camera_upscale_status(&buffer, buffer.count)
+        let status = String(cString: buffer)
+        return status.isEmpty ? nil : status
     }
 
     private func channelMeter(_ channel: String, _ db: Float) -> some View {

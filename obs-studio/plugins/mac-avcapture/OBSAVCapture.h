@@ -18,6 +18,8 @@
 #import <pthread.h>
 #import <media-io/video-io.h>
 
+@class OBSAVUpscaler;
+
 #pragma mark - Type aliases and type definitions
 
 typedef enum video_colorspace OBSAVCaptureColorSpace;
@@ -403,6 +405,18 @@ typedef struct av_capture_info {
 @property uint64_t frameRateWindowStart;
 @property uint32_t frameRateWindowFrames;
 @property uint32_t frameRateLogCounter;
+
+/// iOS port: the source's "upscale" setting ("off" or a mode of ``OBSAVUpscaler``), read for every frame
+@property (atomic, copy) NSString *upscaleMode;
+/// iOS port: created when a mode is first used, belongs to the capture queue
+@property (strong) OBSAVUpscaler *upscaler;
+/// iOS port: the next frame goes through every mode and the results are saved
+@property (atomic) BOOL upscaleCompareRequested;
+/// iOS port: what the upscaler is doing, for the diagnostics overlay
+@property (atomic, readonly) NSString *upscaleStatus;
+
+/// iOS port: sends this frame upscaled. `NO` when the frame should go out as it is.
+- (BOOL)outputUpscaledImageBuffer:(CVImageBufferRef)imageBuffer timestamp:(uint64_t)timestamp;
 #endif
 
 @end

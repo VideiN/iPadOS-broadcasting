@@ -19,6 +19,8 @@ if(OS_IOS)
       OBSAVCapture.h
       OBSAVCapturePresetInfo.m
       OBSAVCapturePresetInfo.h
+      OBSAVUpscaler.m
+      OBSAVUpscaler.h
   )
 
   target_include_directories(mac-avcapture PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -31,7 +33,15 @@ if(OS_IOS)
       "$<LINK_LIBRARY:FRAMEWORK,CoreMedia.framework>"
       "$<LINK_LIBRARY:FRAMEWORK,CoreVideo.framework>"
       "$<LINK_LIBRARY:FRAMEWORK,IOSurface.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,CoreImage.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,Metal.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,MetalPerformanceShaders.framework>"
+      "$<LINK_LIBRARY:FRAMEWORK,VideoToolbox.framework>"
   )
+  # MetalFX is only used on devices (OBSAVUpscaler.m)
+  if(CMAKE_OSX_SYSROOT MATCHES "iPhoneOS")
+    target_link_libraries(mac-avcapture PRIVATE "$<LINK_LIBRARY:FRAMEWORK,MetalFX.framework>")
+  endif()
 
   obs_ios_static_module(mac-avcapture)
   return()
