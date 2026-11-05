@@ -179,7 +179,17 @@ jobs:
           # 가로 화면 (iPad는 대부분 가로로 두고 쓴다): simctl에는 기기를 돌리는 명령이 없어 Simulator 앱의 기기 메뉴를 누른다.
           # 안 되면(손쉬운 사용 권한 등) 앱의 -orientation과 화면 시험이 창 방향을 바꿔 달라고 한다
           # (배치는 같지만 기기가 세로라 가로 창이 세로 화면 안에 줄어 보인다)
-          open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID"
+          # Xcode 27 이미지에서는 이름으로 찾지 못한다(#149). 앱이 없어도 simctl로 시험은 돌아가므로 멈추지 않고, 구성을 남긴다
+          if ! open -a Simulator --args -CurrentDeviceUDID "$SIM_UDID"; then
+            echo "::warning::could not open the Simulator app by name"
+            ls "$(xcode-select -p)/Applications" /Applications | grep -iE 'simulator|device|xcode' || true
+            xcrun simctl help | grep -iE 'ui|rotat|orient' || true
+            simulator_app=$(find "$(xcode-select -p)" /Applications -maxdepth 4 -name 'Simulator.app' -print -quit 2> /dev/null || true)
+            if [ -n "$simulator_app" ]; then
+              echo "simulator app: $simulator_app"
+              open "$simulator_app" --args -CurrentDeviceUDID "$SIM_UDID" || true
+            fi
+          fi
           sleep 5
           device_landscape=0
           rotate_device() {

@@ -366,6 +366,11 @@ class Handler(BaseHTTPRequestHandler):
         url = urllib.parse.urlparse(self.path)
         query = dict(urllib.parse.parse_qsl(url.query))
         raw = self.body()
+        # 본문을 보내기 전에 끊긴 요청: CI가 앱을 끝내는 순간 패널 페이지의 폴링이 걸리면 생긴다 (#148). 앱의 잘못이 아니다
+        if len(raw.encode()) < int(self.headers.get("Content-Length") or 0):
+            log(f"client left during {self.path}")
+            self.close_connection = True
+            return
 
         if url.path == "/token":
             form = dict(urllib.parse.parse_qsl(raw))
