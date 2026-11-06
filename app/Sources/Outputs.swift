@@ -410,9 +410,17 @@ final class Outputs: ObservableObject {
 
     /// CI (`-autotest-p13`, 출력 시험이 끝난 뒤): 시작 중 두 번 누르기를 무시하는지, 연결이 안 되는 서버로 송출하면
     /// 오류 알림이 뜨는지 (P13)
-    private func runStabilityAutotest() {
+    private func runStabilityAutotest(waited: Double = 0) {
         guard ProcessInfo.processInfo.arguments.contains("-autotest-p13") else { return }
-        appLog("p13 autotest: start")
+        if waited == 0 { appLog("p13 autotest: start") }
+        // 출력 시험이 끈 리플레이는 인코더를 다 닫아야 active가 내려간다 (CI #153에서 2초 넘게 걸림).
+        // 그 전에 누르면 켜기가 아니라 끄기가 되므로 멈출 때까지 기다린다. 20초가 지나면 그대로 진행해 CI가 실패로 본다
+        update()
+        if stats.replay_active && waited < 20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { self.runStabilityAutotest(waited: waited + 0.2) }
+            return
+        }
+        if waited > 0 { appLog(String(format: "p13 autotest: waited %.1f s for the replay buffer to stop", waited)) }
         // 리플레이 시작을 연달아 두 번: 두 번째는 무시돼야 한다. 켜지면 끈다
         toggleReplay()
         toggleReplay()
