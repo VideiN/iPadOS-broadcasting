@@ -6,7 +6,6 @@
 set(APP_DISPLAY_NAME "Broadcast")
 set(APP_EXECUTABLE "Broadcast")
 set(APP_BUNDLE_ID "io.github.videin.broadcast")
-set(APP_BUILD_NUMBER "${OBS_BUILD_NUMBER}")
 
 # 빌드 정보: 설치한 앱이 어느 CI 실행에서 나왔는지 LiveContainer 목록·설정·오버레이·로그에서 알아보게 한다 (BuildInfo.swift).
 # 실행 번호는 GitHub Actions 목록의 "#번호". LiveContainer 목록은 CFBundleShortVersionString을 보여 주므로 버전 끝자리에 넣는다.
@@ -28,7 +27,11 @@ else()
   set(APP_BUILD_COMMIT "")
   set(APP_BUILD_BRANCH "")
 endif()
-string(TIMESTAMP APP_BUILD_TIME "%Y-%m-%dT%H:%M:%SZ" UTC)
+# 빌드 번호(CFBundleVersion)는 빌드를 시작한 시각 (UTC, YYYYMMDDHHMMSS). App Store Connect는 앞서 올린 것보다 큰 번호만 받는데,
+# 시각은 늘기만 하고 예전 번호(Actions 실행 ID, 11자리)보다 크다. CI와 로컬 빌드가 같다 (ios/scripts/upload-local-build.sh는 다시 설정한다)
+string(TIMESTAMP _build_start "%Y%m%d%H%M%S" UTC)
+set(APP_BUILD_NUMBER "${_build_start}")
+string(REGEX REPLACE "^(....)(..)(..)(..)(..)(..)$" "\\1-\\2-\\3T\\4:\\5:\\6Z" APP_BUILD_TIME "${_build_start}")
 # Info.plist에 그대로 들어가므로 XML 특수 문자를 바꾼다
 foreach(_var IN ITEMS APP_BUILD_BRANCH APP_BUILD_REPOSITORY)
   string(REPLACE "&" "&amp;" ${_var} "${${_var}}")
@@ -226,6 +229,9 @@ set_target_properties(
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/Info.plist"
     Swift_LANGUAGE_VERSION 5
 )
+# CMake는 설정할 때 번들의 Info.plist를 새로 쓴다. 빌드 번호(시각)가 바뀌어 다시 설정하면 아래 링크 뒤 단계(아이콘 병합·서명)가
+# 다시 돌아야 하므로 Info.plist가 바뀌면 다시 링크한다 (안 그러면 아이콘 항목이 빠지고 서명이 깨진다)
+set_property(TARGET app APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/Info.plist")
 
 # 번들에 리소스를 넣고 ad-hoc(fake) 서명한다 (계획 8.3).
 # 실기기에서는 LiveContainer가 자체 인증서로 다시 서명한다.

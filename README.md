@@ -63,6 +63,7 @@ Apple 개발자 계정이 있으면 CI가 기기용 빌드를 정식 서명해 A
 - 언제 올리나: main이나 testflight 브랜치에 푸시할 때(PR 머지 포함), 그리고 Actions에서 수동 실행할 때 "TestFlight에 올리기"를 고르면. PR에서는 올리지 않습니다. 작업 브랜치에 푸시한 빌드는 시험을 통과하거나 커밋 메시지 표시로 시험을 건너뛰면 testflight 브랜치에 자동으로 병합되어 올라갑니다
 - 하는 일(`ios/scripts/testflight.sh`): 가짜 서명 IPA를 받아 프로필이 App Store용이고 이 앱의 App ID이며 그 인증서로 만든 것인지 확인한 뒤, 이 실행만 쓰는 키체인으로 다시 서명해 `altool`로 올립니다. 다음 작업이 App Store Connect API(`ios/scripts/asc.py`)로 처리 완료를 기다립니다
 - 서명된 IPA는 아티팩트로 남기지 않고, 인증서 이름(계정 주인 이름)은 로그에 찍지 않습니다
+- 맥에서 빌드한 것을 올리기: `bash ios/scripts/upload-local-build.sh`가 빌드를 마저 하고 IPA를 draft Release에 올린 뒤 `testflight-local.yml`을 main에서 실행합니다. 서명·업로드와 YouTube 클라이언트 ID 넣기는 GitHub에서 하므로 맥에는 비밀값이 필요 없고 `gh` 로그인만 있으면 됩니다. 빌드 번호는 빌드를 시작한 시각(UTC `YYYYMMDDHHMMSS`, CI도 같음), 버전은 `0.1.<ios.yml 최근 실행 번호>`이고 앱에는 "로컬 빌드"로 보입니다. 작업 트리가 깨끗하고 커밋이 원격에 올라가 있어야 하고, draft Release는 끝나면 지웁니다
 - 비밀값: 저장소 Settings > Environments에 `testflight` 환경을 만들고(배포 브랜치는 main 등 올릴 브랜치만), 그 환경에 넣습니다. 비밀값이 하나도 없으면 올리지 않고 넘어갑니다
 
 | 이름 | 내용 |
