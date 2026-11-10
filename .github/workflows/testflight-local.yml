@@ -1,0 +1,143 @@
+name: TestFlight (local build)
+
+# 로컬(맥 VM)에서 빌드한 IPA를 서명해 TestFlight에 올린다 (2026-11-10).
+# ios/scripts/upload-local-build.sh가 IPA를 draft Release에 올리고 이 워크플로를 main에서 실행한다.
+# 서명 비밀값은 testflight 환경에만 있어 로컬에는 오지 않는다. YouTube 클라이언트 ID도 여기서 넣는다.
+# draft Release는 끝나면(실패해도) 지운다. draft는 공개되지 않는다
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: IPA를 올린 draft Release의 태그 (local-…)
+        required: true
+        type: string
+      sha256:
+        description: IPA의 SHA-256 (올린 파일이 로컬에서 만든 것인지)
+        required: true
+        type: string
+      branch:
+        description: 빌드한 브랜치
+        required: true
+        type: string
+      commit:
+        description: 빌드한 커밋
+        required: true
+        type: string
+
+permissions:
+  contents: write # draft Release 받기·지우기
+  actions: read # ios.yml의 최근 실행 번호
+
+concurrency:
+  group: testflight-local
+  cancel-in-progress: false
+
+jobs:
+  testflight:
+    name: TestFlight upload (local build)
+    runs-on: macos-26
+    environment: testflight
+    outputs:
+      bundle: ${{ steps.upload.outputs.bundle }}
+      build: ${{ steps.upload.outputs.build }}
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: |
+            ios/scripts
+            app/app.entitlements
+          sparse-checkout-cone-mode: false
+
+      - name: Download IPA
+        env:
+          SHA256: ${{ inputs.sha256 }}
+        run: |
+          [[ "$TAG" =~ ^local-[0-9A-Za-z._-]+$ ]] || { echo "::error::bad tag: $TAG"; exit 1; }
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern '*.ipa' --dir ipa
+          test "$(ls ipa/*.ipa | wc -l)" -eq 1
+          echo "$SHA256  $(ls ipa/*.ipa)" | shasum -a 256 -c
+
+      # 빌드 번호·버전·빌드 정보·YouTube 클라이언트 ID를 넣는다. 다음 단계가 어차피 다시 서명한다
+      - name: Stamp build info
+        env:
+          BRANCH: ${{ inputs.branch }}
+          COMMIT: ${{ inputs.commit }}
+          YOUTUBE_CLIENT_ID: ${{ secrets.YOUTUBE_CLIENT_ID }}
+        run: |
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit: $COMMIT"; exit 1; }
+          [[ "$BRANCH" =~ ^[0-9A-Za-z._/-]+$ ]] || { echo "::error::bad branch: $BRANCH"; exit 1; }
+          ipa=$(ls "$PWD"/ipa/*.ipa)
+          work="$RUNNER_TEMP/stamp"
+          mkdir -p "$work"
+          unzip -q "$ipa" -d "$work"
+          app=$(ls -d "$work"/Payload/*.app)
+          pb() { /usr/libexec/PlistBuddy -c "$1" "$app/Info.plist"; }
+          if [ "$(pb 'Print :DTPlatformName')" != iphoneos ]; then
+            echo "::error::not a device (iphoneos) build"
+            exit 1
+          fi
+          # 빌드 번호(CFBundleVersion)는 로컬 빌드를 시작한 시각 그대로 둔다 (app/CMakeLists.txt)
+          build=$(pb 'Print :CFBundleVersion')
+          [[ "$build" =~ ^[0-9]{14}$ ]] || { echo "::error::the build number is not a build start time: $build"; exit 1; }
+          # 버전은 ios.yml의 최근 실행 번호에 맞춘다 (앞서 올린 CI 빌드보다 낮아지지 않게)
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ios.yml/runs?per_page=1" --jq '.workflow_runs[0].run_number')
+          pb "Set :CFBundleShortVersionString 0.1.$latest"
+          # 실행 번호(Run)는 0으로 둔다: 앱에서 "로컬 빌드"로 보이고 ios.yml 새 빌드 확인을 하지 않는다 (BuildInfo.swift)
+          pb "Set :BroadcastBuild:Branch $BRANCH"
+          pb "Set :BroadcastBuild:Commit $COMMIT"
+          pb "Set :BroadcastBuild:Repository $GITHUB_REPOSITORY"
+          youtube_client=없음
+          if [ -n "$YOUTUBE_CLIENT_ID" ]; then
+            # app/CMakeLists.txt와 같은 확인과 16진수 (값은 찍지 않는다)
+            if ! [[ "$YOUTUBE_CLIENT_ID" =~ ^[0-9]+-[0-9A-Za-z_]+\.apps\.googleusercontent\.com$ ]]; then
+              echo "::error::YOUTUBE_CLIENT_ID is not an iOS OAuth client ID"
+              exit 1
+            fi
+            pb "Set :BroadcastYouTubeClient $(printf '%s' "$YOUTUBE_CLIENT_ID" | xxd -p | tr -d '\n')"
+            youtube_client=들어감
+          fi
+          rm "$ipa"
+          (cd "$work" && zip -qry "$ipa" Payload)
+          {
+            echo "### 로컬 빌드: \`$BRANCH\` \`${COMMIT::7}\`"
+            echo "- 버전 \`0.1.$latest\`, 빌드 \`$build\`"
+            echo "- YouTube 클라이언트 ID: $youtube_client"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Sign and upload
+        id: upload
+        env:
+          APPLE_DIST_P12_BASE64: ${{ secrets.APPLE_DIST_P12_BASE64 }}
+          APPLE_DIST_P12_PASSWORD: ${{ secrets.APPLE_DIST_P12_PASSWORD }}
+          APPLE_PROFILE_BASE64: ${{ secrets.APPLE_PROFILE_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: bash ios/scripts/testflight.sh ipa/*.ipa app/app.entitlements
+
+      - name: Delete the draft release
+        if: always()
+        run: gh release delete "$TAG" --repo "$GITHUB_REPOSITORY" --yes || true
+
+  # ios.yml의 testflight-check와 같다
+  testflight-check:
+    name: TestFlight processing
+    needs: testflight
+    if: ${{ !cancelled() && needs.testflight.result == 'success' && needs.testflight.outputs.build != '' }}
+    runs-on: ubuntu-latest
+    environment: testflight
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: ios/scripts
+
+      - name: Wait for App Store Connect
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: python3 ios/scripts/asc.py wait-build "${{ needs.testflight.outputs.bundle }}" "${{ needs.testflight.outputs.build }}" 45
