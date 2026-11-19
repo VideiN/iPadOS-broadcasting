@@ -740,6 +740,8 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
             WKUserScript(source: Self.pageScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
         content.addUserScript(
             WKUserScript(source: Self.bridgeScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
+        content.addUserScript(
+            WKUserScript(source: Self.viewportScript, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world))
         content.add(WeakMessageHandler(self), contentWorld: world, name: "broadcastChat")
 
         let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 360, height: 640), configuration: configuration)
@@ -930,6 +932,19 @@ final class ChatPanelWeb: NSObject, WKScriptMessageHandler, WKNavigationDelegate
               shown = [];
             }
           }, 2000);
+        })();
+        """#
+
+    /// 채팅 페이지에는 viewport가 없다. WebKit이 모바일 모드를 고르면(전체 화면이 아닌 창) 980px로 펼쳐 칸 너비로
+    /// 줄여서 글자가 지나치게 작았다 (기기). 칸 너비 그대로 펼치게 한다. 데스크톱 모드에서는 쓰이지 않는다
+    private static let viewportScript = #"""
+        (() => {
+          'use strict';
+          if (!location.pathname.startsWith('/live_chat') || document.querySelector('meta[name="viewport"]')) return;
+          const meta = document.createElement('meta');
+          meta.name = 'viewport';
+          meta.content = 'width=device-width, initial-scale=1';
+          (document.head || document.documentElement).appendChild(meta);
         })();
         """#
 }

@@ -177,6 +177,14 @@ static void combine_black_white(uint8_t *black, const uint8_t *white, size_t pix
     _webView.scrollView.backgroundColor = UIColor.clearColor;
     _webView.scrollView.scrollEnabled = NO;
     _webView.scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+    /* iPadOS 26+ softens the scroll view's edges (blur and fade); the page's top is where every batch is drawn,
+     * so each message came out faded at the top (device, iPadOS 27.3) */
+    if (@available(iOS 26.0, *)) {
+        _webView.scrollView.topEdgeEffect.hidden = YES;
+        _webView.scrollView.leftEdgeEffect.hidden = YES;
+        _webView.scrollView.bottomEdgeEffect.hidden = YES;
+        _webView.scrollView.rightEdgeEffect.hidden = YES;
+    }
     _webView.navigationDelegate = self;
     _webView.UIDelegate = self;
     [_hostView addSubview:_webView];
